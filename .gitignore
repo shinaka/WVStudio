@@ -1,0 +1,14 @@
+# generated or downloaded
+.cache/
+__pycache__/
+player/target/
+out/
+
+# your own art, playlist and settings
+art/
+playlist/
+calibration/
+studio.json
+/*.gif
+/*.png
+/*.mp4

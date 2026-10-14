@@ -1,0 +1,1043 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wonder Vision Studio</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0d0e10; --panel: #16181b; --raised: #1f2226; --line: #2b2f35;
+    --text: #e8e9eb; --muted: #8d939c; --accent: #ffb020; --accent-ink: #1c1300;
+    --warn: #ff9a76; --info: #7cc4ff;
+    font: 13px/1.45 system-ui, "Segoe UI", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); }
+  body { display: grid; grid-template: auto 1fr auto / 1fr 330px; height: 100vh; overflow: hidden; }
+  header { grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; padding: 7px 14px;
+           border-bottom: 1px solid var(--line); background: var(--panel); }
+  header h1 { font-size: 14px; margin: 0 6px 0 0; font-weight: 650; white-space: nowrap; }
+  #fileName { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .spacer { flex: 1; }
+  #cursor { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 84px; text-align: right; }
+  #stageWrap { position: relative; overflow: auto; display: flex; min-width: 0; min-height: 0; }
+  #stage { position: relative; margin: auto; flex: none; cursor: grab; touch-action: none; }
+  #stage.dragging { cursor: grabbing; }
+  #stage.picking { cursor: crosshair; }
+  #stage canvas { position: absolute; left: 0; top: 0; }
+  #screen { background: #000; }
+  #overlay { pointer-events: none; }
+  #empty { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; }
+  #empty .box { text-align: center; color: var(--muted); background: rgba(13, 14, 16, .85);
+                border: 2px dashed #3a3f46; border-radius: 14px; padding: 26px 40px; }
+  #empty .box strong { display: block; color: var(--text); font-size: 15px; margin-bottom: 4px; }
+  body.loaded #empty { display: none; }
+  body.dragover #stageWrap { outline: 2px dashed var(--accent); outline-offset: -8px; }
+  aside { grid-row: 2 / 4; grid-column: 2; overflow-y: auto; border-left: 1px solid var(--line); background: var(--panel); }
+  section { padding: 12px 14px; border-bottom: 1px solid var(--line); }
+  h2 { margin: 0 0 8px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 650; }
+  .row { display: flex; gap: 6px; align-items: center; margin: 7px 0; flex-wrap: wrap; }
+  .row > .label { color: var(--muted); width: 52px; }
+  label { display: inline-flex; gap: 6px; align-items: center; }
+  button, select, input { font: inherit; color: var(--text); background: var(--raised);
+                          border: 1px solid var(--line); border-radius: 6px; padding: 4px 9px; }
+  button { cursor: pointer; white-space: nowrap; }
+  button:hover:not(:disabled) { border-color: #4a5058; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 650; }
+  button[aria-pressed="true"] { background: #3a2c0a; border-color: var(--accent); color: var(--accent); }
+  button:disabled, label:has(input:disabled) { opacity: .45; cursor: default; }
+  input[type=number] { width: 78px; }
+  input[type=text] { width: 100%; }
+  input[type=color] { width: 42px; height: 29px; padding: 2px 3px; }
+  input[type=checkbox] { accent-color: var(--accent); margin: 0; }
+  .seg { display: inline-flex; flex-wrap: wrap; }
+  .seg button { border-radius: 0; margin-left: -1px; }
+  .seg button:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
+  .seg button:last-child { border-radius: 0 6px 6px 0; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .muted { color: var(--muted); }
+  .small { font-size: 12px; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 1px 10px; }
+  .kv dt { color: var(--muted); } .kv dd { margin: 0; }
+  footer { grid-column: 1; padding: 6px 14px; border-top: 1px solid var(--line); background: var(--panel);
+           min-height: 32px; display: flex; gap: 6px 16px; flex-wrap: wrap; align-items: center; }
+  .warn { color: var(--warn); } .info { color: var(--info); }
+  #msg:empty { display: none; }
+  #exportResult ul { margin: 6px 0; padding-left: 18px; }
+  #playlist { list-style: none; margin: 8px 0; padding: 0; display: grid; gap: 6px; }
+  #playlist li { display: grid; grid-template-columns: 80px 1fr auto; gap: 3px 8px; align-items: center;
+                 background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 6px; }
+  #playlist li.empty { display: block; color: var(--muted); background: none; border-style: dashed; }
+  #playlist img { width: 80px; height: 36px; grid-row: span 2; background: #000; border-radius: 3px; }
+  #playlist .pl-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #playlist .pl-meta { display: flex; gap: 4px; align-items: center; color: var(--muted); font-size: 12px; }
+  #playlist .pl-meta input { width: 58px; padding: 1px 5px; }
+  #playlist .pl-buttons { grid-row: span 2; display: flex; gap: 2px; }
+  #playlist .pl-buttons button { padding: 2px 7px; }
+  kbd { font: 11px ui-monospace, monospace; background: var(--raised); border: 1px solid var(--line);
+        border-radius: 4px; padding: 0 4px; }
+  .keys { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Wonder Vision Studio</h1>
+  <span id="fileName"></span>
+  <span class="spacer"></span>
+  <button id="prev" title="Previous frame ( , )">◀</button>
+  <button id="play" title="Play / pause (Space)">Pause</button>
+  <button id="next" title="Next frame ( . )">▶</button>
+  <span id="frameNo" class="muted"></span>
+  <label><input id="showGuides" type="checkbox" checked> Curve guides</label>
+  <label><input id="showGhost" type="checkbox" checked> Show off-screen</label>
+  <select id="zoom" title="Preview zoom">
+    <option value="fit">Fit</option><option value="0.5">50%</option><option value="1">100%</option><option value="2">200%</option>
+  </select>
+  <span id="cursor"></span>
+</header>
+
+<div id="stageWrap">
+  <div id="stage">
+    <canvas id="ghost"></canvas>
+    <canvas id="screen"></canvas>
+    <canvas id="overlay"></canvas>
+  </div>
+  <div id="empty"><div class="box"><strong>Drop an image or GIF here</strong>
+    or use <em>Open image</em>, or paste with Ctrl+V.<br>PNG, GIF, WebP, JPG, BMP, Aseprite, MP4 and other video.</div></div>
+</div>
+
+<aside>
+  <section>
+    <h2>Art</h2>
+    <div class="row">
+      <button id="open">Open image…</button>
+      <button id="reset" title="Back to the starting layout for this image">Reset layout</button>
+      <input id="file" type="file" hidden accept=".png,.gif,.webp,.jpg,.jpeg,.bmp,.apng,.aseprite,.ase,.mp4,.m4v,.mov,.webm,.mkv,.avi">
+    </div>
+    <dl class="kv" id="srcInfo"></dl>
+    <div class="row">
+      <label title="Screen pixels per art pixel in the file. Detected automatically; set it by hand if the art was saved enlarged and blurry.">
+        Pixel size in file <input id="factor" type="number" min="1" max="32" step="1"></label>
+    </div>
+  </section>
+
+  <section>
+    <h2>Size</h2>
+    <div class="row">
+      <button id="smaller" title="Smaller ( - )">−</button>
+      <label title="Screen pixels per art pixel">× <input id="scale" type="number" min="0.01" step="1"></label>
+      <button id="bigger" title="Bigger ( + )">+</button>
+      <span id="placedSize" class="muted"></span>
+    </div>
+    <div class="grid2">
+      <button id="fitFront" title="Largest size that fits on the flat front">Fit flat front</button>
+      <button id="fitScreen" title="Largest size that fits the whole screen, curves included">Fit whole screen</button>
+      <button id="fillHeight" title="Top to bottom, centred on the flat front">Fill height</button>
+      <button id="fillScreen" title="Cover the whole screen, cropping what's left over">Fill screen</button>
+    </div>
+    <div class="row"><label><input id="fractional" type="checkbox"> Allow in-between sizes</label></div>
+    <div class="row"><label><input id="smooth" type="checkbox"> Smooth scaling (photos, not pixel art)</label></div>
+  </section>
+
+  <section>
+    <h2>Position</h2>
+    <div class="row">
+      <label>X <input id="x" type="number" step="1"></label>
+      <label>Y <input id="y" type="number" step="1"></label>
+    </div>
+    <div class="row"><span class="label">Across</span><span class="seg">
+      <button data-align="front-left">Front left</button><button data-align="front-centre">Centre</button><button data-align="front-right">Front right</button>
+    </span></div>
+    <div class="row"><span class="label"></span><button data-align="screen-centre" title="Centre on the whole screen, curves included">Centre on whole screen</button></div>
+    <div class="row"><span class="label">Down</span><span class="seg">
+      <button data-align="top">Top</button><button data-align="middle">Middle</button><button data-align="bottom">Bottom</button>
+    </span></div>
+    <div class="row">
+      <label title="Step for dragging and arrow keys">Snap <select id="snap">
+        <option value="1">1 px</option><option value="2" selected>2 px (sharpest on the glass)</option><option value="art">art pixel</option>
+      </select></label>
+    </div>
+    <div class="row">
+      <button id="rotate" title="Rotate 90° clockwise (R)">Rotate 90°</button>
+      <button id="flip" title="Mirror left-right (F)" aria-pressed="false">Flip</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Empty space</h2>
+    <div class="seg" id="fills">
+      <button data-fill="solid">Colour</button><button data-fill="extend" title="Repeat the art's outermost pixels outward">Stretch edges</button><button data-fill="mirror">Mirror</button><button data-fill="tile">Tile</button>
+    </div>
+    <div class="row">
+      <input id="bg" type="color" title="Fill colour, also shown behind transparent pixels">
+      <button id="pick" aria-pressed="false" title="Then click a colour in the preview">Pick from preview</button>
+      <button id="black">Black</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Playlist</h2>
+    <div class="row"><input id="name" type="text" spellcheck="false" placeholder="name"></div>
+    <div class="row">
+      <button id="addToPlaylist" class="primary">Add to playlist</button>
+      <label title="How long it stays on screen before the next piece">for <input id="itemSeconds" type="number" min="1" step="1" value="30"> s</label>
+    </div>
+    <ol id="playlist"></ol>
+    <div id="playlistTotal" class="small muted"></div>
+    <div class="row">
+      <button id="playerStart">Play on cooler</button>
+      <button id="playerStop">Stop</button>
+    </div>
+    <div id="playerState" class="small muted"></div>
+    <div class="row"><label title="Plays the playlist after you log in, without opening the studio">
+      <input id="autostart" type="checkbox"> Start playing when Windows starts</label></div>
+    <div id="rivals" class="small warn"></div>
+  </section>
+
+  <section>
+    <h2>Export files</h2>
+    <div class="row">
+      <label><input type="checkbox" name="fmt" value="png" checked> PNG</label>
+      <label><input type="checkbox" name="fmt" value="gif"> GIF</label>
+      <label><input type="checkbox" name="fmt" value="mp4"> MP4</label>
+    </div>
+    <div class="row small muted">Named as above. PNG is animated if the art is.</div>
+    <div class="row">
+      <button id="export">Export to out/</button>
+      <button id="reveal">Open folder</button>
+    </div>
+    <div id="exportResult" class="small"></div>
+  </section>
+
+  <section class="small">
+    <h2>Keys</h2>
+    <div class="keys">
+      <span>Drag</span><span>move (Shift: one direction only)</span>
+      <span>Drag a corner</span><span>resize, keeping its shape</span>
+      <span><kbd>←</kbd><kbd>→</kbd><kbd>↑</kbd><kbd>↓</kbd></span><span>nudge one snap step (Shift: ×10)</span>
+      <span><kbd>+</kbd> <kbd>-</kbd></span><span>bigger / smaller</span>
+      <span><kbd>R</kbd> <kbd>F</kbd></span><span>rotate / flip</span>
+      <span><kbd>Space</kbd> <kbd>,</kbd> <kbd>.</kbd></span><span>play / step frames</span>
+      <span><kbd>G</kbd></span><span>curve guides</span>
+    </div>
+  </section>
+</aside>
+
+<footer><span id="msg"></span><span id="status" style="display: contents"></span></footer>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const api = (path, opts = {}) => fetch(path, { ...opts, headers: { "X-Studio": "1", ...opts.headers } });
+
+let W = 2400, H = 1080, SAFE = { left: 0, right: 0, top: 0, bottom: 0 };  // replaced from the server
+const M = 140;   // off-screen margin shown around the screen, in screen px
+const GROW = 4;  // placed art can be up to this many screens wide or tall
+const DEFAULTS = { factor: 1, scale: 1, fractional: false, smooth: false, x: 0, y: 0, rotate: 0, flip: false,
+                   fill: "solid", bg: "#000000", snap: "2" };
+
+let S = { ...DEFAULTS };  // the layout, remembered per image
+let src = null;           // the art: server info plus decoded frames
+const view = { zoom: "fit", k: 0.3, guides: true, ghost: true, playing: true, frame: 0, picking: false };
+
+const stage = $("stage"), screenCv = $("screen"), ghostCv = $("ghost"), overlayCv = $("overlay");
+const sctx = screenCv.getContext("2d");
+const FRONT = () => ({ x: SAFE.left, y: SAFE.top, w: W - SAFE.left - SAFE.right, h: H - SAFE.top - SAFE.bottom });
+const WHOLE = () => ({ x: 0, y: 0, w: W, h: H });
+
+// --- Geometry ------------------------------------------------------------------
+
+function turnedSize() { return S.rotate % 180 ? [src.height, src.width] : [src.width, src.height]; }
+function artSize() { const [w, h] = turnedSize(); return [w / S.factor, h / S.factor]; }
+function placedSize() {
+  const [aw, ah] = artSize();
+  return [Math.max(1, Math.round(aw * S.scale)), Math.max(1, Math.round(ah * S.scale))];
+}
+function snapStep() { return S.snap === "art" ? Math.max(1, Math.round(S.scale)) : +S.snap; }
+function snap(v) { const s = snapStep(); return Math.round(v / s) * s; }
+// MP4 stores colour per 2x2 block: art-pixel edges on even screen pixels keep it exact.
+function videoAligned() {
+  return S.smooth || (Number.isInteger(S.scale) && S.scale % 2 === 0 && S.x % 2 === 0 && S.y % 2 === 0);
+}
+
+// --- Drawing (export rebuilds exactly this in studio.py) -----------------------------
+
+let turned = [];  // per frame: the art turned and flipped, still at file resolution
+const scaled = document.createElement("canvas"), mirrored = document.createElement("canvas");
+let scaledKey = "";
+
+function turnedFrame(i) {
+  if (turned[i] && !src.video) return turned[i];  // a video's one "frame" changes as it plays
+  const [w, h] = turnedSize(), sw = src.width, sh = src.height;
+  const c = turned[i] || document.createElement("canvas");
+  c.width = w; c.height = h;
+  const g = c.getContext("2d");
+  g.imageSmoothingEnabled = false;
+  if (S.flip) g.setTransform(-1, 0, 0, 1, w, 0);
+  // clockwise quarter turns: whole pixels land on whole pixels, so nothing is resampled
+  g.transform(...{ 0: [1, 0, 0, 1, 0, 0], 90: [0, 1, -1, 0, sh, 0], 180: [-1, 0, 0, -1, sw, sh], 270: [0, -1, 1, 0, 0, sw] }[S.rotate]);
+  g.drawImage(src.frames[i], 0, 0);
+  return (turned[i] = c);
+}
+
+function scaledFrame(i) {
+  const [dw, dh] = placedSize();
+  const key = [src.id, i, dw, dh, S.smooth, S.rotate, S.flip].join();
+  if (key !== scaledKey || src.video) {
+    scaled.width = dw; scaled.height = dh;
+    const g = scaled.getContext("2d");
+    g.imageSmoothingEnabled = S.smooth;
+    g.imageSmoothingQuality = "high";
+    g.drawImage(turnedFrame(i), 0, 0, dw, dh);
+    mirrored.width = 0;  // stale
+    scaledKey = key;
+  }
+  return scaled;
+}
+
+function paint(ctx, img, x, y, fill, bg) {
+  const dw = img.width, dh = img.height;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+  if (fill === "tile" || fill === "mirror") {
+    const mirror = fill === "mirror";
+    if ((W / dw + 2) * (H / dh + 2) > 300) {
+      // lots of small tiles: one pattern fill, mirroring baked into a 2x2 block
+      let tile = img;
+      if (mirror) {
+        if (!mirrored.width) {
+          mirrored.width = 2 * dw; mirrored.height = 2 * dh;
+          const g = mirrored.getContext("2d");
+          for (const [fx, fy] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
+            g.setTransform(fx ? -1 : 1, 0, 0, fy ? -1 : 1, fx * 2 * dw, fy * 2 * dh);
+            g.drawImage(img, 0, 0);
+          }
+        }
+        tile = mirrored;
+      }
+      const pattern = ctx.createPattern(tile, "repeat");
+      pattern.setTransform(new DOMMatrix([1, 0, 0, 1, x, y]));
+      ctx.fillStyle = pattern;
+      ctx.fillRect(0, 0, W, H);
+      return;
+    }
+    for (let j = Math.floor(-y / dh); y + j * dh < H; j++) {
+      for (let i = Math.floor(-x / dw); x + i * dw < W; i++) {
+        const fx = mirror ? i & 1 : 0, fy = mirror ? j & 1 : 0;
+        ctx.setTransform(fx ? -1 : 1, 0, 0, fy ? -1 : 1, x + (i + fx) * dw, y + (j + fy) * dh);
+        ctx.drawImage(img, 0, 0);
+      }
+    }
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    return;
+  }
+  ctx.drawImage(img, x, y);
+  if (fill !== "extend") return;
+  const r = x + dw, b = y + dh;
+  const strip = (sx, sy, sw, sh, tx, ty, tw, th) => {
+    if (tw > 0 && th > 0) ctx.drawImage(img, sx, sy, sw, sh, tx, ty, tw, th);
+  };
+  strip(0, 0, 1, dh, 0, y, x, dh);              // left edge column, stretched
+  strip(dw - 1, 0, 1, dh, r, y, W - r, dh);     // right
+  strip(0, 0, dw, 1, x, 0, dw, y);              // top row
+  strip(0, dh - 1, dw, 1, x, b, dw, H - b);     // bottom
+  strip(0, 0, 1, 1, 0, 0, x, y);                // corner pixels fill the corners
+  strip(dw - 1, 0, 1, 1, r, 0, W - r, y);
+  strip(0, dh - 1, 1, 1, 0, b, x, H - b);
+  strip(dw - 1, dh - 1, 1, 1, r, b, W - r, H - b);
+}
+
+function drawGhost(img) {
+  const g = ghostCv.getContext("2d"), q = ghostCv.width / (W + 2 * M);
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.clearRect(0, 0, ghostCv.width, ghostCv.height);
+  if (!view.ghost || !img) return;
+  g.setTransform(q, 0, 0, q, M * q, M * q);
+  g.imageSmoothingEnabled = q < 1 || S.smooth;
+  g.globalAlpha = 0.3;
+  g.drawImage(img, S.x, S.y);
+  g.globalAlpha = 1;
+}
+
+function drawOverlay() {
+  const g = overlayCv.getContext("2d"), q = overlayCv.width / (W + 2 * M);
+  const css = 1 / view.k;  // one CSS pixel, in screen pixels
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.clearRect(0, 0, overlayCv.width, overlayCv.height);
+  g.setTransform(q, 0, 0, q, M * q, M * q);
+  g.lineWidth = css;
+  g.strokeStyle = "rgba(255,255,255,.35)";
+  g.strokeRect(-css / 2, -css / 2, W + css, H + css);
+  if (view.guides) {
+    g.fillStyle = "rgba(255,176,32,.13)";
+    for (const [x, y, w, h] of [[0, 0, SAFE.left, H], [W - SAFE.right, 0, SAFE.right, H],
+                                [0, 0, W, SAFE.top], [0, H - SAFE.bottom, W, SAFE.bottom]]) {
+      if (w > 0 && h > 0) g.fillRect(x, y, w, h);
+    }
+    g.strokeStyle = "rgba(255,176,32,.85)";
+    g.setLineDash([6 * css, 5 * css]);
+    g.beginPath();
+    for (const x of [SAFE.left, W - SAFE.right]) { g.moveTo(x, -22 * css); g.lineTo(x, H + 22 * css); }
+    g.stroke();
+    g.setLineDash([]);
+    g.font = `${12 * css}px system-ui, "Segoe UI", sans-serif`;
+    g.fillStyle = "rgba(255,176,32,.95)";
+    g.textAlign = "center";
+    g.textBaseline = "bottom";
+    const f = FRONT();
+    g.fillText(`flat front, ${f.w} px`, f.x + f.w / 2, -8 * css);
+    if (SAFE.right) g.fillText("wraps around the side", W - SAFE.right / 2, -8 * css);
+    if (SAFE.left) { g.textAlign = "right"; g.fillText("curls away", SAFE.left, -8 * css); }
+  }
+  if (src) {
+    const [dw, dh] = placedSize();
+    g.strokeStyle = "rgba(124,196,255,.9)";
+    g.setLineDash([4 * css, 4 * css]);
+    g.strokeRect(S.x, S.y, dw, dh);
+    g.setLineDash([]);
+    const half = 5 * css;  // corner handles for resizing
+    g.fillStyle = "#fff";
+    g.strokeStyle = "rgba(0,0,0,.85)";
+    for (const [cx, cy] of corners()) {
+      g.fillRect(cx - half, cy - half, 2 * half, 2 * half);
+      g.strokeRect(cx - half, cy - half, 2 * half, 2 * half);
+    }
+  }
+}
+
+/** The placed art's corners in screen pixels: top left, top right, bottom left, bottom right. */
+function corners() {
+  const [dw, dh] = placedSize();
+  return [[S.x, S.y], [S.x + dw, S.y], [S.x, S.y + dh], [S.x + dw, S.y + dh]];
+}
+
+function draw() {
+  if (!src) {
+    sctx.fillStyle = "#000";
+    sctx.fillRect(0, 0, W, H);
+    drawGhost(null);
+  } else {
+    const img = scaledFrame(view.frame);
+    paint(sctx, img, S.x, S.y, S.fill, S.bg);
+    drawGhost(img);
+  }
+  drawOverlay();
+}
+
+function layout() {
+  const wrap = $("stageWrap"), fw = W + 2 * M, fh = H + 2 * M;
+  view.k = view.zoom === "fit"
+    ? Math.max(0.05, Math.min((wrap.clientWidth - 24) / fw, (wrap.clientHeight - 24) / fh)) : +view.zoom;
+  const k = view.k, res = Math.min(window.devicePixelRatio || 1, 6000 / (fw * k));
+  stage.style.width = `${fw * k}px`;
+  stage.style.height = `${fh * k}px`;
+  Object.assign(screenCv.style, { left: `${M * k}px`, top: `${M * k}px`, width: `${W * k}px`, height: `${H * k}px`,
+                                  imageRendering: k >= 1 ? "pixelated" : "auto" });
+  for (const cv of [ghostCv, overlayCv]) {
+    cv.style.width = `${fw * k}px`;
+    cv.style.height = `${fh * k}px`;
+    cv.width = Math.round(fw * k * res);
+    cv.height = Math.round(fh * k * res);
+  }
+  draw();
+}
+
+// --- Changing the layout ---------------------------------------------------------------
+
+function changed() { draw(); syncControls(); save(); }
+
+function setScale(s, keepCentre = true) {
+  const [aw, ah] = artSize();
+  const lo = S.fractional ? Math.max(1 / aw, 1 / ah, 0.01) : 1, hi = Math.min(GROW * W / aw, GROW * H / ah);
+  s = Math.min(Math.max(s, lo), Math.max(hi, lo));
+  if (!S.fractional) s = Math.max(1, Math.round(s));
+  const [dw0, dh0] = placedSize(), cx = S.x + dw0 / 2, cy = S.y + dh0 / 2;
+  S.scale = s;
+  if (keepCentre) {
+    const [dw, dh] = placedSize();
+    S.x = snap(cx - dw / 2);
+    S.y = snap(cy - dh / 2);
+  }
+}
+
+function stepScale(dir) {
+  setScale(S.fractional ? S.scale * (dir > 0 ? 1.05 : 1 / 1.05) : S.scale + dir);
+}
+
+function fitInto(box, cover) {
+  const [aw, ah] = artSize();
+  const exact = () => (cover ? Math.max : Math.min)(box.w / aw, box.h / ah);
+  let s = exact();
+  if (!S.fractional) {
+    s = cover ? Math.ceil(s - 1e-9) : Math.floor(s + 1e-9);
+    if (s < 1) {  // art bigger than the box: only scaling down will do
+      S.fractional = S.smooth = true;
+      s = exact();
+      message("This art is bigger than that, so in-between sizes and smooth scaling are now on.", "info");
+    }
+  }
+  setScale(s, false);
+  const [dw, dh] = placedSize();
+  S.x = snap(box.x + (box.w - dw) / 2);
+  S.y = snap(box.y + (box.h - dh) / 2);
+  changed();
+}
+
+function fillHeight() {
+  const [, ah] = artSize();
+  setScale(S.fractional ? H / ah : Math.ceil(H / ah - 1e-9), false);
+  const [dw, dh] = placedSize(), f = FRONT();
+  S.x = snap(f.x + (f.w - dw) / 2);
+  S.y = snap((H - dh) / 2);
+  changed();
+}
+
+function align(where) {
+  const [dw, dh] = placedSize(), f = FRONT();
+  const across = { "front-left": f.x, "front-centre": f.x + (f.w - dw) / 2, "front-right": f.x + f.w - dw,
+                   "screen-centre": (W - dw) / 2 };
+  const down = { top: 0, middle: (H - dh) / 2, bottom: H - dh };
+  if (where in across) S.x = snap(across[where]);
+  else S.y = snap(down[where]);
+  changed();
+}
+
+function rotate() {
+  const [dw0, dh0] = placedSize(), cx = S.x + dw0 / 2, cy = S.y + dh0 / 2;
+  S.rotate = (S.rotate + 90) % 360;
+  turned = [];
+  const [dw, dh] = placedSize();
+  S.x = snap(cx - dw / 2);
+  S.y = snap(cy - dh / 2);
+  changed();
+}
+
+function flip() { S.flip = !S.flip; turned = []; changed(); }
+
+function startLayout() {
+  S = { ...DEFAULTS, factor: src.factor, bg: src.edge };
+  turned = [];
+  fitInto(FRONT(), false);
+}
+
+// --- Controls ----------------------------------------------------------------------
+
+function syncControls() {
+  const set = (id, v) => { if (document.activeElement !== $(id)) $(id).value = v; };
+  set("scale", +S.scale.toFixed(3));
+  set("x", S.x);
+  set("y", S.y);
+  set("factor", S.factor);
+  $("scale").step = S.fractional ? "0.05" : "1";
+  $("fractional").checked = S.fractional;
+  $("smooth").checked = S.smooth;
+  $("snap").value = S.snap;
+  $("bg").value = S.bg;
+  $("flip").setAttribute("aria-pressed", S.flip);
+  for (const b of document.querySelectorAll("[data-fill]")) b.setAttribute("aria-pressed", b.dataset.fill === S.fill);
+  const [dw, dh] = placedSize();
+  $("placedSize").textContent = `${dw} × ${dh} px`;
+  showStatus();
+}
+
+function showStatus() {
+  const [dw, dh] = placedSize(), f = FRONT(), out = [];
+  const add = (text, cls = "") => { const s = document.createElement("span"); s.textContent = text; s.className = cls; out.push(s); };
+  add(`${dw} × ${dh} at ${S.x}, ${S.y}`);
+  const cut = [["left", -S.x], ["right", S.x + dw - W], ["top", -S.y], ["bottom", S.y + dh - H]].filter(([, v]) => v > 0);
+  if (cut.length) add(`cut off: ${cut.map(([side, v]) => `${side} ${v} px`).join(", ")}`, "info");
+  const curved = [["left", Math.min(S.x + dw, f.x) - Math.max(S.x, 0)],
+                  ["right", Math.min(S.x + dw, W) - Math.max(S.x, f.x + f.w)]].filter(([, v]) => v > 0);
+  if (curved.length) add(`on the curve: ${curved.map(([side, v]) => `${side} ${v} px`).join(", ")}`, "info");
+  if (!Number.isInteger(S.scale) && !S.smooth)
+    add(`in-between size: art pixels come out uneven (${Math.floor(S.scale)} or ${Math.ceil(S.scale)} px)`, "warn");
+  if (!src.video && (src.colors > 256 || S.smooth))
+    add("over 256 colours: a GIF will approximate them, PNG and MP4 keep them all", "warn");
+  if (S.smooth) add("smooth preview is close; the export is a little sharper", "muted");
+  if (Number.isInteger(S.scale) && !S.smooth)
+    add(S.scale % 2 ? "odd size: art pixels come out slightly uneven on the glass"
+                    : `each art pixel is ${S.scale * 1.5}×${S.scale * 1.5} glass pixels`, "muted");
+  if (!videoAligned() && document.querySelector("input[name=fmt][value=mp4]").checked)
+    add("MP4 will use full colour (4:4:4) so pixel edges stay crisp", "muted");
+  $("status").replaceChildren(...out);
+}
+
+function showSource() {
+  $("fileName").textContent = src.name;
+  const n = src.durations.length, loop = src.durations.reduce((a, b) => a + b, 0) / 1000;
+  const [aw, ah] = [src.width / S.factor, src.height / S.factor];
+  const rows = [
+    ["File", `${src.width} × ${src.height}`],
+    ["Art", S.factor > 1 ? `${+aw.toFixed(2)} × ${+ah.toFixed(2)}, saved ${S.factor}× enlarged` : "file pixels = art pixels"],
+    ["Frames", src.video ? `video, ${loop.toFixed(1)} s at ${+src.video.fps.toFixed(2)} fps${src.video.trimmed ? " (the first 30 s)" : ""}`
+      : n > 1 ? `${n}, ${loop.toFixed(2)} s loop` : "still image"],
+    ["Colours", src.video ? "video" : src.colors > 256 ? "over 256" : String(src.colors)],
+  ];
+  $("srcInfo").replaceChildren(...rows.flatMap(([k, v]) => {
+    const dt = document.createElement("dt"), dd = document.createElement("dd");
+    dt.textContent = k; dd.textContent = v;
+    return [dt, dd];
+  }));
+  showFrame();
+}
+
+function showFrame() {
+  const v = src?.video && src.frames[0], n = v ? 2 : src ? src.frames.length : 0;
+  $("frameNo").textContent = v ? `${v.currentTime.toFixed(1)} / ${v.duration.toFixed(1)} s`
+    : n > 1 ? `${view.frame + 1} / ${n}` : "";
+  for (const id of ["prev", "play", "next"]) $(id).disabled = n < 2;
+  $("play").textContent = view.playing ? "Pause" : "Play";
+}
+
+function message(text, cls = "") { $("msg").textContent = text; $("msg").className = cls; }
+
+const storeKey = () => `wv-studio:${src.name}:${src.width}x${src.height}`;
+function save() { try { localStorage.setItem(storeKey(), JSON.stringify(S)); } catch {} }
+function restore() {
+  try {
+    const v = JSON.parse(localStorage.getItem(storeKey()));
+    return v && typeof v === "object" ? v : null;
+  } catch { return null; }
+}
+
+// --- Loading and exporting ----------------------------------------------------------
+
+async function openFile(file) {
+  message(`Opening ${file.name}…`);
+  try {
+    const res = await api(`/api/load?name=${encodeURIComponent(file.name)}`, { method: "POST", body: file });
+    const info = await res.json();
+    if (!res.ok) throw new Error(info.error || res.statusText);
+    await useSource(info);
+    message("");
+  } catch (err) {
+    message(`Couldn't open ${file.name}: ${err.message}`, "warn");
+  }
+}
+
+async function loadVideo(url) {
+  const video = make("video");
+  Object.assign(video, { muted: true, loop: true, playsInline: true, preload: "auto" });
+  await new Promise((ok, fail) => {
+    video.onloadeddata = ok;
+    video.onerror = () => fail(new Error("the browser couldn't play the preview"));
+    video.src = url;
+  });
+  return video;
+}
+
+async function useSource(info) {
+  const frames = info.video ? [await loadVideo(info.video.url)] : await Promise.all(info.durations.map(async (_, i) => {
+    const blob = await (await api(`/api/frame/${info.id}/${i}.png`)).blob();
+    return createImageBitmap(blob, { colorSpaceConversion: "none" });
+  }));
+  if (src?.video) src.frames[0].removeAttribute("src");  // let the old preview go
+  src = { ...info, frames };
+  if (src.video && view.playing) frames[0].play();
+  // PNG or GIF of a whole video would be enormous: MP4 only
+  for (const c of document.querySelectorAll("input[name=fmt]")) {
+    c.disabled = !!src.video && c.value !== "mp4";
+    if (src.video) c.checked = c.value === "mp4";
+  }
+  view.frame = 0;
+  turned = [];
+  const saved = restore();
+  if (saved) S = { ...DEFAULTS, ...saved };
+  else startLayout();
+  $("name").value = info.name.replace(/\.[^.]+$/, "");
+  $("exportResult").replaceChildren();
+  document.body.classList.add("loaded");
+  showSource();
+  changed();
+}
+
+function placement() {
+  const [width, height] = placedSize();
+  return { width, height, x: S.x, y: S.y, rotate: S.rotate, flip: S.flip, smooth: S.smooth, fill: S.fill, bg: S.bg };
+}
+
+async function postJson(path, body) {
+  const res = await api(path, { method: "POST", headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify(body) });
+  const out = await res.json();
+  if (!res.ok) throw new Error(out.error || res.statusText);
+  return out;
+}
+
+async function doExport() {
+  const formats = [...document.querySelectorAll("input[name=fmt]:checked")].map((c) => c.value);
+  if (!src) return;
+  if (!formats.length) return message("Tick at least one format to export.", "warn");
+  const button = $("export"), result = $("exportResult");
+  button.disabled = true;
+  button.textContent = formats.includes("mp4") ? "Exporting (MP4 takes a bit)…" : "Exporting…";
+  result.replaceChildren();
+  try {
+    const out = await postJson("/api/export", { id: src.id, name: $("name").value, formats, yuv444: !videoAligned(),
+                                                place: placement() });
+    const list = document.createElement("ul");
+    for (const f of out.files) {
+      const li = document.createElement("li");
+      li.textContent = `${f.name}  (${f.bytes < 1e6 ? `${Math.round(f.bytes / 1e3)} KB` : `${(f.bytes / 1e6).toFixed(1)} MB`})`;
+      list.append(li);
+    }
+    const where = document.createElement("div");
+    where.className = "muted";
+    where.textContent = `Saved in ${out.folder}.`;
+    result.append(list, where);
+    for (const note of out.notes) {
+      const p = document.createElement("div");
+      p.className = "warn";
+      p.textContent = note;
+      result.append(p);
+    }
+    message("");
+  } catch (err) {
+    message(`Export failed: ${err.message}`, "warn");
+  } finally {
+    button.disabled = false;
+    button.textContent = "Export to out/";
+  }
+}
+
+// --- Playlist ------------------------------------------------------------------------
+
+let playlist = [];
+
+function minutes(s) {
+  return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min${s % 60 ? ` ${s % 60} s` : ""}`;
+}
+
+function make(tag, cls = "", text) {
+  const el = document.createElement(tag);
+  el.className = cls;
+  if (text !== undefined) el.textContent = text;
+  return el;
+}
+
+function showPlaylist(state) {
+  playlist = state.items;
+  const rows = playlist.map((item, i) => {
+    const img = make("img");
+    img.src = `/api/thumb/${encodeURIComponent(item.file)}?v=${item.version}`;
+    img.alt = "";
+    const name = make("span", "pl-name", item.file.replace(/\.[^.]+$/, ""));
+    name.title = item.file;
+    const seconds = make("input");
+    seconds.type = "number";
+    seconds.min = "1";
+    seconds.value = item.seconds;
+    seconds.title = "Seconds on screen";
+    seconds.addEventListener("change", () => {
+      const v = parseInt(seconds.value, 10);
+      if (v >= 1) editPlaylist((items) => { items[i].seconds = v; });
+    });
+    const meta = make("span", "pl-meta");
+    meta.append(seconds, `s · ${item.frames === "video" ? "video" : item.frames > 1 ? `${item.frames} frames` : "still"}`);
+    const button = (label, title, disabled, edit) => {
+      const b = make("button", "", label);
+      b.title = title;
+      b.disabled = disabled;
+      b.addEventListener("click", () => editPlaylist(edit));
+      return b;
+    };
+    const buttons = make("span", "pl-buttons");
+    buttons.append(
+      button("↑", "Play earlier", i === 0, (items) => items.splice(i - 1, 0, items.splice(i, 1)[0])),
+      button("↓", "Play later", i === playlist.length - 1, (items) => items.splice(i + 1, 0, items.splice(i, 1)[0])),
+      button("✕", "Remove from the playlist", false, (items) => items.splice(i, 1)));
+    const li = make("li");
+    li.append(img, name, buttons, meta);
+    return li;
+  });
+  if (!rows.length) rows.push(make("li", "empty", "Empty. Lay out some art, then Add to playlist."));
+  $("playlist").replaceChildren(...rows);
+  const total = playlist.reduce((a, item) => a + item.seconds, 0);
+  $("playlistTotal").textContent =
+    playlist.length > 1 ? `${playlist.length} pieces, ${minutes(total)} round, then it repeats` : "";
+  showPlayer(state);
+}
+
+function editPlaylist(edit) {
+  const items = playlist.map(({ file, seconds }) => ({ file, seconds }));
+  edit(items);
+  postJson("/api/playlist", { items }).then(showPlaylist)
+    .catch((err) => message(`Couldn't save the playlist: ${err.message}`, "warn"));
+}
+
+function showPlayer(state) {
+  const waiting = state.log.match(/(?:waiting for the panel|nothing to play yet): (.*)/);
+  const el = $("playerState");
+  el.className = `small ${waiting ? "warn" : state.running ? "info" : "muted"}`;
+  el.textContent = !state.built ? "The player isn't built yet: run cargo build --release in the player folder."
+    : waiting ? `The player is running but can't reach the cooler: ${waiting[1]}`
+    : state.running ? "Playing on the cooler. Playlist changes show up within a second."
+    : "Not playing.";
+  $("playerStart").disabled = state.running || !state.built;
+  $("playerStop").disabled = !state.running;
+  $("autostart").checked = state.autostart;
+  $("autostart").disabled = !state.built;
+  $("rivals").textContent = state.rivals.length
+    ? `Also set to start with Windows, and would take the cooler first: ${state.rivals.join(", ")}. `
+      + "Turn it off there (Task Scheduler, or Task Manager's Startup apps)."
+    : "";
+}
+
+async function addToPlaylist() {
+  if (!src) return;
+  const button = $("addToPlaylist");
+  button.disabled = true;
+  button.textContent = src.video ? "Adding (about as long as the video)…" : "Adding…";
+  try {
+    const out = await postJson("/api/playlist/add", { id: src.id, name: $("name").value, place: placement(),
+                                                      seconds: parseInt($("itemSeconds").value, 10) || 30 });
+    showPlaylist(out);
+    const name = out.added.replace(/\.[^.]+$/, "");
+    message(`${out.replaced ? "Updated" : "Added"} ${name}.${out.running ? "" : " Press Play on cooler to start."}`,
+            "info");
+  } catch (err) {
+    message(`Couldn't add it: ${err.message}`, "warn");
+  } finally {
+    button.disabled = false;
+    button.textContent = "Add to playlist";
+  }
+}
+
+async function player(action) {
+  $(action === "start" ? "playerStart" : "playerStop").disabled = true;
+  try {
+    showPlayer(await postJson(`/api/player/${action}`, {}));
+  } catch (err) {
+    message(`Couldn't ${action} the player: ${err.message}`, "warn");
+    showPlayer(await (await api("/api/player")).json());
+  }
+}
+
+// --- Wiring --------------------------------------------------------------------------
+
+let drag = null, resize = null;
+function screenPoint(e, exact = false) {
+  const r = screenCv.getBoundingClientRect(), x = (e.clientX - r.left) / view.k, y = (e.clientY - r.top) / view.k;
+  return exact ? [x, y] : [Math.floor(x), Math.floor(y)];
+}
+
+/** Which corner handle the pointer is on, or -1. */
+function cornerAt(e) {
+  if (!src) return -1;
+  const [px, py] = screenPoint(e, true), reach = 9 / view.k;
+  return corners().findIndex(([cx, cy]) => Math.abs(px - cx) <= reach && Math.abs(py - cy) <= reach);
+}
+const RESIZE_CURSORS = ["nwse-resize", "nesw-resize", "nesw-resize", "nwse-resize"];
+
+/** Resizes from the dragged corner with the opposite one held still, keeping the art's shape. */
+function resizeTo(e) {
+  const [px, py] = screenPoint(e, true), [ax, ay] = resize.anchor, [aw, ah] = artSize();
+  // the size whose corner lands nearest the pointer: its projection onto the art's diagonal
+  const s = (Math.abs(px - ax) * aw + Math.abs(py - ay) * ah) / (aw * aw + ah * ah);
+  const before = [S.scale, S.x, S.y].join();
+  setScale(S.fractional ? Math.round(s * 1000) / 1000 : Math.round(s), false);
+  const [dw, dh] = placedSize(), left = resize.corner % 2 === 0, top = resize.corner < 2;
+  S.x = snap(left ? ax - dw : ax);
+  S.y = snap(top ? ay - dh : ay);
+  if ([S.scale, S.x, S.y].join() !== before) changed();
+}
+
+stage.addEventListener("pointerdown", (e) => {
+  if (!src || e.button !== 0) return;
+  if (view.picking) {
+    const [px, py] = screenPoint(e);
+    setPicking(false);
+    if (px >= 0 && py >= 0 && px < W && py < H) {
+      const [r, g, b] = sctx.getImageData(px, py, 1, 1).data;
+      S.bg = `#${[r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("")}`;
+      changed();
+    }
+    return;
+  }
+  try { stage.setPointerCapture(e.pointerId); } catch {}  // keeps the drag going outside the stage
+  const corner = cornerAt(e);
+  if (corner >= 0) {
+    resize = { corner, anchor: corners()[3 - corner] };
+    return;
+  }
+  drag = { cx: e.clientX, cy: e.clientY, x: S.x, y: S.y };
+  stage.classList.add("dragging");
+});
+stage.addEventListener("pointermove", (e) => {
+  const [px, py] = screenPoint(e);
+  $("cursor").textContent = px >= 0 && py >= 0 && px < W && py < H ? `x ${px}, y ${py}` : "";
+  if (resize) return resizeTo(e);
+  if (!drag) {
+    const corner = view.picking ? -1 : cornerAt(e);
+    stage.style.cursor = corner >= 0 ? RESIZE_CURSORS[corner] : "";
+    return;
+  }
+  let dx = (e.clientX - drag.cx) / view.k, dy = (e.clientY - drag.cy) / view.k;
+  if (e.shiftKey) { if (Math.abs(dx) > Math.abs(dy)) dy = 0; else dx = 0; }
+  const x = snap(drag.x + dx), y = snap(drag.y + dy);
+  if (x !== S.x || y !== S.y) { S.x = x; S.y = y; changed(); }
+});
+const endDrag = () => { drag = resize = null; stage.classList.remove("dragging"); };
+stage.addEventListener("pointerup", endDrag);
+stage.addEventListener("pointercancel", endDrag);
+stage.addEventListener("pointerleave", () => { $("cursor").textContent = ""; });
+
+function setPicking(on) {
+  view.picking = on;
+  stage.classList.toggle("picking", on);
+  $("pick").setAttribute("aria-pressed", on);
+  message(on ? "Click a colour in the preview (Esc to cancel)." : "");
+}
+
+const onClick = (id, fn) => $(id).addEventListener("click", () => { if (src || id === "open") fn(); });
+onClick("open", () => $("file").click());
+$("file").addEventListener("change", () => { if ($("file").files[0]) openFile($("file").files[0]); $("file").value = ""; });
+onClick("reset", () => { startLayout(); });
+onClick("smaller", () => { stepScale(-1); changed(); });
+onClick("bigger", () => { stepScale(1); changed(); });
+onClick("fitFront", () => fitInto(FRONT(), false));
+onClick("fitScreen", () => fitInto(WHOLE(), false));
+onClick("fillHeight", fillHeight);
+onClick("fillScreen", () => fitInto(WHOLE(), true));
+onClick("rotate", rotate);
+onClick("flip", flip);
+onClick("pick", () => setPicking(!view.picking));
+onClick("black", () => { S.bg = "#000000"; changed(); });
+onClick("export", doExport);
+onClick("addToPlaylist", addToPlaylist);
+$("playerStart").addEventListener("click", () => player("start"));
+$("playerStop").addEventListener("click", () => player("stop"));
+$("autostart").addEventListener("change", async () => {
+  try {
+    showPlayer(await postJson("/api/autostart", { on: $("autostart").checked }));
+  } catch (err) {
+    message(`Couldn't change the startup setting: ${err.message}`, "warn");
+  }
+});
+setInterval(async () => {
+  try { showPlayer(await (await api("/api/player")).json()); } catch {}
+}, 4000);
+$("reveal").addEventListener("click", () => api("/api/reveal", { method: "POST" }));
+for (const b of document.querySelectorAll("[data-align]")) b.addEventListener("click", () => { if (src) align(b.dataset.align); });
+for (const b of document.querySelectorAll("[data-fill]")) b.addEventListener("click", () => { if (src) { S.fill = b.dataset.fill; changed(); } });
+
+const onChange = (id, fn) => $(id).addEventListener("change", () => { if (src) { fn($(id)); changed(); } });
+onChange("scale", (el) => { const v = parseFloat(el.value); if (v > 0) setScale(v); });
+onChange("x", (el) => { const v = parseInt(el.value, 10); if (Number.isFinite(v)) S.x = v; });
+onChange("y", (el) => { const v = parseInt(el.value, 10); if (Number.isFinite(v)) S.y = v; });
+onChange("snap", (el) => { S.snap = el.value; });
+onChange("smooth", (el) => { S.smooth = el.checked; });
+onChange("fractional", (el) => { S.fractional = el.checked; if (!S.fractional) setScale(S.scale); });
+$("bg").addEventListener("input", () => { if (src) { S.bg = $("bg").value; changed(); } });
+$("factor").addEventListener("change", () => {
+  const v = parseInt($("factor").value, 10);
+  if (!src || !(v >= 1 && v <= 32)) return;
+  S.factor = v;
+  showSource();
+  fitInto(FRONT(), false);
+});
+
+$("showGuides").addEventListener("change", () => { view.guides = $("showGuides").checked; draw(); });
+$("showGhost").addEventListener("change", () => { view.ghost = $("showGhost").checked; draw(); });
+$("zoom").addEventListener("change", () => { view.zoom = $("zoom").value; layout(); });
+$("play").addEventListener("click", togglePlay);
+$("prev").addEventListener("click", () => stepFrame(-1));
+$("next").addEventListener("click", () => stepFrame(1));
+
+function togglePlay() {
+  view.playing = !view.playing;
+  if (src?.video) view.playing ? src.frames[0].play() : src.frames[0].pause();
+  showFrame();
+}
+function stepFrame(d) {
+  if (!src || src.durations.length < 2) return;
+  view.playing = false;
+  if (src.video) {
+    const v = src.frames[0];
+    v.pause();
+    v.currentTime = Math.min(Math.max(v.currentTime + d / src.video.fps, 0), v.duration);
+    v.addEventListener("seeked", () => { draw(); showFrame(); }, { once: true });
+    return;
+  }
+  view.frame = (view.frame + d + src.frames.length) % src.frames.length;
+  draw();
+  showFrame();
+}
+
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && view.picking) return setPicking(false);
+  if (!src || e.ctrlKey || e.metaKey || e.altKey || e.target.closest("input:not([type=checkbox]), select, textarea")) return;
+  const step = snapStep() * (e.shiftKey ? 10 : 1);
+  const move = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[e.key];
+  if (move) { S.x += move[0]; S.y += move[1]; changed(); }
+  else if (e.key === "+" || e.key === "=") { stepScale(1); changed(); }
+  else if (e.key === "-" || e.key === "_") { stepScale(-1); changed(); }
+  else if (e.key === "r" || e.key === "R") rotate();
+  else if (e.key === "f" || e.key === "F") flip();
+  else if (e.key === "g" || e.key === "G") $("showGuides").click();
+  else if (e.key === " ") togglePlay();
+  else if (e.key === ",") stepFrame(-1);
+  else if (e.key === ".") stepFrame(1);
+  else return;
+  e.preventDefault();
+});
+
+window.addEventListener("dragover", (e) => { e.preventDefault(); document.body.classList.add("dragover"); });
+window.addEventListener("dragleave", (e) => { if (!e.relatedTarget) document.body.classList.remove("dragover"); });
+window.addEventListener("drop", (e) => {
+  e.preventDefault();
+  document.body.classList.remove("dragover");
+  const f = e.dataTransfer.files[0];
+  if (f) openFile(f);
+});
+window.addEventListener("paste", (e) => {
+  const f = [...e.clipboardData.files][0];
+  if (f) openFile(new File([f], f.name || "pasted.png", { type: f.type }));
+});
+let resizeQueued = false;
+window.addEventListener("resize", () => {
+  if (!resizeQueued) { resizeQueued = true; requestAnimationFrame(() => { resizeQueued = false; layout(); }); }
+});
+
+// Animation: advance by each frame's own duration.
+let last = performance.now(), due = 0, lastVideoTime = -1;
+requestAnimationFrame(function tick(now) {
+  const dt = Math.min(now - last, 1000);
+  last = now;
+  if (src?.video) {
+    const t = src.frames[0].currentTime;  // redraw whenever the video has moved on
+    if (t !== lastVideoTime) { lastVideoTime = t; draw(); showFrame(); }
+  } else if (src && view.playing && src.frames.length > 1) {
+    due += dt;
+    let moved = false;
+    while (due >= src.durations[view.frame]) {
+      due -= src.durations[view.frame];
+      view.frame = (view.frame + 1) % src.frames.length;
+      moved = true;
+    }
+    if (moved) { draw(); showFrame(); }
+  }
+  requestAnimationFrame(tick);
+});
+
+(async () => {
+  try {
+    const cfg = await (await api("/api/config")).json();
+    [W, H] = cfg.screen;
+    SAFE = cfg.safe;
+    screenCv.width = W;
+    screenCv.height = H;
+    layout();
+    showFrame();
+    showPlaylist(await (await api("/api/playlist")).json());
+    if (cfg.initial) await useSource(cfg.initial);
+  } catch (err) {
+    message(`Couldn't reach the studio server: ${err.message}`, "warn");
+  }
+})();
+</script>
+</body>
+</html>
