@@ -69,6 +69,9 @@
   #playlist li { display: grid; grid-template-columns: 80px 1fr auto; gap: 3px 8px; align-items: center;
                  background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 6px; }
   #playlist li.empty { display: block; color: var(--muted); background: none; border-style: dashed; }
+  #playlist li:not(.empty) { cursor: pointer; }
+  #playlist li:not(.empty):hover { border-color: #4a5058; }
+  #playlist li.editing { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
   #playlist img { width: 80px; height: 36px; grid-row: span 2; background: #000; border-radius: 3px; }
   #playlist .pl-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #playlist .pl-meta { display: flex; gap: 4px; align-items: center; color: var(--muted); font-size: 12px; }
@@ -215,6 +218,8 @@
     <div class="keys">
       <span>Drag</span><span>move (Shift: one direction only)</span>
       <span>Drag a corner</span><span>resize, keeping its shape</span>
+      <span><kbd>Alt</kbd></span><span>while dragging: don't snap to edges and curve lines</span>
+      <span>Click a piece</span><span>in the playlist: change its layout</span>
       <span><kbd>←</kbd><kbd>→</kbd><kbd>↑</kbd><kbd>↓</kbd></span><span>nudge one snap step (Shift: ×10)</span>
       <span><kbd>+</kbd> <kbd>-</kbd></span><span>bigger / smaller</span>
       <span><kbd>R</kbd> <kbd>F</kbd></span><span>rotate / flip</span>
@@ -239,7 +244,8 @@ const DEFAULTS = { factor: 1, scale: 1, fractional: false, smooth: false, x: 0, 
 
 let S = { ...DEFAULTS };  // the layout, remembered per image
 let src = null;           // the art: server info plus decoded frames
-const view = { zoom: "fit", k: 0.3, guides: true, ghost: true, playing: true, frame: 0, picking: false };
+const view = { zoom: "fit", k: 0.3, guides: true, ghost: true, playing: true, frame: 0, picking: false,
+               snapped: null };  // while dragging: the lines an edge has snapped to, {x, y}
 
 const stage = $("stage"), screenCv = $("screen"), ghostCv = $("ghost"), overlayCv = $("overlay");
 const sctx = screenCv.getContext("2d");
@@ -398,6 +404,15 @@ function drawOverlay() {
     g.setLineDash([4 * css, 4 * css]);
     g.strokeRect(S.x, S.y, dw, dh);
     g.setLineDash([]);
+    if (view.snapped) {
+      g.strokeStyle = "#ff4fd8";
+      g.lineWidth = 2 * css;
+      g.beginPath();
+      if (view.snapped.x !== null) { g.moveTo(view.snapped.x, -M); g.lineTo(view.snapped.x, H + M); }
+      if (view.snapped.y !== null) { g.moveTo(-M, view.snapped.y); g.lineTo(W + M, view.snapped.y); }
+      g.stroke();
+      g.lineWidth = css;
+    }
     const half = 5 * css;  // corner handles for resizing
     g.fillStyle = "#fff";
     g.strokeStyle = "rgba(0,0,0,.85)";
@@ -611,7 +626,9 @@ async function openFile(file) {
     const res = await api(`/api/load?name=${encodeURIComponent(file.name)}`, { method: "POST", body: file });
     const info = await res.json();
     if (!res.ok) throw new Error(info.error || res.statusText);
+    editing = null;
     await useSource(info);
+    showPlaylist();
     message("");
   } catch (err) {
     message(`Couldn't open ${file.name}: ${err.message}`, "warn");
@@ -629,7 +646,7 @@ async function loadVideo(url) {
   return video;
 }
 
-async function useSource(info) {
+async function useSource(info, layout = null) {
   const frames = info.video ? [await loadVideo(info.video.url)] : await Promise.all(info.durations.map(async (_, i) => {
     const blob = await (await api(`/api/frame/${info.id}/${i}.png`)).blob();
     return createImageBitmap(blob, { colorSpaceConversion: "none" });
@@ -644,7 +661,7 @@ async function useSource(info) {
   }
   view.frame = 0;
   turned = [];
-  const saved = restore();
+  const saved = layout || restore();
   if (saved) S = { ...DEFAULTS, ...saved };
   else startLayout();
   $("name").value = info.name.replace(/\.[^.]+$/, "");
@@ -706,6 +723,8 @@ async function doExport() {
 // --- Playlist ------------------------------------------------------------------------
 
 let playlist = [];
+let editing = null;  // the playlist piece loaded for laying out again, if any
+let playlistState = { items: [], log: "", rivals: [] };
 
 function minutes(s) {
   return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min${s % 60 ? ` ${s % 60} s` : ""}`;
@@ -718,7 +737,8 @@ function make(tag, cls = "", text) {
   return el;
 }
 
-function showPlaylist(state) {
+function showPlaylist(state = playlistState) {
+  playlistState = state;
   playlist = state.items;
   const rows = playlist.map((item, i) => {
     const img = make("img");
@@ -749,7 +769,9 @@ function showPlaylist(state) {
       button("↑", "Play earlier", i === 0, (items) => items.splice(i - 1, 0, items.splice(i, 1)[0])),
       button("↓", "Play later", i === playlist.length - 1, (items) => items.splice(i + 1, 0, items.splice(i, 1)[0])),
       button("✕", "Remove from the playlist", false, (items) => items.splice(i, 1)));
-    const li = make("li");
+    const li = make("li", item.file === editing ? "editing" : "");
+    li.title = "Click to change its layout";
+    li.addEventListener("click", (e) => { if (!e.target.closest("button, input")) editPiece(item); });
     li.append(img, name, buttons, meta);
     return li;
   });
@@ -759,6 +781,33 @@ function showPlaylist(state) {
   $("playlistTotal").textContent =
     playlist.length > 1 ? `${playlist.length} pieces, ${minutes(total)} round, then it repeats` : "";
   showPlayer(state);
+  showAddButton();
+}
+
+/** "Update" when the name matches a piece already in the playlist (adding it again replaces that piece). */
+function showAddButton() {
+  const stem = $("name").value.replace(/[^\w .()-]/g, "_").trim();
+  const exists = playlist.some((item) => item.file.replace(/\.[^.]+$/, "") === stem);
+  if (!$("addToPlaylist").disabled) $("addToPlaylist").textContent = exists ? "Update in playlist" : "Add to playlist";
+}
+
+async function editPiece(item) {
+  const name = item.file.replace(/\.[^.]+$/, "");
+  message(`Opening ${name}…`);
+  try {
+    const out = await postJson("/api/playlist/edit", { file: item.file });
+    await useSource(out.source, out.layout);
+    editing = item.file;
+    $("name").value = name;
+    $("itemSeconds").value = item.seconds;
+    showPlaylist();
+    message(out.original
+      ? `Editing ${name}: change anything, then Update in playlist.`
+      : `Editing ${name}. It was added before the studio kept originals, so this is the finished version: `
+        + "you can still resize, move and crop it.", "info");
+  } catch (err) {
+    message(`Couldn't open ${name}: ${err.message}`, "warn");
+  }
 }
 
 function editPlaylist(edit) {
@@ -793,7 +842,8 @@ async function addToPlaylist() {
   button.textContent = src.video ? "Adding (about as long as the video)…" : "Adding…";
   try {
     const out = await postJson("/api/playlist/add", { id: src.id, name: $("name").value, place: placement(),
-                                                      seconds: parseInt($("itemSeconds").value, 10) || 30 });
+                                                      layout: S, seconds: parseInt($("itemSeconds").value, 10) || 30 });
+    editing = out.added;
     showPlaylist(out);
     const name = out.added.replace(/\.[^.]+$/, "");
     message(`${out.replaced ? "Updated" : "Added"} ${name}.${out.running ? "" : " Press Play on cooler to start."}`,
@@ -802,7 +852,7 @@ async function addToPlaylist() {
     message(`Couldn't add it: ${err.message}`, "warn");
   } finally {
     button.disabled = false;
-    button.textContent = "Add to playlist";
+    showAddButton();
   }
 }
 
@@ -832,17 +882,59 @@ function cornerAt(e) {
 }
 const RESIZE_CURSORS = ["nwse-resize", "nesw-resize", "nesw-resize", "nwse-resize"];
 
+// Edges snap to the screen's edges and the curve guides when they come this close (CSS pixels on screen).
+const SNAP_REACH = 10;
+
+function snapLines() {
+  const unique = (a) => [...new Set(a)];
+  return { x: unique([0, W, SAFE.left, W - SAFE.right]), y: unique([0, H, SAFE.top, H - SAFE.bottom]) };
+}
+
+/** Shifts a span starting at `start` so whichever end is nearest a line within reach sits on it.
+ *  Returns [new start, the line, or null]. */
+function snapSpan(start, size, lines) {
+  const reach = SNAP_REACH / view.k;
+  let best = null;
+  for (const line of lines) {
+    for (const edge of [start, start + size]) {
+      if (Math.abs(line - edge) <= reach && (!best || Math.abs(line - edge) < Math.abs(best.line - best.edge)))
+        best = { line, edge };
+    }
+  }
+  return best ? [start + best.line - best.edge, best.line] : [start, null];
+}
+
 /** Resizes from the dragged corner with the opposite one held still, keeping the art's shape. */
 function resizeTo(e) {
   const [px, py] = screenPoint(e, true), [ax, ay] = resize.anchor, [aw, ah] = artSize();
+  const left = resize.corner % 2 === 0, top = resize.corner < 2;
   // the size whose corner lands nearest the pointer: its projection onto the art's diagonal
-  const s = (Math.abs(px - ax) * aw + Math.abs(py - ay) * ah) / (aw * aw + ah * ah);
+  let s = (Math.abs(px - ax) * aw + Math.abs(py - ay) * ah) / (aw * aw + ah * ah), snapped = false;
+  view.snapped = { x: null, y: null };
+  if (S.fractional && !e.altKey) {
+    // the dragged corner onto the nearest line within reach (whole-number sizes can't land on lines)
+    const reach = SNAP_REACH / view.k, lines = snapLines();
+    const corner = { x: left ? ax - aw * s : ax + aw * s, y: top ? ay - ah * s : ay + ah * s };
+    let best = null;
+    for (const [axis, anchor, size] of [["x", ax, aw], ["y", ay, ah]]) {
+      for (const line of lines[axis]) {
+        const d = Math.abs(line - corner[axis]), k = Math.abs(line - anchor) / size;
+        if (d <= reach && k > 0 && (!best || d < best.d)) best = { d, k, axis, line };
+      }
+    }
+    if (best) {
+      s = best.k;
+      view.snapped[best.axis] = best.line;
+      snapped = true;
+    }
+  }
   const before = [S.scale, S.x, S.y].join();
-  setScale(S.fractional ? Math.round(s * 1000) / 1000 : Math.round(s), false);
-  const [dw, dh] = placedSize(), left = resize.corner % 2 === 0, top = resize.corner < 2;
-  S.x = snap(left ? ax - dw : ax);
-  S.y = snap(top ? ay - dh : ay);
+  setScale(!S.fractional ? Math.round(s) : snapped ? s : Math.round(s * 1000) / 1000, false);
+  const [dw, dh] = placedSize();
+  S.x = left ? (view.snapped.x ?? snap(ax - dw)) : ax;
+  S.y = top ? (view.snapped.y ?? snap(ay - dh)) : ay;
   if ([S.scale, S.x, S.y].join() !== before) changed();
+  else drawOverlay();
 }
 
 stage.addEventListener("pointerdown", (e) => {
@@ -877,10 +969,21 @@ stage.addEventListener("pointermove", (e) => {
   }
   let dx = (e.clientX - drag.cx) / view.k, dy = (e.clientY - drag.cy) / view.k;
   if (e.shiftKey) { if (Math.abs(dx) > Math.abs(dy)) dy = 0; else dx = 0; }
-  const x = snap(drag.x + dx), y = snap(drag.y + dy);
+  let x = snap(drag.x + dx), y = snap(drag.y + dy);
+  view.snapped = { x: null, y: null };
+  if (!e.altKey) {  // edges onto the screen's edges and the curve guides (not along an axis Shift has locked)
+    const [dw, dh] = placedSize(), lines = snapLines();
+    if (dx || !e.shiftKey) [x, view.snapped.x] = snapSpan(x, dw, lines.x);
+    if (dy || !e.shiftKey) [y, view.snapped.y] = snapSpan(y, dh, lines.y);
+  }
   if (x !== S.x || y !== S.y) { S.x = x; S.y = y; changed(); }
+  else drawOverlay();
 });
-const endDrag = () => { drag = resize = null; stage.classList.remove("dragging"); };
+const endDrag = () => {
+  drag = resize = null;
+  stage.classList.remove("dragging");
+  if (view.snapped) { view.snapped = null; drawOverlay(); }
+};
 stage.addEventListener("pointerup", endDrag);
 stage.addEventListener("pointercancel", endDrag);
 stage.addEventListener("pointerleave", () => { $("cursor").textContent = ""; });
@@ -908,6 +1011,7 @@ onClick("pick", () => setPicking(!view.picking));
 onClick("black", () => { S.bg = "#000000"; changed(); });
 onClick("export", doExport);
 onClick("addToPlaylist", addToPlaylist);
+$("name").addEventListener("input", showAddButton);
 $("playerStart").addEventListener("click", () => player("start"));
 $("playerStop").addEventListener("click", () => player("stop"));
 $("autostart").addEventListener("change", async () => {

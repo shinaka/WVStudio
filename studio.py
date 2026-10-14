@@ -102,7 +102,7 @@ def decode_video(path, preview):
 
 class Source:
     def __init__(self, path, name):
-        self.name = name
+        self.name, self.path = name, path
         self.id = hashlib.sha1(path.read_bytes()).hexdigest()[:12]
         self.video = None
         if path.suffix.lower() in VIDEO_TYPES:
@@ -291,13 +291,37 @@ thumbs = {}  # (file, mtime) -> PNG bytes
 
 
 def read_playlist():
+    """The playlist's items: file and seconds (what the player reads), and for re-editing the original's
+    name, where it's kept (`source`) and the page's `layout`."""
     try:
         data = json.loads(PLAYLIST.read_text(encoding="utf-8"))
     except FileNotFoundError:
         data = {}
-    items = [{"file": i["file"], "seconds": i.get("seconds", DEFAULT_SECONDS)}
+    items = [{**i, "seconds": i.get("seconds", DEFAULT_SECONDS)}
              for i in data.get("items", []) if (PLAYLIST_DIR / i["file"]).is_file()]
     return {"seconds": data.get("seconds", DEFAULT_SECONDS), "items": items}
+
+
+def keep_source(src):
+    """Keeps a piece's original next to the playlist (a hard link where possible: no extra space)."""
+    sources_dir = PLAYLIST_DIR / "sources"  # each piece's original, so it can be laid out again
+    sources_dir.mkdir(parents=True, exist_ok=True)
+    kept = sources_dir / f"{src.id}{src.path.suffix.lower()}"
+    if not kept.exists():
+        try:
+            os.link(src.path, kept)
+        except OSError:  # another drive
+            shutil.copy2(src.path, kept)
+    return kept.relative_to(PLAYLIST_DIR).as_posix()
+
+
+def tidy_sources(items):
+    """Deletes kept originals that no piece uses any more."""
+    used = {i.get("source") for i in items}
+    if (sources_dir := PLAYLIST_DIR / "sources").exists():
+        for path in sources_dir.iterdir():
+            if f"sources/{path.name}" not in used:
+                path.unlink(missing_ok=True)
 
 
 def write_playlist(items):
@@ -328,6 +352,7 @@ def add_to_playlist(req):
     stem, ext = safe_name(req["name"]), ".mp4" if src.video else ".png"
     file = stem + ext
     PLAYLIST_DIR.mkdir(exist_ok=True)
+    source = keep_source(src)  # before writing the piece: editing an old piece, the piece is the original
     tmp = PLAYLIST_DIR / f"{stem}.tmp{ext}"
     if src.video:
         write_video_mp4(src, flat, durations, bg, tmp, place)
@@ -338,25 +363,44 @@ def add_to_playlist(req):
     for other in [i for i in items if Path(i["file"]).stem == stem and i["file"] != file]:
         items.remove(other)  # same name, other kind (a still replaced by a video, say)
         (PLAYLIST_DIR / other["file"]).unlink(missing_ok=True)
-    seconds = max(1, int(req.get("seconds") or DEFAULT_SECONDS))
+    entry = {"file": file, "seconds": max(1, int(req.get("seconds") or DEFAULT_SECONDS)), "name": src.name,
+             "source": source, "layout": req.get("layout")}
     existing = next((i for i in items if i["file"] == file), None)
     if existing:
-        existing["seconds"] = seconds
+        existing.update(entry)  # in place: it keeps its spot in the playlist
     else:
-        items.append({"file": file, "seconds": seconds})
+        items.append(entry)
     write_playlist(items)
+    tidy_sources(items)
     return {**playlist_state(), "added": file, "replaced": existing is not None}
 
 
 def save_playlist(req):
-    """The page's edited list: new order, times, and anything removed (whose file is deleted)."""
-    old = {i["file"] for i in read_playlist()["items"]}
-    items = [{"file": Path(i["file"]).name, "seconds": max(1, min(86400, int(i["seconds"])))}
-             for i in req["items"] if Path(i["file"]).name in old]
+    """The page's edited list: new order, times, and anything removed (whose files are deleted)."""
+    old = {i["file"]: i for i in read_playlist()["items"]}
+    items = [{**old[name], "seconds": max(1, min(86400, int(i["seconds"])))}
+             for i in req["items"] if (name := Path(i["file"]).name) in old]
     write_playlist(items)
-    for gone in old - {i["file"] for i in items}:
+    for gone in old.keys() - {i["file"] for i in items}:
         (PLAYLIST_DIR / gone).unlink(missing_ok=True)
+    tidy_sources(items)
     return playlist_state()
+
+
+def edit_piece(req):
+    """Opens a playlist piece for laying out again: its original and layout when kept, else the piece itself
+    (pieces added before originals were kept)."""
+    item = next((i for i in read_playlist()["items"] if i["file"] == Path(req["file"]).name), None)
+    if not item:
+        raise ValueError("that piece isn't in the playlist any more")
+    kept = item.get("source") and PLAYLIST_DIR / item["source"]
+    if kept and kept.is_file():
+        return {"source": open_source(kept, item.get("name") or kept.name), "layout": item.get("layout"),
+                "original": True}
+    # the finished piece fills the screen as it is; in-between sizes, since whole-number ones jump past the screen
+    as_is = {"factor": 1, "scale": 1, "fractional": True, "smooth": False, "x": 0, "y": 0, "fill": "solid",
+             "bg": "#000000"}
+    return {"source": open_source(PLAYLIST_DIR / item["file"], item["file"]), "layout": as_is, "original": False}
 
 
 def thumbnail(file):
@@ -567,6 +611,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.json(add_to_playlist(json.loads(body)))
             elif url.path == "/api/playlist":
                 self.json(save_playlist(json.loads(body)))
+            elif url.path == "/api/playlist/edit":
+                self.json(edit_piece(json.loads(body)))
             elif url.path == "/api/player/start":
                 self.json(start_player())
             elif url.path == "/api/player/stop":

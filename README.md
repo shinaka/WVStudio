@@ -32,7 +32,8 @@ python wv.py studio "D:\gifs\cat.gif"
      the whole screen. If a file was saved enlarged (a 160px piece saved at 480px), the studio notices and
      counts in real art pixels. "Allow in-between sizes" and "Smooth scaling" are for photos and video.
    - **Position:** drag it, use the arrow keys, type X/Y, or use the align buttons. Drag a corner to resize:
-     the shape always stays the same. Parts hanging off the screen show faded, so you can see what gets cut.
+     the shape always stays the same. While dragging, edges snap to the screen's edges and the curve lines
+     (hold Alt not to). Parts hanging off the screen show faded, so you can see what gets cut.
    - **Empty space:** a solid colour (it starts as the art's own background colour), stretched edge pixels,
      mirrored copies, or tiles.
    - **Curve guides:** the amber bands are the curved edges. The right one wraps around the side of the
@@ -45,6 +46,9 @@ python wv.py studio "D:\gifs\cat.gif"
 5. **Start playing when Windows starts** (the checkbox under Play) adds the player to your startup apps, so
    the playlist comes back after a reboot without opening the studio. It's per-user, needs no admin, and
    shows in Task Manager's Startup apps.
+
+**Click a piece in the playlist** to change it: its original and layout come back, and the button becomes
+"Update in playlist", which replaces it in place. (The originals are kept in `playlist/sources/`.)
 
 The playlist is `playlist/playlist.json` plus one file per piece: a 1600x720 PNG (animated PNG for
 animations) or, for videos, an MP4. The studio remembers each image's layout in your browser.
