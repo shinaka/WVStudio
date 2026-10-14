@@ -1203,15 +1203,20 @@ function textLayer() {
 
 /** The active layer's widget under the pointer: the selected one anywhere in its box, else the topmost whose
  *  text is there. */
+/** The text under the pointer, in either layer: {widget, layer}, or null. The selected widget's whole box
+ *  counts; otherwise only its lines, topmost first (the global layer draws over the piece's). */
 function textAt(e) {
   const [px, py] = screenPoint(e, true), slop = 3 / view.k;
   const inside = (x, y, w, h, grow) => px >= x - grow && px <= x + w + grow && py >= y - grow && py <= y + h + grow;
-  const list = layerWidgets(), chosen = selectedWidget(), box = chosen && textLayout(chosen)?.box;
-  if (box && inside(box.x, box.y, box.w, box.h, slop)) return chosen;
-  for (let i = list.length - 1; i >= 0; i--) {
-    const w = list[i], lay = textLayout(w), grow = Math.max(0, num(w.outline?.width, 0)) + slop;
-    if (lay?.lines.some((l) => l.width > 0 && inside(l.x, l.baseline - lay.ascent, l.width, lay.ascent + lay.descent, grow)))
-      return w;
+  const chosen = selectedWidget(), box = chosen && textLayout(chosen)?.box;
+  if (box && inside(box.x, box.y, box.w, box.h, slop)) return { widget: chosen, layer: text.layer };
+  for (const layer of ["global", "piece"]) {
+    const list = layerWidgets(layer);
+    for (let i = list.length - 1; i >= 0; i--) {
+      const w = list[i], lay = textLayout(w), grow = Math.max(0, num(w.outline?.width, 0)) + slop;
+      if (lay?.lines.some((l) => l.width > 0 && inside(l.x, l.baseline - lay.ascent, l.width, lay.ascent + lay.descent, grow)))
+        return { widget: w, layer };
+    }
   }
   return null;
 }
@@ -2095,9 +2100,10 @@ stage.addEventListener("pointerdown", (e) => {
     resize = { corner, anchor: corners()[3 - corner] };
     return;
   }
-  if (hit) {  // text in the layer being edited: select it, and drag it
-    if (hit.id !== text.selected) selectWidget(hit.id);
-    drag = { widget: hit, cx: e.clientX, cy: e.clientY, x: num(hit.x, 0), y: num(hit.y, 0) };
+  if (hit) {  // any text: switch to its layer if need be, select it, and drag it
+    if (hit.layer !== text.layer) setTextLayer(hit.layer);
+    if (hit.widget.id !== text.selected) selectWidget(hit.widget.id);
+    drag = { widget: hit.widget, cx: e.clientX, cy: e.clientY, x: num(hit.widget.x, 0), y: num(hit.widget.y, 0) };
   } else {
     if (text.selected !== null) selectWidget(null);  // the art: the arrow keys move it again
     drag = { cx: e.clientX, cy: e.clientY, x: S.x, y: S.y };
@@ -2302,6 +2308,7 @@ requestAnimationFrame(function tick(now) {
     showPlaylist(state);
     draw();
     if (cfg.initial) await useSource(cfg.initial);
+    else setTextLayer("global");  // with no art open, the global layer is the only text there is to edit
   } catch (err) {
     message(`Couldn't reach the studio server: ${err.message}`, "warn");
   }
