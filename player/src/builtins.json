@@ -3,7 +3,7 @@
     "id": "claude",
     "name": "Claude usage",
     "description": "How much of your Claude plan you've used, from Claude Code's own login (sign in to Claude Code once; nothing else to set up).",
-    "interval": { "default": 60, "min": 30 },
+    "interval": { "default": 300, "min": 60 },
     "settings": [],
     "provides": [
       { "key": "claude.session", "label": "Session used", "unit": "%", "kind": "number" },

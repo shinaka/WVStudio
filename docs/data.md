@@ -34,7 +34,7 @@ player polls them and draws the text.
 {
   "api_port": 8139,
   "sources": [
-    { "type": "claude", "enabled": true, "interval": 60 },
+    { "type": "claude", "enabled": true, "interval": 300 },
     { "type": "pc", "enabled": true, "interval": 60, "hwinfo": true },
     { "type": "homeassistant", "enabled": true, "interval": 60,
       "url": "http://homeassistant.local:8123", "token": "<long-lived token>",
@@ -44,8 +44,12 @@ player polls them and draws the text.
 ```
 
 - Every source has `enabled` and `interval`, in seconds, defaulting to 60 with a minimum of 5. Claude's
-  minimum is 30.
-- Values go stale after 3 x interval without a successful update.
+  default is 300 and its minimum 60: its endpoint rate-limits a login that polls too often (HTTP 429).
+- Values go stale after 3 x interval without a successful update, except Claude's, which last 60 minutes.
+  The last good values are kept in `%LOCALAPPDATA%\wvplay\last-values.json` (values and their time
+  only, never a token), so they are back right after a restart, with their real age, and a source whose
+  last success is younger than its interval isn't polled again at start. A source that is told to wait
+  (429 or 503, honouring `Retry-After`), or Claude on any error, backs off: 2, 4, 8 minutes, up to 30.
 - `time` is built in and always there.
 - The file lives in `playlist/`, which is gitignored, because it holds the HA token. The token is never
   logged, and never sent back to the browser.

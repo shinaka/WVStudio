@@ -23,6 +23,14 @@ use crate::{api, catalog, playlist, plugin};
 const MISSING: &str = "--";
 /// Values go stale after this many intervals without a successful update.
 const STALE_AFTER: u32 = 3;
+/// Claude's usage changes slowly, and its endpoint rate-limits: its values last this long instead.
+const CLAUDE_STALE_AFTER: Duration = Duration::from_secs(60 * 60);
+/// A source that fails (Claude), or is told to wait (any source's 429 or 503), is tried again after
+/// this long, doubling each time up to the cap, unless `Retry-After` says otherwise.
+const BACKOFF_FIRST: Duration = Duration::from_secs(2 * 60);
+const BACKOFF_MAX: Duration = Duration::from_secs(30 * 60);
+/// The most a `Retry-After` is honoured for.
+const RETRY_AFTER_MAX: Duration = Duration::from_secs(60 * 60);
 /// data.json is watched like the playlist: looked at this often, and read once it holds still.
 const CHECK_EVERY: Duration = Duration::from_millis(500);
 const SETTLE: Duration = Duration::from_millis(1500);
@@ -53,6 +61,30 @@ impl Value {
             Value::Text(s) => json!(s),
             Value::Time(t) => json!(iso(*t)),
             Value::Until(t) => json!(until(*t - now)),
+        }
+    }
+
+    /// For last-values.json: numbers and text as they are, times tagged so they come back as times.
+    fn to_saved(&self) -> serde_json::Value {
+        match self {
+            Value::Number(n) => json!(n),
+            Value::Text(s) => json!(s),
+            Value::Time(t) => json!({ "time": iso(*t) }),
+            Value::Until(t) => json!({ "until": iso(*t) }),
+        }
+    }
+
+    fn from_saved(j: &serde_json::Value) -> Option<Value> {
+        let time = |j: &serde_json::Value| j.as_str().and_then(|s| DateTime::parse_from_rfc3339(s).ok()).map(|t| t.with_timezone(&Utc));
+        match j {
+            serde_json::Value::Number(n) => n.as_f64().map(Value::Number),
+            serde_json::Value::String(s) => Some(Value::Text(s.clone())),
+            serde_json::Value::Object(o) => match (o.get("time"), o.get("until")) {
+                (Some(t), _) => time(t).map(Value::Time),
+                (_, Some(t)) => time(t).map(Value::Until),
+                _ => None,
+            },
+            _ => None,
         }
     }
 
@@ -197,16 +229,62 @@ pub fn store() -> &'static Store {
 }
 
 impl Store {
-    /// A successful poll's values, which stay fresh for 3 x `interval`.
-    pub fn put(&self, source: &str, interval: Duration, values: Vec<(String, Value)>) {
-        self.put_at(source, interval, values, Utc::now());
+    /// A successful poll's values, which stay fresh for `stale_after` (see `Source::stale_after`).
+    pub fn put(&self, source: &str, stale_after: Duration, values: Vec<(String, Value)>) {
+        self.put_at(source, stale_after, values, Utc::now());
     }
 
-    fn put_at(&self, source: &str, interval: Duration, values: Vec<(String, Value)>, at: DateTime<Utc>) {
+    fn put_at(&self, source: &str, stale_after: Duration, values: Vec<(String, Value)>, at: DateTime<Utc>) {
         let mut entries = self.entries.write().unwrap();
         for (key, value) in values {
-            entries.insert(key, Entry { value, at, source: source.to_string(), stale_after: interval * STALE_AFTER });
+            entries.insert(key, Entry { value, at, source: source.to_string(), stale_after });
         }
+    }
+
+    /// Writes every source's latest values and their time to `file` (last-values.json), so they're
+    /// there again after a restart. Values only: no settings, and never a token.
+    pub fn save(&self, file: &Path) -> std::io::Result<()> {
+        let mut sources: BTreeMap<String, (DateTime<Utc>, serde_json::Map<String, serde_json::Value>)> = BTreeMap::new();
+        for (key, e) in self.entries.read().unwrap().iter() {
+            let (at, values) = sources.entry(e.source.clone()).or_insert_with(|| (e.at, serde_json::Map::new()));
+            *at = (*at).max(e.at);
+            values.insert(key.clone(), e.value.to_saved());
+        }
+        let json: serde_json::Map<String, serde_json::Value> =
+            sources.into_iter().map(|(source, (at, values))| (source, json!({ "at": iso(at), "values": values }))).collect();
+        if let Some(folder) = file.parent() {
+            std::fs::create_dir_all(folder)?;
+        }
+        // written whole, then put in place, so a reader never sees half a file
+        let partial = file.with_extension("json.part");
+        std::fs::write(&partial, serde_json::to_vec(&json)?)?;
+        std::fs::rename(&partial, file)
+    }
+
+    /// Reads a saved last-values.json back, keeping each value's real time, so staleness still applies.
+    /// `stale_after` gives a source's rule, or None to leave that source's values out. Returns when
+    /// each loaded source last succeeded.
+    pub fn load(&self, file: &Path, stale_after: impl Fn(&str) -> Option<Duration>) -> Vec<(String, DateTime<Utc>)> {
+        let Ok(bytes) = std::fs::read(file) else { return Vec::new() };
+        let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) else { return Vec::new() };
+        let mut loaded = Vec::new();
+        for (source, saved) in json.as_object().into_iter().flatten() {
+            let Some(window) = stale_after(source) else { continue };
+            let Some(at) = saved["at"].as_str().and_then(|s| DateTime::parse_from_rfc3339(s).ok()) else { continue };
+            let at = at.with_timezone(&Utc);
+            let values: Vec<(String, Value)> = saved["values"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .filter_map(|(key, v)| Value::from_saved(v).map(|v| (key.clone(), v)))
+                .collect();
+            if values.is_empty() {
+                continue;
+            }
+            self.put_at(source, window, values, at);
+            loaded.push((source.clone(), at));
+        }
+        loaded
     }
 
     /// A value, unless it's missing or stale. `time` is always there.
@@ -273,12 +351,24 @@ impl Default for Source {
 }
 
 impl Source {
-    /// Time between polls: the manifest's default unless set, and never under its minimum (30 s for
+    /// Time between polls: the manifest's default unless set, and never under its minimum (60 s for
     /// Claude, 5 s otherwise).
     pub fn every(&self) -> Duration {
         let spec = catalog::manifest(&self.kind).map(|m| m.interval).unwrap_or_default();
         let secs = self.interval.filter(|i| i.is_finite()).unwrap_or(spec.default);
         Duration::from_secs_f64(secs.max(spec.min).max(1.0))
+    }
+
+    /// How long this source's values stay fresh without a successful poll: 3 x interval, except
+    /// Claude's, which last an hour (usage changes slowly, and a back-off shouldn't blank the text).
+    pub fn stale_after(&self) -> Duration {
+        if self.kind == "claude" { CLAUDE_STALE_AFTER } else { self.every() * STALE_AFTER }
+    }
+
+    /// Whether a failure makes this source back off: Claude on any error (its endpoint rate-limits a
+    /// login that polls too much), every source when the server says to wait.
+    fn backs_off(&self, failure: &sources::Failure) -> bool {
+        self.kind == "claude" || failure.throttled()
     }
 
     /// A setting as it is in data.json, by its manifest key, or None when it isn't set.
@@ -322,6 +412,58 @@ pub fn plugins_for(playlist: &Path) -> PathBuf {
     folder.parent().unwrap_or(folder).join("plugins")
 }
 
+/// The last good values live in %LOCALAPPDATA%\wvplay\last-values.json.
+pub fn last_values_file() -> PathBuf {
+    std::env::var_os("LOCALAPPDATA").map_or_else(std::env::temp_dir, PathBuf::from).join("wvplay").join("last-values.json")
+}
+
+/// How long to wait before a source's first poll: none, unless its last success (from the last run)
+/// is younger than its interval, when the remainder is waited out.
+pub fn first_poll_delay(last_success: Option<DateTime<Utc>>, every: Duration, now: DateTime<Utc>) -> Duration {
+    match last_success.and_then(|at| (now - at).to_std().ok()) {
+        Some(age) => every.saturating_sub(age),
+        None => Duration::ZERO,
+    }
+}
+
+/// A source's back-off: how long to wait after each failure in a row, doubling from 2 min to 30 min,
+/// unless the server said how long (`Retry-After`). A success resets it.
+#[derive(Default, Debug)]
+pub struct Backoff {
+    failures: u32,
+}
+
+impl Backoff {
+    /// Notes a failure and gives the wait before the next try.
+    pub fn next(&mut self, retry_after: Option<Duration>) -> Duration {
+        self.failures = self.failures.saturating_add(1);
+        match retry_after {
+            Some(asked) => asked.min(RETRY_AFTER_MAX),
+            None => BACKOFF_FIRST.saturating_mul(1u32 << (self.failures - 1).min(16)).min(BACKOFF_MAX),
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.failures = 0;
+    }
+
+    pub fn active(&self) -> bool {
+        self.failures > 0
+    }
+}
+
+/// A wait, briefly: `45s`, `2m`, `1h 30m`.
+fn brief(d: Duration) -> String {
+    let secs = d.as_secs();
+    match (secs / 3600, secs / 60 % 60, secs % 60) {
+        (0, 0, s) => format!("{s}s"),
+        (0, m, 0) => format!("{m}m"),
+        (0, m, s) => format!("{m}m {s}s"),
+        (h, 0, _) => format!("{h}h"),
+        (h, m, _) => format!("{h}h {m}m"),
+    }
+}
+
 /// How a source's last poll went, for the catalog and the report.
 #[derive(Clone)]
 pub struct Status {
@@ -353,6 +495,8 @@ pub struct Hub {
     pub(crate) server: Mutex<Option<Arc<tiny_http::Server>>>,
     /// Where plugins are read from, at start-up and on rescan.
     pub plugins: PathBuf,
+    /// When last-values.json was last written, so a streaming plugin doesn't rewrite it on every line.
+    saved_at: Mutex<Option<Instant>>,
 }
 
 /// Starts polling the sources in the data.json beside `playlist`, and serving the local API if `api`.
@@ -363,11 +507,20 @@ pub fn start(playlist: &Path, api: bool) -> Arc<Hub> {
         Config::default()
     });
     let hub = Arc::new(Hub { file, config: Mutex::default(), running: Mutex::default(), status: Mutex::default(),
-                             server: Mutex::default(), plugins: plugins_for(playlist) });
+                             server: Mutex::default(), plugins: plugins_for(playlist), saved_at: Mutex::default() });
     let found = catalog::rescan(&hub.plugins);
     let plugins = found.manifests.len() - catalog::builtins().len();
     if plugins > 0 || hub.plugins.is_dir() {
         log(format_args!("plugins: {plugins} in {}", hub.plugins.display()));
+    }
+    // the last run's values, with their real age, for the sources still set up
+    let stale_after = |kind: &str| config.sources.iter().find(|s| s.kind == kind && s.enabled).map(Source::stale_after);
+    let loaded = store().load(&last_values_file(), stale_after);
+    if !loaded.is_empty() {
+        let mut status = hub.status.lock().unwrap();
+        for (kind, at) in loaded {
+            status.insert(kind, Status { result: Ok(Vec::new()), updated_at: Some(at) });
+        }
     }
     hub.apply(config);
     let watcher = hub.clone();
@@ -445,49 +598,77 @@ impl Hub {
     }
 
     /// Polls one source at its interval until it's stopped. Failures are logged once, when they start
-    /// or change, and its values just go stale. A streaming plugin is kept running instead.
+    /// or change, and its values just go stale; a failure that backs off (see `Source::backs_off`)
+    /// pushes the next poll out. A streaming plugin is kept running instead.
     fn run(self: Arc<Self>, source: Source, stop: Arc<AtomicBool>) {
         let mut failing: Option<String> = None;
+        let mut backoff = Backoff::default();
         if let Some(manifest) = catalog::manifest(&source.kind).filter(|m| m.streams()) {
             return plugin::stream(&source, &manifest, &stop, |result| {
                 if !stop.load(Ordering::Relaxed) {
-                    self.record(&source, result, &mut failing);
+                    self.record(&source, result.map_err(sources::Failure::from), &mut failing, &mut backoff, true);
                 }
             });
         }
         let mut state = sources::State::default();
+        // values from the last run that are still fresh wait out the rest of the interval
+        let last_success = self.status.lock().unwrap().get(&source.kind).and_then(|s| s.updated_at);
+        let mut next = Instant::now() + first_poll_delay(last_success, source.every(), Utc::now());
         while !stop.load(Ordering::Relaxed) {
+            if Instant::now() < next {
+                sleep(Duration::from_millis(250));
+                continue;
+            }
             let result = sources::poll(&source, &mut state);
             if stop.load(Ordering::Relaxed) {
                 return; // replaced meanwhile
             }
-            self.record(&source, result, &mut failing);
-            let next = Instant::now() + source.every();
-            while Instant::now() < next && !stop.load(Ordering::Relaxed) {
-                sleep(Duration::from_millis(250));
-            }
+            let wait = self.record(&source, result, &mut failing, &mut backoff, false);
+            next = Instant::now() + wait;
         }
     }
 
-    /// Keeps a poll's values and status. `failing` is the error being logged, so each is logged once.
-    fn record(&self, source: &Source, result: Result<Polled, String>, failing: &mut Option<String>) {
+    /// Keeps a poll's values and status, and gives the wait before the next poll: the interval, or
+    /// longer while backing off. `failing` is the error being logged, so each is logged once; while
+    /// backing off, only the start and the recovery are logged. A `streaming` source's values are saved
+    /// for the next run at most every 10 s.
+    fn record(&self, source: &Source, result: Result<Polled, sources::Failure>, failing: &mut Option<String>,
+              backoff: &mut Backoff, streaming: bool) -> Duration {
         let mut status = self.status.lock().unwrap();
         let updated_at = status.get(&source.kind).and_then(|s| s.updated_at);
         match result {
             Ok(Polled { values, notes }) => {
                 let now = Utc::now();
-                store().put(source.kind.as_str(), source.every(), values);
+                store().put(source.kind.as_str(), source.stale_after(), values);
+                let mut saved_at = self.saved_at.lock().unwrap();
+                if !streaming || saved_at.is_none_or(|t| t.elapsed() >= Duration::from_secs(10)) {
+                    let _ = store().save(&last_values_file());
+                    *saved_at = Some(Instant::now());
+                }
                 if failing.take().is_some() {
                     log(format_args!("data: {} is working again", source.kind));
                 }
+                backoff.reset();
                 status.insert(source.kind.clone(), Status { result: Ok(notes), updated_at: Some(now) });
+                source.every()
             }
             Err(e) => {
-                if failing.as_ref() != Some(&e) {
-                    log(format_args!("data: {}: {e}", source.kind));
-                }
-                status.insert(source.kind.clone(), Status { result: Err(e.clone()), updated_at });
-                *failing = Some(e);
+                let wait = if source.backs_off(&e) {
+                    let was_backing_off = backoff.active();
+                    let wait = backoff.next(e.retry_after).max(source.every());
+                    if !was_backing_off {
+                        log(format_args!("data: {}: {e}; backing off, trying again in {}", source.kind, brief(wait)));
+                    }
+                    wait
+                } else {
+                    if failing.as_ref() != Some(&e.message) {
+                        log(format_args!("data: {}: {e}", source.kind));
+                    }
+                    source.every()
+                };
+                status.insert(source.kind.clone(), Status { result: Err(e.message.clone()), updated_at });
+                *failing = Some(e.message);
+                wait
             }
         }
     }
@@ -514,7 +695,7 @@ impl Hub {
                 }
             }
         }
-        sources::poll(&source, &mut sources::State::default())
+        sources::poll(&source, &mut sources::State::default()).map_err(|e| e.message)
     }
 
     /// Re-reads the plugins folder, and restarts the plugins that are on, so a changed command or
@@ -693,9 +874,9 @@ mod tests {
     #[test]
     fn staleness() {
         let store = Store::default();
-        let minute = Duration::from_secs(60);
-        store.put_at("pc", minute, vec![("pc.cpu.load".into(), Value::Number(12.0))], now());
-        store.put_at("pc", minute, vec![("pc.old".into(), Value::Number(1.0))], now() - TimeDelta::seconds(181));
+        let window = source("pc", Some(60.0)).stale_after(); // 3 x interval
+        store.put_at("pc", window, vec![("pc.cpu.load".into(), Value::Number(12.0))], now());
+        store.put_at("pc", window, vec![("pc.old".into(), Value::Number(1.0))], now() - TimeDelta::seconds(181));
         let lookup = |key: &str| store.get(key, now());
         assert_eq!(fill("{pc.cpu.load:d}% {pc.old} {pc.old|stale}", lookup, now()), "12% -- stale");
         // fresh until 3 x interval
@@ -705,13 +886,113 @@ mod tests {
         assert_eq!(listed, [("pc.cpu.load".into(), false), ("pc.old".into(), true), ("time".into(), false)]);
     }
 
+    fn source(kind: &str, interval: Option<f64>) -> Source {
+        Source { kind: kind.into(), interval, ..Source::default() }
+    }
+
+    #[test]
+    fn claude_values_last_an_hour() {
+        let hour = Duration::from_secs(3600);
+        assert_eq!(source("claude", None).stale_after(), hour);
+        assert_eq!(source("claude", Some(60.0)).stale_after(), hour); // not 3 x interval
+        assert_eq!(source("pc", Some(5.0)).stale_after(), Duration::from_secs(15));
+        assert_eq!(source("homeassistant", None).stale_after(), Duration::from_secs(180));
+        let store = Store::default();
+        let claude = source("claude", None);
+        store.put_at("claude", claude.stale_after(), vec![("claude.week".into(), Value::Number(94.0))], now());
+        assert!(store.get("claude.week", now() + TimeDelta::minutes(59)).is_some());
+        assert!(store.get("claude.week", now() + TimeDelta::minutes(61)).is_none());
+        // Claude backs off on any error, the others only when told to wait
+        let plain = sources::Failure::from("connection refused");
+        let throttled = sources::Failure::from("HTTP 429 Too Many Requests");
+        assert!(claude.backs_off(&plain) && claude.backs_off(&throttled));
+        assert!(!source("homeassistant", None).backs_off(&plain));
+        assert!(source("homeassistant", None).backs_off(&throttled));
+        assert!(source("weather", None).backs_off(&sources::Failure::from("503 Service Unavailable")));
+    }
+
+    #[test]
+    fn backoff_schedule() {
+        let mut b = Backoff::default();
+        assert!(!b.active());
+        let minutes: Vec<u64> = (0..7).map(|_| b.next(None).as_secs() / 60).collect();
+        assert_eq!(minutes, [2, 4, 8, 16, 30, 30, 30]);
+        assert!(b.active());
+        b.reset();
+        assert!(!b.active());
+        assert_eq!(b.next(None), Duration::from_secs(120));
+        // Retry-After wins, within reason, and still counts as a failure
+        assert_eq!(b.next(Some(Duration::from_secs(45))), Duration::from_secs(45));
+        assert_eq!(b.next(Some(Duration::from_secs(90_000))), RETRY_AFTER_MAX);
+        assert_eq!(b.next(None), Duration::from_secs(16 * 60));
+        assert_eq!(brief(Duration::from_secs(45)), "45s");
+        assert_eq!(brief(Duration::from_secs(120)), "2m");
+        assert_eq!(brief(Duration::from_secs(5400)), "1h 30m");
+    }
+
+    #[test]
+    fn first_poll_waits_for_fresh_values() {
+        let every = Duration::from_secs(300);
+        assert_eq!(first_poll_delay(None, every, now()), Duration::ZERO);
+        assert_eq!(first_poll_delay(Some(now() - TimeDelta::seconds(100)), every, now()), Duration::from_secs(200));
+        assert_eq!(first_poll_delay(Some(now() - TimeDelta::seconds(300)), every, now()), Duration::ZERO);
+        assert_eq!(first_poll_delay(Some(now() - TimeDelta::hours(2)), every, now()), Duration::ZERO);
+        assert_eq!(first_poll_delay(Some(now() + TimeDelta::hours(1)), every, now()), Duration::ZERO); // a clock gone backwards
+    }
+
+    #[test]
+    fn last_values_round_trip() {
+        let file = std::env::temp_dir().join(format!("wvplay-last-values-{}.json", std::process::id()));
+        let store = Store::default();
+        let claude = source("claude", None);
+        let resets = Utc.with_ymd_and_hms(2026, 10, 14, 22, 0, 0).unwrap();
+        let claude_at = now() - TimeDelta::minutes(50);
+        store.put_at("claude", claude.stale_after(), vec![
+            ("claude.week".into(), Value::Number(94.0)),
+            ("claude.week_severity".into(), Value::Text("critical".into())),
+            ("claude.week_resets".into(), Value::Time(resets)),
+            ("claude.week_resets_in".into(), Value::Until(resets)),
+        ], claude_at);
+        store.put_at("pc", Duration::from_secs(15), vec![("pc.cpu.load".into(), Value::Number(12.5))], now() - TimeDelta::seconds(20));
+        store.put_at("homeassistant", Duration::from_secs(180), vec![("ha.x".into(), Value::Number(1.0))], now());
+        store.save(&file).unwrap();
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(!text.contains("token") && !text.contains("time\":{"), "{text}");
+
+        // only the sources still set up come back, with their real times and rules
+        let again = Store::default();
+        let loaded = again.load(&file, |kind| match kind {
+            "claude" => Some(claude.stale_after()),
+            "pc" => Some(Duration::from_secs(15)),
+            _ => None,
+        });
+        std::fs::remove_file(&file).unwrap();
+        assert_eq!(loaded, [("claude".to_string(), claude_at), ("pc".to_string(), now() - TimeDelta::seconds(20))]);
+        assert_eq!(again.get("claude.week", now()), Some(Value::Number(94.0)));
+        assert_eq!(again.get("claude.week_severity", now()), Some(Value::Text("critical".into())));
+        assert_eq!(again.get("claude.week_resets", now()), Some(Value::Time(resets)));
+        assert_eq!(again.get("claude.week_resets_in", now()), Some(Value::Until(resets)));
+        assert_eq!(again.get("ha.x", now()), None);
+        // the ages carried over: claude is fresh for 10 more minutes, pc's 20 s old value is already stale
+        assert!(again.get("claude.week", now() + TimeDelta::minutes(9)).is_some());
+        assert!(again.get("claude.week", now() + TimeDelta::minutes(11)).is_none());
+        let listed: Vec<(String, DateTime<Utc>, bool)> = again.list(now()).into_iter()
+            .filter(|(k, ..)| k != "time").map(|(k, _, at, stale, _)| (k, at, stale)).collect();
+        assert_eq!(listed[0], ("claude.week".to_string(), claude_at, false));
+        assert_eq!(listed[4], ("pc.cpu.load".to_string(), now() - TimeDelta::seconds(20), true));
+        // a missing or broken file is nothing
+        assert!(Store::default().load(&file, |_| Some(Duration::from_secs(1))).is_empty());
+    }
+
     #[test]
     fn config() {
         let c: Config = serde_json::from_str(r#"{ "sources": [ { "type": "claude", "interval": 10 },
             { "type": "pc", "interval": 1, "hwinfo": true, "enabled": false }, { "type": "homeassistant" } ] }"#).unwrap();
         assert_eq!(c.api_port, DEFAULT_PORT);
         let every: Vec<u64> = c.sources.iter().map(|s| s.every().as_secs()).collect();
-        assert_eq!(every, [30, 5, 60]);
+        assert_eq!(every, [60, 5, 60]);
+        let claude: Source = serde_json::from_str(r#"{ "type": "claude" }"#).unwrap();
+        assert_eq!(claude.every().as_secs(), 300);
         assert!(c.sources[0].enabled && !c.sources[1].enabled && c.sources[1].hwinfo);
         // a plugin's settings ride along, and the manifest's interval is the default
         let s: Source = serde_json::from_str(r#"{ "type": "weather", "latitude": 59.9, "units": "celsius" }"#).unwrap();

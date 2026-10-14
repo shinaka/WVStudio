@@ -26,35 +26,94 @@ pub struct State {
     cpu: Option<[u64; 3]>,
 }
 
-pub fn poll(source: &Source, state: &mut State) -> Result<Polled, String> {
+/// Why a poll failed: the message (never a token or a header), the HTTP status when there was one, and
+/// how long the server asked us to wait (`Retry-After`), so the Hub can back off.
+#[derive(Debug, PartialEq)]
+pub struct Failure {
+    pub message: String,
+    pub status: Option<u16>,
+    pub retry_after: Option<Duration>,
+}
+
+impl Failure {
+    /// Whether the server asked for a pause: 429 (too many requests) or 503 (unavailable).
+    pub fn throttled(&self) -> bool {
+        matches!(self.status, Some(429 | 503))
+    }
+}
+
+/// A plain message, with a 429 or 503 picked out of it when a plugin's error names one.
+impl From<String> for Failure {
+    fn from(message: String) -> Failure {
+        let status = message
+            .split(|c: char| !c.is_ascii_digit())
+            .filter_map(|word| word.parse::<u16>().ok())
+            .find(|code| matches!(code, 429 | 503));
+        Failure { message, status, retry_after: None }
+    }
+}
+
+impl From<&str> for Failure {
+    fn from(message: &str) -> Failure {
+        Failure::from(message.to_string())
+    }
+}
+
+impl std::fmt::Display for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+pub fn poll(source: &Source, state: &mut State) -> Result<Polled, Failure> {
     match source.kind.as_str() {
         "claude" => Ok(Polled { values: claude()?, notes: Vec::new() }),
         "pc" => Ok(pc(source.hwinfo, state)),
         "homeassistant" => homeassistant(source),
         "time" => Ok(Polled { values: Vec::new(), notes: Vec::new() }), // always there, never polled
         other => match crate::catalog::manifest(other) {
-            Some(manifest) => crate::plugin::poll(source, &manifest),
-            None => Err(format!("unknown source type {other:?}")),
+            Some(manifest) => crate::plugin::poll(source, &manifest).map_err(Failure::from),
+            None => Err(format!("unknown source type {other:?}").into()),
         },
     }
 }
 
 /// A GET, as text. Errors say what failed (the status, say), never the headers.
-fn get(url: &str, headers: &[(&str, &str)]) -> Result<String, String> {
-    let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(20))).build().into();
+fn get(url: &str, headers: &[(&str, &str)]) -> Result<String, Failure> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(20)))
+        .http_status_as_error(false)
+        .build()
+        .into();
     let mut request = agent.get(url);
     for (name, value) in headers {
         request = request.header(*name, *value);
     }
-    let mut reply = request.call().map_err(|e| e.to_string())?;
-    reply.body_mut().with_config().limit(64 << 20).read_to_string().map_err(|e| e.to_string())
+    let mut reply = request.call().map_err(|e| Failure::from(e.to_string()))?;
+    let status = reply.status();
+    if !status.is_success() {
+        let retry_after = reply.headers().get("retry-after").and_then(|v| v.to_str().ok()).and_then(|s| retry_after(s, Utc::now()));
+        let reason = status.canonical_reason().map(|r| format!(" {r}")).unwrap_or_default();
+        return Err(Failure { message: format!("HTTP {}{reason}", status.as_u16()), status: Some(status.as_u16()), retry_after });
+    }
+    reply.body_mut().with_config().limit(64 << 20).read_to_string().map_err(|e| Failure::from(e.to_string()))
+}
+
+/// A `Retry-After` header: seconds, or an HTTP date (RFC 2822), as how long to wait from `now`.
+pub fn retry_after(header: &str, now: DateTime<Utc>) -> Option<Duration> {
+    let header = header.trim();
+    if let Ok(secs) = header.parse::<u64>() {
+        return Some(Duration::from_secs(secs));
+    }
+    let at = DateTime::parse_from_rfc2822(header).ok()?.with_timezone(&Utc);
+    Some((at - now).to_std().unwrap_or(Duration::ZERO))
 }
 
 const USAGE: &str = "https://api.anthropic.com/api/oauth/usage";
 
 /// Claude plan usage, from the endpoint Claude Code's /usage uses, with Claude Code's own login. The
 /// login is only read: Claude Code renews it whenever it runs.
-fn claude() -> Result<Vec<(String, Value)>, String> {
+fn claude() -> Result<Vec<(String, Value)>, Failure> {
     let home = std::env::var_os("USERPROFILE").ok_or("USERPROFILE isn't set")?;
     let file = PathBuf::from(home).join(".claude").join(".credentials.json");
     let login: Json = std::fs::read(&file)
@@ -68,7 +127,7 @@ fn claude() -> Result<Vec<(String, Value)>, String> {
     }
     let reply = get(USAGE, &[("Authorization", &format!("Bearer {token}")), ("anthropic-beta", "oauth-2025-04-20"),
                              ("User-Agent", "wvplay")])?;
-    let usage: Json = serde_json::from_str(&reply).map_err(|_| "the usage reply isn't JSON")?;
+    let usage: Json = serde_json::from_str(&reply).map_err(|_| Failure::from("the usage reply isn't JSON"))?;
     Ok(claude_values(&usage))
 }
 
@@ -103,7 +162,7 @@ fn claude_values(usage: &Json) -> Vec<(String, Value)> {
     values
 }
 
-fn homeassistant(source: &Source) -> Result<Polled, String> {
+fn homeassistant(source: &Source) -> Result<Polled, Failure> {
     let url = source.url.trim().trim_end_matches('/');
     if url.is_empty() {
         return Err("no URL set".into());
@@ -112,7 +171,7 @@ fn homeassistant(source: &Source) -> Result<Polled, String> {
         return Err("no token set".into());
     }
     let reply = get(&format!("{url}/api/states"), &[("Authorization", &format!("Bearer {}", source.token))])?;
-    let states: Json = serde_json::from_str(&reply).map_err(|_| "the states reply isn't JSON")?;
+    let states: Json = serde_json::from_str(&reply).map_err(|_| Failure::from("the states reply isn't JSON"))?;
     Ok(ha_values(&states, &source.entities))
 }
 
@@ -445,6 +504,22 @@ mod tests {
         // anything missing is just left out
         assert!(claude_values(&serde_json::json!({ "five_hour": { "utilization": null } })).is_empty());
         assert!(claude_values(&serde_json::json!([])).is_empty());
+    }
+
+    #[test]
+    fn retry_after_header() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 14, 10, 0, 0).unwrap();
+        assert_eq!(retry_after("120", now), Some(Duration::from_secs(120)));
+        assert_eq!(retry_after(" 0 ", now), Some(Duration::ZERO));
+        assert_eq!(retry_after("Wed, 14 Oct 2026 10:05:00 GMT", now), Some(Duration::from_secs(300)));
+        assert_eq!(retry_after("Wed, 14 Oct 2026 09:05:00 GMT", now), Some(Duration::ZERO)); // already past
+        assert_eq!(retry_after("soon", now), None);
+        assert_eq!(retry_after("", now), None);
+        // a plugin's message names its status; the rest don't
+        assert!(Failure::from("HTTP 429 from the API".to_string()).throttled());
+        assert_eq!(Failure::from("503 Service Unavailable").status, Some(503));
+        assert_eq!(Failure::from("exited with code 4290").status, None);
+        assert!(!Failure::from("connection refused").throttled());
     }
 
     #[test]

@@ -252,7 +252,7 @@ mod tests {
             assert!(pc.provides.iter().any(|p| p.key == key), "{key}");
         }
         let claude = all.iter().find(|m| m.id == "claude").unwrap();
-        assert_eq!(claude.interval.min, 30.0);
+        assert_eq!(claude.interval.min, 60.0);
         for key in ["claude.session", "claude.session_resets", "claude.session_resets_in", "claude.week_severity", "claude.week.*"] {
             assert!(claude.provides.iter().any(|p| p.key == key), "{key}");
         }

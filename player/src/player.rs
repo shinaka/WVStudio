@@ -605,7 +605,7 @@ mod tests {
         }
         let s = Scratch::new("live");
         let plain: Vec<Vec<u8>> = s.player().current.frames.frames.iter().map(|f| f.jpeg.clone()).collect();
-        let set = |n: f64| data::store().put("wvtest", Duration::from_secs(60), vec![("wvtest.n".into(), data::Value::Number(n))]);
+        let set = |n: f64| data::store().put("wvtest", Duration::from_secs(180), vec![("wvtest.n".into(), data::Value::Number(n))]);
         set(1.0);
         s.write("n={wvtest.n}");
         let mut p = s.player();
