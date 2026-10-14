@@ -24,7 +24,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 import numpy as np
-from PIL import Image, ImageColor
+from PIL import Image, ImageColor, ImageFont
 
 import wv
 
@@ -276,7 +276,8 @@ def safe_name(name):
 # --- Playlist and player -------------------------------------------------------------
 #
 # The playlist is playlist/playlist.json plus one 1600x720 PNG (animated PNG for animations) per piece, which
-# is what player/ (wvplay) plays. wvplay re-reads the playlist whenever it changes, so editing here is live.
+# is what player/ (wvplay) plays, drawing text over it (docs/widgets.md). wvplay re-reads the playlist whenever
+# it changes, so editing here is live.
 
 PLAYLIST_DIR = wv.ROOT / "playlist"
 PLAYLIST = PLAYLIST_DIR / "playlist.json"
@@ -288,18 +289,27 @@ RIVALS = re.compile(r"TRCC|InfoPanel|USBLCD", re.I)  # other programs that drive
 rivals_seen = (0.0, [])
 DEFAULT_SECONDS = 30
 thumbs = {}  # (file, mtime) -> PNG bytes
+# Requests run on their own threads, and text edits save as they happen: one change to playlist.json at a time.
+playlist_lock = threading.RLock()
+
+
+def read_json():
+    """playlist.json as it is, or {} before there is one."""
+    with playlist_lock:
+        try:
+            return json.loads(PLAYLIST.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {}
 
 
 def read_playlist():
-    """The playlist's items: file and seconds (what the player reads), and for re-editing the original's
-    name, where it's kept (`source`) and the page's `layout`."""
-    try:
-        data = json.loads(PLAYLIST.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        data = {}
+    """The playlist's items: file and seconds (what the player reads), each piece's own text (`widgets`), and
+    for re-editing the original's name, where it's kept (`source`) and the page's `layout`. Plus the global
+    layer of text over every piece (`overlay`). See docs/widgets.md."""
+    data = read_json()
     items = [{**i, "seconds": i.get("seconds", DEFAULT_SECONDS)}
              for i in data.get("items", []) if (PLAYLIST_DIR / i["file"]).is_file()]
-    return {"seconds": data.get("seconds", DEFAULT_SECONDS), "items": items}
+    return {"seconds": data.get("seconds", DEFAULT_SECONDS), "overlay": data.get("overlay", []), "items": items}
 
 
 def keep_source(src):
@@ -324,16 +334,22 @@ def tidy_sources(items):
                 path.unlink(missing_ok=True)
 
 
-def write_playlist(items):
-    PLAYLIST_DIR.mkdir(exist_ok=True)
-    tmp = PLAYLIST.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"seconds": DEFAULT_SECONDS, "items": items}, indent=2), encoding="utf-8")
-    os.replace(tmp, PLAYLIST)  # all at once, so the player never reads half a file
+def write_playlist(items=None, **keys):
+    """Writes playlist.json with these items (else the ones there) and top-level keys (`overlay`), keeping every
+    other key as it is: ones this version doesn't know about too."""
+    with playlist_lock:
+        data = {"seconds": DEFAULT_SECONDS, **read_json(), **keys}
+        data["items"] = data.get("items", []) if items is None else items
+        PLAYLIST_DIR.mkdir(exist_ok=True)
+        tmp = PLAYLIST.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        os.replace(tmp, PLAYLIST)  # all at once, so the player never reads half a file
 
 
 def playlist_state():
     items = []
-    for item in read_playlist()["items"]:
+    playlist = read_playlist()
+    for item in playlist["items"]:
         path = PLAYLIST_DIR / item["file"]
         if path.suffix.lower() in VIDEO_TYPES:
             frames = "video"
@@ -341,7 +357,34 @@ def playlist_state():
             with Image.open(path) as im:
                 frames = getattr(im, "n_frames", 1)
         items.append({**item, "frames": frames, "version": int(path.stat().st_mtime)})
-    return {"items": items, **player_state()}
+    return {"items": items, "overlay": playlist["overlay"], **player_state()}
+
+
+def widget_list(value):
+    """Text widgets from the page, checked only for shape: the player skips any it doesn't understand."""
+    if not isinstance(value, list) or not all(isinstance(w, dict) for w in value):
+        raise ValueError("widgets must be a list of objects")
+    return value
+
+
+def save_overlay(req):
+    """The global layer, the text over every piece: saved as it's edited."""
+    overlay = widget_list(req.get("overlay"))
+    write_playlist(overlay=overlay)
+    return {"overlay": overlay}
+
+
+def save_widgets(req):
+    """One piece's own text, saved as it's edited. Only playlist.json changes: the piece's art isn't made again."""
+    widgets = widget_list(req.get("widgets"))
+    with playlist_lock:
+        items = read_playlist()["items"]
+        item = next((i for i in items if i["file"] == Path(req["file"]).name), None)
+        if not item:
+            raise ValueError("that piece isn't in the playlist any more")
+        item["widgets"] = widgets
+        write_playlist(items)
+    return {"file": item["file"]}
 
 
 def add_to_playlist(req):
@@ -359,31 +402,35 @@ def add_to_playlist(req):
     else:
         wv.write_png(flat, durations, bg, tmp, place)
     os.replace(tmp, PLAYLIST_DIR / file)
-    items = read_playlist()["items"]
-    for other in [i for i in items if Path(i["file"]).stem == stem and i["file"] != file]:
-        items.remove(other)  # same name, other kind (a still replaced by a video, say)
-        (PLAYLIST_DIR / other["file"]).unlink(missing_ok=True)
     entry = {"file": file, "seconds": max(1, int(req.get("seconds") or DEFAULT_SECONDS)), "name": src.name,
              "source": source, "layout": req.get("layout")}
-    existing = next((i for i in items if i["file"] == file), None)
-    if existing:
-        existing.update(entry)  # in place: it keeps its spot in the playlist
-    else:
-        items.append(entry)
-    write_playlist(items)
-    tidy_sources(items)
+    if "widgets" in req:
+        entry["widgets"] = widget_list(req["widgets"])  # the piece's own text: the player draws it
+    with playlist_lock:
+        items = read_playlist()["items"]
+        for other in [i for i in items if Path(i["file"]).stem == stem and i["file"] != file]:
+            items.remove(other)  # same name, other kind (a still replaced by a video, say)
+            (PLAYLIST_DIR / other["file"]).unlink(missing_ok=True)
+        existing = next((i for i in items if i["file"] == file), None)
+        if existing:
+            existing.update(entry)  # in place: it keeps its spot in the playlist
+        else:
+            items.append(entry)
+        write_playlist(items)
+        tidy_sources(items)
     return {**playlist_state(), "added": file, "replaced": existing is not None}
 
 
 def save_playlist(req):
     """The page's edited list: new order, times, and anything removed (whose files are deleted)."""
-    old = {i["file"]: i for i in read_playlist()["items"]}
-    items = [{**old[name], "seconds": max(1, min(86400, int(i["seconds"])))}
-             for i in req["items"] if (name := Path(i["file"]).name) in old]
-    write_playlist(items)
-    for gone in old.keys() - {i["file"] for i in items}:
-        (PLAYLIST_DIR / gone).unlink(missing_ok=True)
-    tidy_sources(items)
+    with playlist_lock:
+        old = {i["file"]: i for i in read_playlist()["items"]}
+        items = [{**old[name], "seconds": max(1, min(86400, int(i["seconds"])))}
+                 for i in req["items"] if (name := Path(i["file"]).name) in old]
+        write_playlist(items)
+        for gone in old.keys() - {i["file"] for i in items}:
+            (PLAYLIST_DIR / gone).unlink(missing_ok=True)
+        tidy_sources(items)
     return playlist_state()
 
 
@@ -394,13 +441,15 @@ def edit_piece(req):
     if not item:
         raise ValueError("that piece isn't in the playlist any more")
     kept = item.get("source") and PLAYLIST_DIR / item["source"]
+    widgets = item.get("widgets", [])  # its text: saved as it's edited, so newer than the layout
     if kept and kept.is_file():
         return {"source": open_source(kept, item.get("name") or kept.name), "layout": item.get("layout"),
-                "original": True}
+                "widgets": widgets, "original": True}
     # the finished piece fills the screen as it is; in-between sizes, since whole-number ones jump past the screen
     as_is = {"factor": 1, "scale": 1, "fractional": True, "smooth": False, "x": 0, "y": 0, "fill": "solid",
              "bg": "#000000"}
-    return {"source": open_source(PLAYLIST_DIR / item["file"], item["file"]), "layout": as_is, "original": False}
+    return {"source": open_source(PLAYLIST_DIR / item["file"], item["file"]), "layout": as_is, "widgets": widgets,
+            "original": False}
 
 
 def thumbnail(file):
@@ -509,6 +558,42 @@ def stop_player():
     return player_state()
 
 
+# --- Fonts, for text widgets ------------------------------------------------------------
+
+FONT_DIRS = [Path(r"C:\Windows\Fonts"),
+             Path(os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\Windows\Fonts")),  # fonts installed per user
+             wv.ROOT / "fonts"]  # the project's own
+DEFAULT_FONT = FONT_DIRS[0] / "segoeui.ttf"  # what text uses when its font is missing, in the player too
+fonts_seen = (None, [], {})  # (the folders' modified times, the list, normcase(path) -> path)
+
+
+def font_list():
+    """[{path, family, style}] for the .ttf and .otf fonts in FONT_DIRS, by name. Cached until a folder changes,
+    as it does when a font is installed or removed."""
+    global fonts_seen
+    stamp = tuple(d.stat().st_mtime if d.is_dir() else None for d in FONT_DIRS)
+    if stamp != fonts_seen[0]:
+        found = []
+        for d in FONT_DIRS:
+            for path in sorted(d.iterdir()) if d.is_dir() else []:
+                if path.suffix.lower() not in (".ttf", ".otf"):
+                    continue
+                try:
+                    family, style = ImageFont.truetype(str(path)).getname()
+                except (OSError, ValueError):
+                    continue  # not a font that can be read
+                found.append({"path": str(path), "family": family or path.stem, "style": style or ""})
+        found.sort(key=lambda f: (f["family"].lower(), f["style"].lower(), f["path"].lower()))
+        fonts_seen = (stamp, found, {os.path.normcase(f["path"]): Path(f["path"]) for f in found})
+    return fonts_seen[1]
+
+
+def font_file(path):
+    """The font at `path` if font_list lists it: no other file is served."""
+    font_list()
+    return fonts_seen[2].get(os.path.normcase(path))
+
+
 # --- Server ----------------------------------------------------------------------
 
 class Handler(BaseHTTPRequestHandler):
@@ -574,7 +659,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
         elif url.path == "/api/config":
             self.json({"screen": [wv.SCREEN_W, wv.SCREEN_H], "safe": wv.SAFE, "camera": wv.CAMERA_HOLE,
-                       "initial": initial})
+                       "font": str(DEFAULT_FONT), "initial": initial})
         elif (m := re.fullmatch(r"/api/frame/(\w+)/(\d+)\.png", url.path)) and m[1] in sources:
             src, i = sources[m[1]], int(m[2])
             if i < len(src.frames):
@@ -588,6 +673,10 @@ class Handler(BaseHTTPRequestHandler):
             self.json(player_state())
         elif (m := re.fullmatch(r"/api/thumb/([\w .()-]+\.(?:png|mp4))", unquote(url.path))) and (PLAYLIST_DIR / m[1]).is_file():
             self.send(200, thumbnail(m[1]), "image/png")
+        elif url.path == "/api/fonts":
+            self.json(font_list())
+        elif url.path == "/api/font" and (path := font_file(parse_qs(url.query).get("path", [""])[0])):
+            self.send_file(path, "font/otf" if path.suffix.lower() == ".otf" else "font/ttf")
         else:
             self.send(404, b"not found", "text/plain")
 
@@ -614,6 +703,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.json(save_playlist(json.loads(body)))
             elif url.path == "/api/playlist/edit":
                 self.json(edit_piece(json.loads(body)))
+            elif url.path == "/api/playlist/overlay":
+                self.json(save_overlay(json.loads(body)))
+            elif url.path == "/api/playlist/widgets":
+                self.json(save_widgets(json.loads(body)))
             elif url.path == "/api/player/start":
                 self.json(start_player())
             elif url.path == "/api/player/stop":

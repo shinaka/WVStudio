@@ -5,6 +5,7 @@ edition = "2024"
 license = "MIT"
 
 [dependencies]
+fontdue = "0.9.4"
 image = { version = "0.25", default-features = false, features = ["png", "gif", "webp"] }
 jpeg-encoder = { version = "0.7.1", features = ["simd"] }
 nusb = "0.2.7"

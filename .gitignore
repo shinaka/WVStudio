@@ -2,6 +2,7 @@
 .cache/
 __pycache__/
 player/target/
+player/target-agent/
 out/
 
 # your own art, playlist and settings

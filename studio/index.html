@@ -40,15 +40,16 @@
   .row { display: flex; gap: 6px; align-items: center; margin: 7px 0; flex-wrap: wrap; }
   .row > .label { color: var(--muted); width: 52px; }
   label { display: inline-flex; gap: 6px; align-items: center; }
-  button, select, input { font: inherit; color: var(--text); background: var(--raised);
-                          border: 1px solid var(--line); border-radius: 6px; padding: 4px 9px; }
+  button, select, input, textarea { font: inherit; color: var(--text); background: var(--raised);
+                                    border: 1px solid var(--line); border-radius: 6px; padding: 4px 9px; }
   button { cursor: pointer; white-space: nowrap; }
   button:hover:not(:disabled) { border-color: #4a5058; }
   button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 650; }
   button[aria-pressed="true"] { background: #3a2c0a; border-color: var(--accent); color: var(--accent); }
   button:disabled, label:has(input:disabled) { opacity: .45; cursor: default; }
   input[type=number] { width: 78px; }
-  input[type=text] { width: 100%; }
+  input[type=text], input[type=search] { width: 100%; }
+  textarea { display: block; width: 100%; resize: vertical; }
   input[type=color] { width: 42px; height: 29px; padding: 2px 3px; }
   input[type=checkbox] { accent-color: var(--accent); margin: 0; }
   .seg { display: inline-flex; flex-wrap: wrap; }
@@ -78,6 +79,16 @@
   #playlist .pl-meta input { width: 58px; padding: 1px 5px; }
   #playlist .pl-buttons { grid-row: span 2; display: flex; gap: 2px; }
   #playlist .pl-buttons button { padding: 2px 7px; }
+  #widgets { list-style: none; margin: 8px 0; padding: 0; display: grid; gap: 4px; }
+  #widgets li { display: flex; gap: 8px; justify-content: space-between; cursor: pointer;
+                background: var(--raised); border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px; }
+  #widgets li:hover { border-color: #4a5058; }
+  #widgets li.selected { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+  #widgets li.empty { color: var(--muted); background: none; border-style: dashed; cursor: default; }
+  #widgets .w-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #textProps { margin-top: 8px; }
+  #textProps input[type=number] { width: 62px; }
+  #wFont { display: block; width: 100%; padding: 2px; }
   kbd { font: 11px ui-monospace, monospace; background: var(--raised); border: 1px solid var(--line);
         border-radius: 4px; padding: 0 4px; }
   .keys { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; }
@@ -180,6 +191,47 @@
   </section>
 
   <section>
+    <h2>Text</h2>
+    <div class="seg">
+      <button data-layer="piece" title="Text on this piece only">This piece</button><button data-layer="global" title="The global layer: text drawn over every piece in the playlist">On top of everything</button>
+    </div>
+    <div id="textNote" class="row small muted"></div>
+    <ul id="widgets"></ul>
+    <div class="row">
+      <button id="addText">Add text</button>
+      <button id="removeText">Remove</button>
+    </div>
+    <div id="textProps" hidden>
+      <textarea id="wText" rows="3" spellcheck="false" title="Each line of text on its own line"></textarea>
+      <div class="row"><input id="wFontFilter" type="search" spellcheck="false" placeholder="Font: type to filter"></div>
+      <select id="wFont" size="5" title="Font"></select>
+      <div class="row">
+        <label title="Size in screen pixels (the em size)">Size <input id="wSize" type="number" min="1" step="1"></label>
+        <input id="wColor" type="color" title="Colour">
+        <label>Opacity <input id="wOpacity" type="number" min="0" max="100" step="5"> %</label>
+      </div>
+      <div class="row">
+        <label title="Where the text is anchored: see Across and Down">X <input id="wX" type="number" step="1"></label>
+        <label>Y <input id="wY" type="number" step="1"></label>
+        <label title="Distance between lines, as a multiple of the size">Lines × <input id="wLineHeight" type="number" min="0.1" step="0.05"></label>
+      </div>
+      <div class="row"><span class="label">Across</span><span class="seg" id="wAlign">
+        <button data-value="left" title="Lines start at X">Left</button><button data-value="center" title="Lines are centred on X">Centre</button><button data-value="right" title="Lines end at X">Right</button>
+      </span></div>
+      <div class="row"><span class="label">Down</span><span class="seg" id="wValign">
+        <button data-value="top" title="The text's top is at Y">Top</button><button data-value="middle" title="The text's middle is at Y">Middle</button><button data-value="bottom" title="The text's bottom is at Y">Bottom</button>
+      </span></div>
+      <div class="row">
+        <span class="label">Outline</span>
+        <input id="wOutlineColor" type="color" title="Outline colour">
+        <label title="Outline thickness in screen pixels, 0 for none"><input id="wOutlineWidth" type="number" min="0" step="1"> px</label>
+      </div>
+      <div class="row"><label title="No smoothed edges: every pixel all or nothing. For pixel fonts.">
+        <input id="wCrisp" type="checkbox"> Crisp edges (pixel fonts)</label></div>
+    </div>
+  </section>
+
+  <section>
     <h2>Playlist</h2>
     <div class="row"><input id="name" type="text" spellcheck="false" placeholder="name"></div>
     <div class="row">
@@ -218,9 +270,11 @@
     <div class="keys">
       <span>Drag</span><span>move (Shift: one direction only)</span>
       <span>Drag a corner</span><span>resize, keeping its shape</span>
+      <span>Click text</span><span>select it, in the layer Text is editing; drag to move it. Click the art to deselect.</span>
       <span><kbd>Alt</kbd></span><span>while dragging: don't snap to edges and curve lines</span>
       <span>Click a piece</span><span>in the playlist: change its layout</span>
-      <span><kbd>←</kbd><kbd>→</kbd><kbd>↑</kbd><kbd>↓</kbd></span><span>nudge one snap step (Shift: ×10)</span>
+      <span><kbd>←</kbd><kbd>→</kbd><kbd>↑</kbd><kbd>↓</kbd></span><span>nudge the selected text, or the art when no text is selected, one snap step (Shift: ×10)</span>
+      <span><kbd>Esc</kbd></span><span>deselect the text</span>
       <span><kbd>+</kbd> <kbd>-</kbd></span><span>bigger / smaller</span>
       <span><kbd>R</kbd> <kbd>F</kbd></span><span>rotate / flip</span>
       <span><kbd>Space</kbd> <kbd>,</kbd> <kbd>.</kbd></span><span>play / step frames</span>
@@ -241,7 +295,8 @@ let CAMERA = null;  // the camera punch-hole, {x, y, r}: no pixels there
 const M = 140;   // off-screen margin shown around the screen, in screen px
 const GROW = 4;  // placed art can be up to this many screens wide or tall
 const DEFAULTS = { factor: 1, scale: 1, fractional: false, smooth: false, x: 0, y: 0, rotate: 0, flip: false,
-                   fill: "solid", bg: "#000000", snap: "2" };
+                   fill: "solid", bg: "#000000", snap: "2",
+                   widgets: Object.freeze([]) };  // this piece's text: replaced when it changes, never changed in place
 
 let S = { ...DEFAULTS };  // the layout, remembered per image
 let src = null;           // the art: server info plus decoded frames
@@ -412,21 +467,35 @@ function drawOverlay() {
       g.fillText("camera", -8 * css - g.measureText("camera").width, CAMERA.y);
     }
   }
+  const w = selectedWidget(), lay = w && textLayout(w);
+  if (lay) {  // the selected text's block, which snaps like the art, and its anchor point (X, Y)
+    g.strokeStyle = "rgba(120,255,170,.95)";
+    g.setLineDash([4 * css, 3 * css]);
+    g.strokeRect(lay.box.x, lay.box.y, Math.max(lay.box.w, css), lay.box.h);
+    g.setLineDash([]);
+    const ax = num(w.x, 0), ay = num(w.y, 0), arm = 5 * css;
+    g.beginPath();
+    g.moveTo(ax - arm, ay); g.lineTo(ax + arm, ay);
+    g.moveTo(ax, ay - arm); g.lineTo(ax, ay + arm);
+    g.stroke();
+  }
   if (src) {
     const [dw, dh] = placedSize();
     g.strokeStyle = "rgba(124,196,255,.9)";
     g.setLineDash([4 * css, 4 * css]);
     g.strokeRect(S.x, S.y, dw, dh);
     g.setLineDash([]);
-    if (view.snapped) {
-      g.strokeStyle = "#ff4fd8";
-      g.lineWidth = 2 * css;
-      g.beginPath();
-      if (view.snapped.x !== null) { g.moveTo(view.snapped.x, -M); g.lineTo(view.snapped.x, H + M); }
-      if (view.snapped.y !== null) { g.moveTo(-M, view.snapped.y); g.lineTo(W + M, view.snapped.y); }
-      g.stroke();
-      g.lineWidth = css;
-    }
+  }
+  if (view.snapped) {  // while dragging art or text
+    g.strokeStyle = "#ff4fd8";
+    g.lineWidth = 2 * css;
+    g.beginPath();
+    if (view.snapped.x !== null) { g.moveTo(view.snapped.x, -M); g.lineTo(view.snapped.x, H + M); }
+    if (view.snapped.y !== null) { g.moveTo(-M, view.snapped.y); g.lineTo(W + M, view.snapped.y); }
+    g.stroke();
+    g.lineWidth = css;
+  }
+  if (src) {
     const half = 5 * css;  // corner handles for resizing
     g.fillStyle = "#fff";
     g.strokeStyle = "rgba(0,0,0,.85)";
@@ -452,6 +521,10 @@ function draw() {
     const img = scaledFrame(view.frame);
     paint(sctx, img, S.x, S.y, S.fill, S.bg);
     drawGhost(img);
+  }
+  if (S.widgets?.length || overlay.length) {  // the text over it, as the player draws it
+    sctx.setTransform(1, 0, 0, 1, 0, 0);
+    sctx.drawImage(textLayer(), 0, 0);
   }
   drawOverlay();
 }
@@ -546,8 +619,8 @@ function rotate() {
 
 function flip() { S.flip = !S.flip; turned = []; changed(); }
 
-function startLayout() {
-  S = { ...DEFAULTS, factor: src.factor, bg: src.edge };
+function startLayout(widgets = DEFAULTS.widgets) {
+  S = { ...DEFAULTS, factor: src.factor, bg: src.edge, widgets };
   turned = [];
   fitInto(FRONT(), false);
 }
@@ -664,7 +737,7 @@ async function loadVideo(url) {
   return video;
 }
 
-async function useSource(info, layout = null) {
+async function useSource(info, layout = null, widgets = null) {
   const frames = info.video ? [await loadVideo(info.video.url)] : await Promise.all(info.durations.map(async (_, i) => {
     const blob = await (await api(`/api/frame/${info.id}/${i}.png`)).blob();
     return createImageBitmap(blob, { colorSpaceConversion: "none" });
@@ -682,11 +755,15 @@ async function useSource(info, layout = null) {
   const saved = layout || restore();
   if (saved) S = { ...DEFAULTS, ...saved };
   else startLayout();
+  if (widgets) S.widgets = widgets;  // a playlist piece's own text
+  if (!Array.isArray(S.widgets)) S.widgets = DEFAULTS.widgets;
+  if (text.layer === "piece") text.selected = null;
   $("name").value = info.name.replace(/\.[^.]+$/, "");
   $("exportResult").replaceChildren();
   document.body.classList.add("loaded");
   showSource();
   changed();
+  showText();
 }
 
 function placement() {
@@ -694,9 +771,9 @@ function placement() {
   return { width, height, x: S.x, y: S.y, rotate: S.rotate, flip: S.flip, smooth: S.smooth, fill: S.fill, bg: S.bg };
 }
 
-async function postJson(path, body) {
+async function postJson(path, body, opts = {}) {
   const res = await api(path, { method: "POST", headers: { "Content-Type": "application/json" },
-                                body: JSON.stringify(body) });
+                                body: JSON.stringify(body), ...opts });
   const out = await res.json();
   if (!res.ok) throw new Error(out.error || res.statusText);
   return out;
@@ -758,6 +835,7 @@ function make(tag, cls = "", text) {
 function showPlaylist(state = playlistState) {
   playlistState = state;
   playlist = state.items;
+  if (editing && !playlist.some((item) => item.file === editing)) editing = null;  // removed: nothing to save to
   const rows = playlist.map((item, i) => {
     const img = make("img");
     img.src = `/api/thumb/${encodeURIComponent(item.file)}?v=${item.version}`;
@@ -800,6 +878,7 @@ function showPlaylist(state = playlistState) {
     playlist.length > 1 ? `${playlist.length} pieces, ${minutes(total)} round, then it repeats` : "";
   showPlayer(state);
   showAddButton();
+  showText();  // where this piece's text saves to
 }
 
 /** "Update" when the name matches a piece already in the playlist (adding it again replaces that piece). */
@@ -813,8 +892,9 @@ async function editPiece(item) {
   const name = item.file.replace(/\.[^.]+$/, "");
   message(`Opening ${name}…`);
   try {
+    await flush("piece");  // text still to save, perhaps to this piece
     const out = await postJson("/api/playlist/edit", { file: item.file });
-    await useSource(out.source, out.layout);
+    await useSource(out.source, out.layout, out.widgets || []);
     editing = item.file;
     $("name").value = name;
     $("itemSeconds").value = item.seconds;
@@ -859,8 +939,9 @@ async function addToPlaylist() {
   button.disabled = true;
   button.textContent = src.video ? "Adding (about as long as the video)…" : "Adding…";
   try {
+    const { widgets = [], ...layout } = S;  // the text goes as the piece's own `widgets`, which the player draws
     const out = await postJson("/api/playlist/add", { id: src.id, name: $("name").value, place: placement(),
-                                                      layout: S, seconds: parseInt($("itemSeconds").value, 10) || 30 });
+                                                      layout, widgets, seconds: parseInt($("itemSeconds").value, 10) || 30 });
     editing = out.added;
     showPlaylist(out);
     const name = out.added.replace(/\.[^.]+$/, "");
@@ -881,6 +962,327 @@ async function player(action) {
   } catch (err) {
     message(`Couldn't ${action} the player: ${err.message}`, "warn");
     showPlayer(await (await api("/api/player")).json());
+  }
+}
+
+// --- Text ----------------------------------------------------------------------------
+//
+// Text drawn over the art, laid out as docs/widgets.md says so the preview matches the player: this piece's own
+// (S.widgets, kept with the layout and stored as the playlist item's `widgets`) and the global layer over every
+// piece (the playlist's `overlay`), drawn in that order.
+
+let DEFAULT_FONT = "C:\\Windows\\Fonts\\segoeui.ttf";  // replaced from the server
+let overlay = [];        // the global layer
+let fontList = [];       // [{path, family, style}]: the fonts the picker offers
+const fonts = new Map(); // font path (lower case) -> {family, state}: a FontFace per file, loaded when first used
+let fontsArrived = 0;    // counts loads finished, so the text is drawn again
+const text = { layer: "piece", selected: null };  // the layer being edited, and its selected widget's id
+const textCv = document.createElement("canvas"), textCtx = textCv.getContext("2d");  // all the text, drawn once
+// one widget at a time: outline (or everything), and the fill on its own for crisp text
+const glyphs = [0, 1].map(() => document.createElement("canvas").getContext("2d", { willReadFrequently: true }));
+let textKey = "";
+
+const num = (v, fallback) => (typeof v === "number" && Number.isFinite(v) ? v : fallback);
+const hex = (v, fallback) => (/^#[0-9a-f]{6}$/i.test(v) ? v : fallback);
+function layerWidgets(layer = text.layer) { return layer === "global" ? overlay : S.widgets || []; }
+function setLayerWidgets(layer, list) { if (layer === "global") overlay = list; else S.widgets = list; }
+function selectedWidget() { return layerWidgets().find((w) => w.id === text.selected) || null; }
+
+/** A font file as a CSS family, loaded from the studio the first time it's asked for. */
+function fontFace(path) {
+  const key = path.toLowerCase();  // Windows paths
+  let f = fonts.get(key);
+  if (!f) {
+    f = { family: `wv-font-${fonts.size}`, state: "loading" };
+    fonts.set(key, f);
+    const face = new FontFace(f.family, `url("/api/font?path=${encodeURIComponent(path)}")`);
+    face.load().then(() => { document.fonts.add(face); f.state = "ready"; }, () => { f.state = "failed"; })
+      .finally(() => { fontsArrived++; draw(); });
+  }
+  return f;
+}
+
+/** A widget's font family; Segoe UI when its own can't be read, as in the player. Null while it loads, or when
+ *  neither font will do (then the widget isn't drawn). */
+function widgetFamily(w) {
+  for (const path of [typeof w.font === "string" && w.font ? w.font : DEFAULT_FONT, DEFAULT_FONT]) {
+    const f = fontFace(path);
+    if (f.state !== "failed") return f.state === "ready" ? f.family : null;
+  }
+  return null;
+}
+
+/** A text widget laid out (docs/widgets.md, Geometry): each line's text, start, width and baseline, the block's
+ *  box, and the font's ascent and descent. Null for other kinds of widget, and until the font has loaded. */
+function textLayout(w) {
+  const family = w.type === "text" && widgetFamily(w);
+  if (!family) return null;
+  const g = textCtx, size = Math.max(1, num(w.size, 48)), step = size * num(w.line_height, 1.2);
+  const font = `${size}px "${family}"`;
+  g.font = font;
+  g.fontKerning = "normal";
+  const m = g.measureText("x"), ascent = m.fontBoundingBoxAscent, descent = m.fontBoundingBoxDescent;
+  const texts = String(w.text ?? "").split("\n"), height = ascent + descent + (texts.length - 1) * step;
+  const x = num(w.x, 0), y = num(w.y, 0);
+  const top = w.valign === "middle" ? y - height / 2 : w.valign === "bottom" ? y - height : y;
+  const lines = texts.map((t, i) => {
+    const width = g.measureText(t).width;  // the advances, kerned
+    return { text: t, width, baseline: top + ascent + i * step,
+             x: w.align === "center" ? x - width / 2 : w.align === "right" ? x - width : x };
+  });
+  const left = Math.min(...lines.map((l) => l.x)), right = Math.max(...lines.map((l) => l.x + l.width));
+  return { lines, ascent, descent, font, box: { x: left, y: top, w: right - left, h: height } };
+}
+
+/** Crisp text: each pixel all or nothing at 50% coverage, in the one colour drawn there. */
+function threshold(g, x, y, w, h, colour) {
+  const img = g.getImageData(x, y, w, h), d = img.data;
+  const [r, gr, b] = [1, 3, 5].map((i) => parseInt(colour.slice(i, i + 2), 16));
+  for (let i = 0; i < d.length; i += 4) {
+    const on = d[i + 3] >= 128;
+    d[i] = r; d[i + 1] = gr; d[i + 2] = b; d[i + 3] = on ? 255 : 0;
+  }
+  g.putImageData(img, x, y);
+}
+
+/** Draws one widget onto `out`: the outline (the glyphs grown by its width) under the fill, then the two
+ *  together at the widget's opacity. */
+function drawWidget(out, w) {
+  const lay = textLayout(w);
+  if (!lay) return;
+  const o = Math.max(0, num(w.outline?.width, 0)), colour = hex(w.color, "#ffffff");
+  const outline = hex(w.outline?.color, "#000000"), pad = Math.ceil(o + lay.ascent + lay.descent);  // glyphs can overhang
+  const x0 = Math.max(0, Math.floor(lay.box.x - pad)), y0 = Math.max(0, Math.floor(lay.box.y - pad));
+  const x1 = Math.min(W, Math.ceil(lay.box.x + lay.box.w + pad)), y1 = Math.min(H, Math.ceil(lay.box.y + lay.box.h + pad));
+  if (x1 <= x0 || y1 <= y0) return;  // all off the screen
+  const [a, b] = glyphs, bw = x1 - x0, bh = y1 - y0;
+  for (const g of glyphs) {
+    if (g.canvas.width !== W || g.canvas.height !== H) { g.canvas.width = W; g.canvas.height = H; }
+    g.clearRect(x0, y0, bw, bh);
+    Object.assign(g, { font: lay.font, fontKerning: "normal", textAlign: "left", textBaseline: "alphabetic",
+                       lineWidth: 2 * o, lineJoin: "round" });
+  }
+  const fill = (g, c) => { g.fillStyle = c; for (const l of lay.lines) g.fillText(l.text, l.x, l.baseline); };
+  const stroke = (g, c) => { g.strokeStyle = c; for (const l of lay.lines) g.strokeText(l.text, l.x, l.baseline); };
+  if (w.crisp) {
+    if (o > 0) {  // the whole grown shape, then the fill over it, each thresholded
+      stroke(a, outline);
+      fill(a, outline);
+      threshold(a, x0, y0, bw, bh, outline);
+    }
+    fill(b, colour);
+    threshold(b, x0, y0, bw, bh, colour);
+    a.drawImage(b.canvas, x0, y0, bw, bh, x0, y0, bw, bh);
+  } else {
+    if (o > 0) stroke(a, outline);
+    fill(a, colour);
+  }
+  out.globalAlpha = Math.min(1, Math.max(0, num(w.opacity, 1)));
+  out.drawImage(a.canvas, x0, y0, bw, bh, x0, y0, bw, bh);
+  out.globalAlpha = 1;
+}
+
+/** All the text, this piece's then the global layer's, drawn again only when something about it changes. */
+function textLayer() {
+  const key = JSON.stringify([S.widgets, overlay, fontsArrived, W, H]);
+  if (key !== textKey) {
+    textKey = key;
+    textCv.width = W; textCv.height = H;  // which clears it
+    for (const w of [...(S.widgets || []), ...overlay]) drawWidget(textCtx, w);
+  }
+  return textCv;
+}
+
+/** The active layer's widget under the pointer: the selected one anywhere in its box, else the topmost whose
+ *  text is there. */
+function textAt(e) {
+  const [px, py] = screenPoint(e, true), slop = 3 / view.k;
+  const inside = (x, y, w, h, grow) => px >= x - grow && px <= x + w + grow && py >= y - grow && py <= y + h + grow;
+  const list = layerWidgets(), chosen = selectedWidget(), box = chosen && textLayout(chosen)?.box;
+  if (box && inside(box.x, box.y, box.w, box.h, slop)) return chosen;
+  for (let i = list.length - 1; i >= 0; i--) {
+    const w = list[i], lay = textLayout(w), grow = Math.max(0, num(w.outline?.width, 0)) + slop;
+    if (lay?.lines.some((l) => l.width > 0 && inside(l.x, l.baseline - lay.ascent, l.width, lay.ascent + lay.descent, grow)))
+      return w;
+  }
+  return null;
+}
+
+/** Moves the dragged widget, its block's edges snapping to the same lines as the art's. */
+function dragText(e) {
+  const w = drag.widget;
+  let dx = (e.clientX - drag.cx) / view.k, dy = (e.clientY - drag.cy) / view.k;
+  if (e.shiftKey) { if (Math.abs(dx) > Math.abs(dy)) dy = 0; else dx = 0; }
+  let x = snap(drag.x + dx), y = snap(drag.y + dy), edge;
+  view.snapped = { x: null, y: null };
+  const lay = textLayout(w);
+  if (!e.altKey && lay) {
+    const lines = snapLines(), ox = lay.box.x - num(w.x, 0), oy = lay.box.y - num(w.y, 0);  // the box from X, Y
+    if (dx || !e.shiftKey) { [edge, view.snapped.x] = snapSpan(x + ox, lay.box.w, lines.x); x = Math.round(edge - ox); }
+    if (dy || !e.shiftKey) { [edge, view.snapped.y] = snapSpan(y + oy, lay.box.h, lines.y); y = Math.round(edge - oy); }
+  }
+  if (x !== w.x || y !== w.y) { w.x = x; w.y = y; textChanged(); }
+  else drawOverlay();
+}
+
+// Saving, a moment after the last change: the global layer to the playlist, and this piece's text with its layout
+// and, when it's a piece in the playlist, to that piece too (without making its art again).
+const saves = {};  // per kind: {timer, send, last}
+function later(kind, send, ms = 400) {
+  const s = (saves[kind] ||= { last: Promise.resolve() });
+  clearTimeout(s.timer);
+  s.send = send;
+  s.timer = setTimeout(() => flush(kind), ms);
+}
+function flush(kind) {  // now, after the one before it, so saves arrive in order
+  const s = saves[kind];
+  if (!s?.send) return s?.last || Promise.resolve();
+  clearTimeout(s.timer);
+  const send = s.send;
+  s.send = null;
+  return (s.last = s.last.then(send).catch((err) => message(`Couldn't save the text: ${err.message}`, "warn")));
+}
+window.addEventListener("pagehide", () => { flush("overlay"); flush("piece"); });
+
+/** After any change to the text in `layer`: draws it and saves it. */
+function textChanged(layer = text.layer) {
+  draw();
+  showText();
+  const keep = { keepalive: true };  // finishes even if the page is closing
+  if (layer === "global") {
+    const body = { overlay: structuredClone(overlay) };
+    later("overlay", () => postJson("/api/playlist/overlay", body, keep));
+  } else {
+    save();
+    if (editing) {
+      const body = { file: editing, widgets: structuredClone(S.widgets) };
+      later("piece", () => postJson("/api/playlist/widgets", body, keep));
+    }
+  }
+}
+
+function selectWidget(id) {
+  text.selected = id;
+  showText();
+  drawOverlay();
+}
+
+function setTextLayer(layer) {
+  text.layer = layer;
+  text.selected = null;
+  showText();
+  drawOverlay();
+}
+
+function addText() {
+  const layer = text.layer, list = layerWidgets(layer), prefix = layer === "global" ? "g" : "w", f = FRONT();
+  if (layer === "piece" && !src) return;
+  let n = 1;
+  while (list.some((w) => w.id === `${prefix}${n}`)) n++;
+  const w = { id: `${prefix}${n}`, type: "text", text: "Text", font: DEFAULT_FONT, size: 48, color: "#ffffff",
+              opacity: 1, x: Math.round(f.x + f.w / 2), y: Math.round(H / 2 + [0, 64, -64, 128, -128][list.length % 5]),
+              align: "center", valign: "middle", line_height: 1.2, outline: { color: "#000000", width: 0 },
+              crisp: false };  // centred on the flat front, a little apart from the last few
+  setLayerWidgets(layer, [...list, w]);
+  text.selected = w.id;
+  textChanged(layer);
+  $("wText").focus();
+  $("wText").select();
+}
+
+function removeText() {
+  const w = selectedWidget();
+  if (!w) return;
+  setLayerWidgets(text.layer, layerWidgets().filter((other) => other !== w));
+  text.selected = null;
+  textChanged();
+}
+
+function showText() {
+  const piece = text.layer === "piece", list = layerWidgets(), w = selectedWidget();
+  for (const b of document.querySelectorAll("[data-layer]")) b.setAttribute("aria-pressed", b.dataset.layer === text.layer);
+  $("textNote").textContent = !piece ? "Drawn over every piece. Saved to the playlist as you edit."
+    : !src ? "Open some art first."
+    : editing ? `Saved to ${editing.replace(/\.[^.]+$/, "")} in the playlist as you edit.`
+    : "Kept with this layout: Add to playlist to show it on the cooler.";
+  $("addText").disabled = piece && !src;
+  $("removeText").disabled = !w;
+  const rows = list.map((item) => {
+    const li = make("li", item.id === text.selected ? "selected" : "");
+    li.append(make("span", "w-text", String(item.text ?? "").split("\n")[0] || "(empty)"), make("span", "muted", item.id));
+    li.addEventListener("click", () => selectWidget(item.id));
+    return li;
+  });
+  if (!rows.length) rows.push(make("li", "empty", piece ? "No text on this piece." : "No text on top."));
+  $("widgets").replaceChildren(...rows);
+  $("textProps").hidden = !w;
+  if (!w) return;
+  const set = (id, v) => { if (document.activeElement !== $(id)) $(id).value = v; };
+  set("wText", String(w.text ?? ""));
+  set("wSize", num(w.size, 48));
+  set("wColor", hex(w.color, "#ffffff"));
+  set("wOpacity", Math.round(100 * num(w.opacity, 1)));
+  set("wX", num(w.x, 0));
+  set("wY", num(w.y, 0));
+  set("wLineHeight", num(w.line_height, 1.2));
+  set("wOutlineColor", hex(w.outline?.color, "#000000"));
+  set("wOutlineWidth", num(w.outline?.width, 0));
+  $("wCrisp").checked = !!w.crisp;
+  for (const b of $("wAlign").children) b.setAttribute("aria-pressed", b.dataset.value === (w.align || "left"));
+  for (const b of $("wValign").children) b.setAttribute("aria-pressed", b.dataset.value === (w.valign || "top"));
+  showFonts(w);
+}
+
+let fontsShown = "";
+/** The font picker: the fonts whose names have every word typed in the filter, plus the widget's own. */
+function showFonts(w) {
+  const words = $("wFontFilter").value.toLowerCase().split(/\s+/).filter(Boolean);
+  const current = typeof w.font === "string" && w.font ? w.font : DEFAULT_FONT;
+  const key = JSON.stringify([words, current, fontList.length]);
+  if (key === fontsShown) return;  // rebuilt only when it changes, so the list keeps its scroll position
+  fontsShown = key;
+  const name = (f) => `${f.family} ${f.style}`.trim(), count = {};
+  for (const f of fontList) count[name(f)] = (count[name(f)] || 0) + 1;
+  const label = (f) => count[name(f)] > 1 ? `${name(f)} · ${f.path.split("\\").pop()}` : name(f);  // which file
+  const same = (path) => path.toLowerCase() === current.toLowerCase();
+  const options = fontList.filter((f) => words.every((word) => name(f).toLowerCase().includes(word)))
+    .map((f) => new Option(label(f), f.path, false, same(f.path)));
+  if (!options.some((o) => o.selected)) {
+    const known = fontList.find((f) => same(f.path)), file = current.split("\\").pop();
+    options.unshift(new Option(known ? label(known) : fontList.length ? `${file} (not listed: previewed in Segoe UI)` : file,
+                               current, false, true));
+  }
+  $("wFont").replaceChildren(...options);
+}
+
+for (const b of document.querySelectorAll("[data-layer]")) b.addEventListener("click", () => setTextLayer(b.dataset.layer));
+$("addText").addEventListener("click", addText);
+$("removeText").addEventListener("click", removeText);
+$("wFontFilter").addEventListener("input", () => { const w = selectedWidget(); if (w) showFonts(w); });
+/** A property control: `apply` changes the selected widget, or returns false when the value won't do. */
+const textControl = (id, apply, event = "input") => $(id).addEventListener(event, () => {
+  const w = selectedWidget();
+  if (w && apply(w, $(id)) !== false) textChanged();
+});
+const number = (el, ok) => { const v = parseFloat(el.value); return ok(v) ? v : null; };
+textControl("wText", (w, el) => { w.text = el.value; });
+textControl("wFont", (w, el) => { w.font = el.value; }, "change");
+textControl("wSize", (w, el) => { const v = number(el, (v) => v > 0); if (v === null) return false; w.size = v; });
+textControl("wColor", (w, el) => { w.color = el.value; });
+textControl("wOpacity", (w, el) => { const v = number(el, (v) => v >= 0 && v <= 100); if (v === null) return false; w.opacity = v / 100; });
+textControl("wX", (w, el) => { const v = number(el, Number.isFinite); if (v === null) return false; w.x = v; });
+textControl("wY", (w, el) => { const v = number(el, Number.isFinite); if (v === null) return false; w.y = v; });
+textControl("wLineHeight", (w, el) => { const v = number(el, (v) => v > 0); if (v === null) return false; w.line_height = v; });
+textControl("wOutlineColor", (w, el) => { w.outline = { width: 0, ...w.outline, color: el.value }; });
+textControl("wOutlineWidth", (w, el) => {
+  const v = number(el, (v) => v >= 0);
+  if (v === null) return false;
+  w.outline = { color: "#000000", ...w.outline, width: v };
+});
+textControl("wCrisp", (w, el) => { w.crisp = el.checked; }, "change");
+for (const [group, key] of [["wAlign", "align"], ["wValign", "valign"]]) {
+  for (const b of $(group).children) {
+    b.addEventListener("click", () => { const w = selectedWidget(); if (w) { w[key] = b.dataset.value; textChanged(); } });
   }
 }
 
@@ -956,8 +1358,8 @@ function resizeTo(e) {
 }
 
 stage.addEventListener("pointerdown", (e) => {
-  if (!src || e.button !== 0) return;
-  if (view.picking) {
+  if (e.button !== 0) return;
+  if (view.picking && src) {
     const [px, py] = screenPoint(e);
     setPicking(false);
     if (px >= 0 && py >= 0 && px < W && py < H) {
@@ -967,13 +1369,20 @@ stage.addEventListener("pointerdown", (e) => {
     }
     return;
   }
+  const corner = cornerAt(e), hit = corner < 0 ? textAt(e) : null;
+  if (!src && !hit) return;
   try { stage.setPointerCapture(e.pointerId); } catch {}  // keeps the drag going outside the stage
-  const corner = cornerAt(e);
   if (corner >= 0) {
     resize = { corner, anchor: corners()[3 - corner] };
     return;
   }
-  drag = { cx: e.clientX, cy: e.clientY, x: S.x, y: S.y };
+  if (hit) {  // text in the layer being edited: select it, and drag it
+    if (hit.id !== text.selected) selectWidget(hit.id);
+    drag = { widget: hit, cx: e.clientX, cy: e.clientY, x: num(hit.x, 0), y: num(hit.y, 0) };
+  } else {
+    if (text.selected !== null) selectWidget(null);  // the art: the arrow keys move it again
+    drag = { cx: e.clientX, cy: e.clientY, x: S.x, y: S.y };
+  }
   stage.classList.add("dragging");
 });
 stage.addEventListener("pointermove", (e) => {
@@ -982,9 +1391,10 @@ stage.addEventListener("pointermove", (e) => {
   if (resize) return resizeTo(e);
   if (!drag) {
     const corner = view.picking ? -1 : cornerAt(e);
-    stage.style.cursor = corner >= 0 ? RESIZE_CURSORS[corner] : "";
+    stage.style.cursor = corner >= 0 ? RESIZE_CURSORS[corner] : !view.picking && textAt(e) ? "move" : "";
     return;
   }
+  if (drag.widget) return dragText(e);
   let dx = (e.clientX - drag.cx) / view.k, dy = (e.clientY - drag.cy) / view.k;
   if (e.shiftKey) { if (Math.abs(dx) > Math.abs(dy)) dy = 0; else dx = 0; }
   let x = snap(drag.x + dx), y = snap(drag.y + dy);
@@ -1016,7 +1426,7 @@ function setPicking(on) {
 const onClick = (id, fn) => $(id).addEventListener("click", () => { if (src || id === "open") fn(); });
 onClick("open", () => $("file").click());
 $("file").addEventListener("change", () => { if ($("file").files[0]) openFile($("file").files[0]); $("file").value = ""; });
-onClick("reset", () => { startLayout(); });
+onClick("reset", () => { startLayout(S.widgets); });  // the art's layout: the text stays
 onClick("smaller", () => { stepScale(-1); changed(); });
 onClick("bigger", () => { stepScale(1); changed(); });
 onClick("fitFront", () => fitInto(FRONT(), false));
@@ -1091,9 +1501,15 @@ function stepFrame(d) {
 
 window.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && view.picking) return setPicking(false);
-  if (!src || e.ctrlKey || e.metaKey || e.altKey || e.target.closest("input:not([type=checkbox]), select, textarea")) return;
-  const step = snapStep() * (e.shiftKey ? 10 : 1);
+  if (e.ctrlKey || e.metaKey || e.altKey || e.target.closest("input:not([type=checkbox]), select, textarea")) return;
+  const step = snapStep() * (e.shiftKey ? 10 : 1), w = selectedWidget();
   const move = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[e.key];
+  if (w && (move || e.key === "Escape")) {  // with text selected, the arrows move it rather than the art
+    if (move) { w.x = num(w.x, 0) + move[0]; w.y = num(w.y, 0) + move[1]; textChanged(); }
+    else selectWidget(null);
+    return e.preventDefault();
+  }
+  if (!src) return;
   if (move) { S.x += move[0]; S.y += move[1]; changed(); }
   else if (e.key === "+" || e.key === "=") { stepScale(1); changed(); }
   else if (e.key === "-" || e.key === "_") { stepScale(-1); changed(); }
@@ -1151,11 +1567,17 @@ requestAnimationFrame(function tick(now) {
     [W, H] = cfg.screen;
     SAFE = cfg.safe;
     CAMERA = cfg.camera;
+    if (cfg.font) DEFAULT_FONT = cfg.font;
     screenCv.width = W;
     screenCv.height = H;
     layout();
     showFrame();
-    showPlaylist(await (await api("/api/playlist")).json());
+    api("/api/fonts").then((res) => res.json()).then((list) => { fontList = list; fontsShown = ""; showText(); })
+      .catch((err) => message(`Couldn't list the fonts: ${err.message}`, "warn"));
+    const state = await (await api("/api/playlist")).json();
+    overlay = state.overlay || [];  // from here on, edited here
+    showPlaylist(state);
+    draw();
     if (cfg.initial) await useSource(cfg.initial);
   } catch (err) {
     message(`Couldn't reach the studio server: ${err.message}`, "warn");

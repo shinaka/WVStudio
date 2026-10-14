@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
+use image::ImageFormat;
+
 use crate::panel::Panel;
 use crate::player::{log_to, play};
 use crate::{art, playlist};
@@ -22,6 +24,9 @@ wvplay: drives the Thermalright Wonder Vision 360 screen directly, without TRCC.
        [--ffmpeg PATH]        ffmpeg for video pieces (default: $WVPLAY_FFMPEG, else ffmpeg on PATH)
        [--log FILE]           write what happens to FILE instead of the console
   wvplay prepare <what>       get everything ready as `play` would, without sending it anywhere
+  wvplay render <playlist.json> <item> <out.png> [--frame N]
+                              write frame N (default 0) of item number <item> (counting from 0), with
+                              its text drawn on, upright, as a PNG: for checking text without the screen
   wvplay info                 handshake and print what the panel reports
   wvplay send <file.jpg> <width> <height> [--repeat N] [--seconds S] [--fps F]
                               send a ready-made JPEG (for testing the panel)
@@ -60,10 +65,21 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
             let opts = art_options(args)?;
             for item in playlist::read(Path::new(&args[1]), 30.0)? {
                 let start = Instant::now();
-                let frames = art::load(&item.path, &opts)?;
+                let frames = art::load(&item, &opts, true)?;
                 let kb = frames.iter().map(|f| f.jpeg.len()).sum::<usize>() / 1024;
                 println!("{}: {} frame(s), {kb} KB, {} ms", item.path.display(), frames.len(), start.elapsed().as_millis());
             }
+            Ok(())
+        }
+        Some("render") if args.len() >= 4 => {
+            let items = playlist::read(Path::new(&args[1]), 30.0)?;
+            let index: usize = args[2].parse().map_err(|_| format!("<item> should be a number, not {}", args[2]))?;
+            let item = items.get(index).ok_or(format!("there's no item {index}: the playlist has {}", items.len()))?;
+            let frame = option(args, "--frame")?.unwrap_or(0.0).max(0.0) as usize;
+            let start = Instant::now();
+            art::render(item, &art_options(args)?, frame)?.save_with_format(&args[3], ImageFormat::Png)?;
+            println!("{}: frame {frame} with {} widget(s) -> {} ({} ms)", item.path.display(), item.text().count(),
+                     args[3], start.elapsed().as_millis());
             Ok(())
         }
         Some("info") => {

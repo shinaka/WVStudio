@@ -1,7 +1,7 @@
 //! Turns an image, animation or video into ready-to-send JPEG frames.
 //!
-//! Everything expensive (decoding, fitting, rotating, JPEG encoding) happens once, here, and the result
-//! is kept on disk (see cache.rs). Playing is then just sending stored bytes on a timer.
+//! Everything expensive (decoding, fitting, drawing text on, rotating, JPEG encoding) happens once, here,
+//! and the result is kept on disk (see cache.rs). Playing is then just sending stored bytes on a timer.
 
 use std::error::Error;
 use std::io::{Cursor, Read};
@@ -17,6 +17,8 @@ use image::{AnimationDecoder, ImageFormat, RgbImage, RgbaImage};
 use jpeg_encoder::{ColorType, Encoder, SamplingFactor};
 
 use crate::cache;
+use crate::playlist::Item;
+use crate::text::Layer;
 
 /// What the panel takes. It shows this upscaled 1.5x on its 2400x1080 glass; a native 2400x1080
 /// frame is accepted but its outer columns flicker.
@@ -49,17 +51,30 @@ enum Raw {
     Fitted(RgbImage, Duration),
 }
 
-pub fn load(path: &Path, opts: &Options) -> Result<Vec<Frame>, Box<dyn Error>> {
-    if let Some(frames) = cache::read(path, opts) {
+impl Raw {
+    fn into_fitted(self) -> (RgbImage, Duration) {
+        match self {
+            Raw::Image(im, d) => (fit(&im), d),
+            Raw::Fitted(rgb, d) => (rgb, d),
+        }
+    }
+}
+
+/// A piece's frames, from the disk cache if they're there. `save` keeps newly prepared ones there too; a
+/// piece being edited isn't saved yet, as most versions are soon replaced (the caller can cache::write
+/// the one that stays).
+pub fn load(item: &Item, opts: &Options, save: bool) -> Result<Vec<Frame>, Box<dyn Error>> {
+    if let Some(frames) = cache::read(item, opts) {
         return Ok(frames);
     }
-    let video = path.extension().is_some_and(|e| VIDEO_TYPES.iter().any(|t| e.eq_ignore_ascii_case(t)));
     // full-resolution colour keeps coloured pixel-art edges sharp; video doesn't need it
-    let sampling = if video { SamplingFactor::R_4_2_0 } else { SamplingFactor::R_4_4_4 };
+    let sampling = if is_video(&item.path) { SamplingFactor::R_4_2_0 } else { SamplingFactor::R_4_4_4 };
+    // the text is the same on every frame, so it's drawn once and laid over each
+    let text = Layer::render(item.text());
     let mut frames = Vec::new();
     let mut batch = Vec::with_capacity(BATCH);
     let mut flush = |batch: &mut Vec<Raw>| -> Result<(), Box<dyn Error>> {
-        frames.extend(encode_all(std::mem::take(batch), opts, sampling)?);
+        frames.extend(encode_all(std::mem::take(batch), &text, opts, sampling)?);
         Ok(())
     };
     let mut push = |raw: Raw| -> Result<(), Box<dyn Error>> {
@@ -69,21 +84,45 @@ pub fn load(path: &Path, opts: &Options) -> Result<Vec<Frame>, Box<dyn Error>> {
         }
         Ok(())
     };
-    if video {
-        decode_video(path, opts, &mut push)?;
-    } else {
-        decode_image(&std::fs::read(path)?, &mut push)?;
-    }
+    decode(&item.path, opts, &mut push)?;
     flush(&mut batch)?;
     if frames.is_empty() {
         return Err("no frames in it".into());
     }
-    cache::write(path, opts, &frames);
+    if save {
+        cache::write(item, opts, &frames);
+    }
     Ok(frames)
 }
 
-/// Encodes a batch on every core.
-fn encode_all(mut batch: Vec<Raw>, opts: &Options, sampling: SamplingFactor) -> Result<Vec<Frame>, String> {
+/// One frame of a piece (counting from 0), fitted and with its text on, upright: what the cooler would
+/// show, for checking without it.
+pub fn render(item: &Item, opts: &Options, index: usize) -> Result<RgbImage, Box<dyn Error>> {
+    let (mut count, mut found) = (0, None);
+    decode(&item.path, opts, &mut |raw| {
+        if count == index {
+            found = Some(raw);
+        }
+        count += 1;
+        Ok(())
+    })?;
+    let (mut rgb, _) = found.ok_or_else(|| format!("there's no frame {index}: it has {count}"))?.into_fitted();
+    Layer::render(item.text()).draw_onto(&mut rgb);
+    Ok(rgb)
+}
+
+fn is_video(path: &Path) -> bool {
+    path.extension().is_some_and(|e| VIDEO_TYPES.iter().any(|t| e.eq_ignore_ascii_case(t)))
+}
+
+fn decode(path: &Path, opts: &Options, push: &mut dyn FnMut(Raw) -> Result<(), Box<dyn Error>>)
+    -> Result<(), Box<dyn Error>> {
+    if is_video(path) { decode_video(path, opts, push) } else { decode_image(&std::fs::read(path)?, push) }
+}
+
+/// Draws the text on, rotates and encodes a batch, on every core.
+fn encode_all(mut batch: Vec<Raw>, text: &Layer, opts: &Options, sampling: SamplingFactor)
+    -> Result<Vec<Frame>, String> {
     if batch.is_empty() {
         return Ok(Vec::new());
     }
@@ -96,10 +135,9 @@ fn encode_all(mut batch: Vec<Raw>, opts: &Options, sampling: SamplingFactor) -> 
                 s.spawn(move || {
                     part.iter_mut()
                         .map(|raw| {
-                            let (mut rgb, duration) = match std::mem::replace(raw, Raw::Fitted(RgbImage::new(0, 0), Duration::ZERO)) {
-                                Raw::Image(im, d) => (fit(&im), d),
-                                Raw::Fitted(rgb, d) => (rgb, d),
-                            };
+                            let (mut rgb, duration) =
+                                std::mem::replace(raw, Raw::Fitted(RgbImage::new(0, 0), Duration::ZERO)).into_fitted();
+                            text.draw_onto(&mut rgb);
                             if opts.rotate180 {
                                 imageops::rotate180_in_place(&mut rgb);
                             }

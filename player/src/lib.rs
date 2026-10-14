@@ -6,3 +6,4 @@ pub mod cli;
 pub mod panel;
 pub mod player;
 pub mod playlist;
+pub mod text;
