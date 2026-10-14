@@ -9,22 +9,38 @@
     color-scheme: dark;
     --bg: #0d0e10; --panel: #16181b; --raised: #1f2226; --line: #2b2f35;
     --text: #e8e9eb; --muted: #8d939c; --accent: #ffb020; --accent-ink: #1c1300;
-    --warn: #ff9a76; --info: #7cc4ff;
+    --warn: #ff9a76; --info: #7cc4ff; --select: #7cc4ff;
     font: 13px/1.45 system-ui, "Segoe UI", sans-serif;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); }
-  body { display: grid; grid-template: auto 1fr auto / 1fr 330px; height: 100vh; overflow: hidden; }
-  header { grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; padding: 7px 14px;
-           border-bottom: 1px solid var(--line); background: var(--panel); }
+  body { display: grid; grid-template: "head head head" auto "tools stage side" 1fr "strip strip strip" auto / 46px 1fr 340px;
+         height: 100vh; overflow: hidden; }
+  header { grid-area: head; display: flex; align-items: center; gap: 10px; padding: 5px 12px;
+           border-bottom: 1px solid var(--line); background: var(--panel); min-height: 38px; }
   header h1 { font-size: 14px; margin: 0 6px 0 0; font-weight: 650; white-space: nowrap; }
-  #fileName { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  #sceneTitle { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
   .spacer { flex: 1; }
   #cursor { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 84px; text-align: right; }
-  #stageWrap { position: relative; overflow: auto; display: flex; min-width: 0; min-height: 0; }
-  #stage { position: relative; margin: auto; flex: none; cursor: grab; touch-action: none; }
-  #stage.dragging { cursor: grabbing; }
+  #msg:empty { display: none; }
+  #msg { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 45vw; }
+  /* the toolbar */
+  #tools { grid-area: tools; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 5px;
+           border-right: 1px solid var(--line); background: var(--panel); }
+  #tools button { width: 34px; height: 34px; padding: 0; font-weight: 650; font-size: 14px; position: relative; }
+  #tools button kbd { position: absolute; right: 2px; bottom: 1px; font-size: 8px; border: 0; background: none; color: var(--muted); padding: 0; }
+  #tools .gap { height: 10px; }
+  #shapeMenu { display: none; flex-direction: column; gap: 2px; padding: 3px; margin-top: -2px; background: var(--raised);
+               border: 1px solid var(--line); border-radius: 6px; }
+  #shapeMenu.open { display: flex; }
+  #shapeMenu button { width: 26px; height: 26px; font-size: 12px; font-weight: 400; }
+  /* the stage */
+  #stageWrap { grid-area: stage; position: relative; overflow: auto; display: flex; min-width: 0; min-height: 0; }
+  #stage { position: relative; margin: auto; flex: none; touch-action: none; }
+  #stage.hand { cursor: grab; }
+  #stage.hand.dragging { cursor: grabbing; }
   #stage.picking { cursor: crosshair; }
+  #stage.place { cursor: crosshair; }
   #stage canvas { position: absolute; left: 0; top: 0; }
   #screen { background: #000; }
   #overlay { pointer-events: none; }
@@ -34,12 +50,44 @@
   #empty .box strong { display: block; color: var(--text); font-size: 15px; margin-bottom: 4px; }
   body.loaded #empty { display: none; }
   body.dragover #stageWrap { outline: 2px dashed var(--accent); outline-offset: -8px; }
-  aside { grid-row: 2 / 4; grid-column: 2; overflow-y: auto; border-left: 1px solid var(--line); background: var(--panel); }
-  section { padding: 12px 14px; border-bottom: 1px solid var(--line); }
-  h2 { margin: 0 0 8px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 650; }
-  .row { display: flex; gap: 6px; align-items: center; margin: 7px 0; flex-wrap: wrap; }
-  .row > .label { color: var(--muted); width: 52px; }
-  label { display: inline-flex; gap: 6px; align-items: center; }
+  /* the right side: layers above, properties below */
+  #side { grid-area: side; display: grid; grid-template-rows: minmax(160px, 42%) 1fr; min-height: 0;
+          border-left: 1px solid var(--line); background: var(--panel); }
+  #layersPane { display: flex; flex-direction: column; min-height: 0; border-bottom: 1px solid var(--line); }
+  .pane-head { display: flex; align-items: center; gap: 6px; padding: 6px 10px 6px 14px; border-bottom: 1px solid var(--line); }
+  .pane-head h2 { margin: 0; flex: 1; }
+  .pane-head button { padding: 1px 7px; }
+  #layers { list-style: none; margin: 0; padding: 4px 0; overflow-y: auto; flex: 1; min-height: 0; }
+  #layers ul { list-style: none; margin: 0; padding: 0; }
+  #layers .row { display: flex; align-items: center; gap: 4px; padding: 2px 8px 2px 6px; margin: 0; border-radius: 0;
+                 cursor: default; min-height: 26px; border-top: 2px solid transparent; border-bottom: 2px solid transparent; }
+  #layers .layer > .row { background: var(--raised); font-weight: 650; }
+  #layers .obj > .row { padding-left: 28px; }
+  #layers .row:hover { background: #24282d; }
+  #layers .row.selected { background: #3a2c0a; box-shadow: inset 3px 0 0 var(--accent); }
+  #layers .row.hidden-row { opacity: .5; }
+  #layers .row.over-top { border-top-color: var(--select); }
+  #layers .row.over-bottom { border-bottom-color: var(--select); }
+  #layers .row.over-into { outline: 1px solid var(--select); outline-offset: -1px; }
+  #layers .tog { width: 20px; height: 20px; padding: 0; border: 0; background: none; color: var(--muted); font-size: 12px; flex: none; }
+  #layers .tog[aria-pressed="true"] { color: var(--text); }
+  #layers .tog.lock[aria-pressed="true"] { color: var(--accent); }
+  #layers .icon { width: 16px; color: var(--muted); font-size: 11px; text-align: center; flex: none; }
+  #layers .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  #layers .name input { width: 100%; padding: 0 4px; }
+  #layers .badge { font-size: 10px; padding: 0 5px; border-radius: 8px; background: #2b2f35; color: var(--muted); flex: none; }
+  #layers .badge.live { background: #10303f; color: var(--info); }
+  #layers .badge.anim { background: #1a3522; color: #7ee0a0; }
+  #layers .badge.top { background: #3f2910; color: var(--accent); }
+  #layers .badge.op { font-variant-numeric: tabular-nums; }
+  #layers li.empty { padding: 8px 14px; color: var(--muted); }
+  #propsPane { overflow-y: auto; min-height: 0; }
+  section { padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  section[hidden] { display: none; }
+  h2 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 650; }
+  .row { display: flex; gap: 6px; align-items: center; margin: 6px 0; flex-wrap: wrap; }
+  .row > .label { color: var(--muted); width: 72px; flex: none; }
+  label { display: inline-flex; gap: 5px; align-items: center; }
   button, select, input, textarea { font: inherit; color: var(--text); background: var(--raised);
                                     border: 1px solid var(--line); border-radius: 6px; padding: 4px 9px; }
   button { cursor: pointer; white-space: nowrap; }
@@ -47,11 +95,12 @@
   button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 650; }
   button[aria-pressed="true"] { background: #3a2c0a; border-color: var(--accent); color: var(--accent); }
   button:disabled, label:has(input:disabled) { opacity: .45; cursor: default; }
-  input[type=number] { width: 78px; }
+  input[type=number] { width: 66px; padding: 4px 5px; }
   input[type=text], input[type=search] { width: 100%; }
   textarea { display: block; width: 100%; resize: vertical; }
-  input[type=color] { width: 42px; height: 29px; padding: 2px 3px; }
+  input[type=color] { width: 38px; height: 28px; padding: 2px 3px; }
   input[type=checkbox] { accent-color: var(--accent); margin: 0; }
+  input[type=range] { padding: 0; flex: 1; min-width: 60px; accent-color: var(--accent); }
   .seg { display: inline-flex; flex-wrap: wrap; }
   .seg button { border-radius: 0; margin-left: -1px; }
   .seg button:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
@@ -59,41 +108,35 @@
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
   .muted { color: var(--muted); }
   .small { font-size: 12px; }
-  .kv { display: grid; grid-template-columns: auto 1fr; gap: 1px 10px; }
-  .kv dt { color: var(--muted); } .kv dd { margin: 0; }
-  footer { grid-column: 1; padding: 6px 14px; border-top: 1px solid var(--line); background: var(--panel);
-           min-height: 32px; display: flex; gap: 6px 16px; flex-wrap: wrap; align-items: center; }
   .warn { color: var(--warn); } .info { color: var(--info); }
-  #msg:empty { display: none; }
-  #exportResult ul { margin: 6px 0; padding-left: 18px; }
-  #playlist { list-style: none; margin: 8px 0; padding: 0; display: grid; gap: 6px; }
-  #playlist li { display: grid; grid-template-columns: 80px 1fr auto; gap: 3px 8px; align-items: center;
-                 background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 6px; }
-  #playlist li.empty { display: block; color: var(--muted); background: none; border-style: dashed; }
-  #playlist li:not(.empty) { cursor: pointer; }
-  #playlist li:not(.empty):hover { border-color: #4a5058; }
-  #playlist li.editing { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
-  #playlist img { width: 80px; height: 36px; grid-row: span 2; background: #000; border-radius: 3px; }
-  #playlist .pl-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #playlist .pl-meta { display: flex; gap: 4px; align-items: center; color: var(--muted); font-size: 12px; }
-  #playlist .pl-meta input { width: 58px; padding: 1px 5px; }
-  #playlist .pl-buttons { grid-row: span 2; display: flex; gap: 2px; }
-  #playlist .pl-buttons button { padding: 2px 7px; }
-  #widgets { list-style: none; margin: 8px 0; padding: 0; display: grid; gap: 4px; }
-  #widgets li { display: flex; gap: 8px; justify-content: space-between; cursor: pointer;
-                background: var(--raised); border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px; }
-  #widgets li:hover { border-color: #4a5058; }
-  #widgets li.selected { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
-  #widgets li.empty { color: var(--muted); background: none; border-style: dashed; cursor: default; }
-  #widgets .w-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #textProps { margin-top: 8px; }
-  #textProps input[type=number] { width: 62px; }
+  .row[hidden], div[hidden] { display: none; }
   #wFont { display: block; width: 100%; padding: 2px; }
   kbd { font: 11px ui-monospace, monospace; background: var(--raised); border: 1px solid var(--line);
         border-radius: 4px; padding: 0 4px; }
   .keys { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; }
-  .row[hidden] { display: none; }
   code { font: 12px ui-monospace, monospace; }
+  /* the playlist strip */
+  #strip { grid-area: strip; display: flex; align-items: stretch; border-top: 1px solid var(--line); background: var(--panel);
+           min-height: 126px; max-height: 126px; }
+  #scenes { display: flex; gap: 8px; padding: 8px 10px; overflow-x: auto; overflow-y: hidden; flex: 1; min-width: 0; align-items: flex-start; }
+  .scene { flex: none; width: 164px; background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 3px;
+           cursor: pointer; display: grid; grid-template-columns: 1fr auto; gap: 2px 4px; align-items: center; }
+  .scene:hover { border-color: #4a5058; }
+  .scene.current { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .scene.over-left { box-shadow: -4px 0 0 var(--select); } .scene.over-right { box-shadow: 4px 0 0 var(--select); }
+  .scene canvas { grid-column: 1 / -1; width: 156px; height: 70px; background: #000; border-radius: 4px; display: block; }
+  .scene .sc-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; padding-left: 3px; }
+  .scene .sc-meta { display: flex; gap: 2px; align-items: center; color: var(--muted); font-size: 11px; }
+  .scene .sc-meta input { width: 44px; padding: 0 3px; font-size: 11px; }
+  .scene .sc-meta button { padding: 0 5px; font-size: 11px; line-height: 18px; }
+  .scene.global { background: #1b1f27; }
+  #addScene { flex: none; align-self: center; height: 60px; width: 60px; font-size: 22px; border-style: dashed; color: var(--muted); margin-right: 10px; }
+  #playerBox { flex: none; width: 300px; border-left: 1px solid var(--line); padding: 8px 12px; display: flex; flex-direction: column;
+               gap: 5px; justify-content: center; font-size: 12px; }
+  #playerBox .row { margin: 0; }
+  #playerState { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #rivals:empty { display: none; }
+  /* the sources window and autocomplete, as before */
   .test-out:empty { display: none; }
   .test-out { margin: 6px 0; }
   .values { max-height: 270px; overflow-y: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
@@ -106,7 +149,6 @@
   .dv .v { color: var(--info); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 50%;
            font-variant-numeric: tabular-nums; }
   .dv.stale { opacity: .45; }
-  /* the sources window */
   dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 12px; padding: 0;
            width: min(1040px, 96vw); height: min(760px, 92vh); max-width: none; max-height: none; }
   dialog::backdrop { background: rgba(0, 0, 0, .6); }
@@ -115,9 +157,8 @@
               border-bottom: 1px solid var(--line); }
   .dlg-head h2 { margin: 0; font-size: 14px; text-transform: none; letter-spacing: 0; color: var(--text); }
   .dlg-foot { grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; padding: 8px 14px;
-              border-top: 1px solid var(--line); }
+              border-top: 1px solid var(--line); flex-wrap: wrap; }
   .dlg-foot code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
-  .dlg-foot { flex-wrap: wrap; }
   #srcMsg:not(:empty) { flex: 1 1 100%; }
   #srcList { list-style: none; margin: 0; padding: 8px; overflow-y: auto; border-right: 1px solid var(--line); min-height: 0; }
   #srcList li { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; cursor: pointer; }
@@ -157,7 +198,6 @@
     #sourcesDlg[open] { grid-template: auto auto 1fr auto / 1fr; }
     #srcList { max-height: 30vh; border-right: 0; border-bottom: 1px solid var(--line); }
   }
-  /* placeholder autocomplete in the text box */
   .ac { position: fixed; z-index: 50; background: var(--raised); border: 1px solid #4a5058; border-radius: 8px;
         box-shadow: 0 8px 24px rgba(0, 0, 0, .5); max-height: 260px; overflow-y: auto; width: 380px;
         max-width: calc(100vw - 16px); padding: 4px; }
@@ -175,19 +215,36 @@
 <body>
 <header>
   <h1>Wonder Vision Studio</h1>
-  <span id="fileName"></span>
+  <span id="sceneTitle"></span>
+  <span id="msg"></span>
   <span class="spacer"></span>
-  <button id="prev" title="Previous frame ( , )">◀</button>
-  <button id="play" title="Play / pause (Space)">Pause</button>
-  <button id="next" title="Next frame ( . )">▶</button>
-  <span id="frameNo" class="muted"></span>
-  <label><input id="showGuides" type="checkbox" checked> Curve guides</label>
-  <label><input id="showGhost" type="checkbox" checked> Show off-screen</label>
-  <select id="zoom" title="Preview zoom">
+  <label title="Pause the animations in the preview"><input id="pause" type="checkbox"> Pause</label>
+  <label><input id="showGuides" type="checkbox" checked> Guides</label>
+  <label><input id="showGhost" type="checkbox" checked> Off-screen</label>
+  <label title="Draw text as written, {key} and all, rather than with the values filled in"><input id="showRaw" type="checkbox"> Placeholders</label>
+  <select id="zoom" title="Zoom (Ctrl + wheel)">
     <option value="fit">Fit</option><option value="0.5">50%</option><option value="1">100%</option><option value="2">200%</option>
   </select>
   <span id="cursor"></span>
 </header>
+
+<div id="tools">
+  <button data-tool="select" title="Move / select (V)">↖<kbd>V</kbd></button>
+  <button data-tool="text" title="Text: click to place (T)">T<kbd>T</kbd></button>
+  <button data-tool="image" title="Image or video: pick a file, or drop one on the canvas (I)">🖼<kbd>I</kbd></button>
+  <button data-tool="shape" title="Shape: drag to draw (R). Click again for rect, ellipse or line">▭<kbd>R</kbd></button>
+  <div id="shapeMenu">
+    <button data-shape="rect" title="Rectangle">▭</button>
+    <button data-shape="ellipse" title="Ellipse">◯</button>
+    <button data-shape="line" title="Line">╱</button>
+  </div>
+  <button data-tool="hand" title="Hand: drag to scroll (H, or hold Space)">✋<kbd>H</kbd></button>
+  <div class="gap"></div>
+  <button id="zoomIn" title="Zoom in (Ctrl +)">+</button>
+  <button id="zoomOut" title="Zoom out (Ctrl −)">−</button>
+  <button id="zoomFit" title="Fit (Ctrl 0)">⤢</button>
+  <input id="file" type="file" hidden accept=".png,.gif,.webp,.jpg,.jpeg,.bmp,.apng,.aseprite,.ase,.mp4,.m4v,.mov,.webm,.mkv,.avi">
+</div>
 
 <div id="stageWrap">
   <div id="stage">
@@ -195,103 +252,88 @@
     <canvas id="screen"></canvas>
     <canvas id="overlay"></canvas>
   </div>
-  <div id="empty"><div class="box"><strong>Drop an image or GIF here</strong>
-    or use <em>Open image</em>, or paste with Ctrl+V.<br>PNG, GIF, WebP, JPG, BMP, Aseprite, MP4 and other video.</div></div>
+  <div id="empty"><div class="box"><strong>Drop an image, GIF or video here</strong>
+    or press <kbd>I</kbd> to pick one, <kbd>T</kbd> for text, <kbd>R</kbd> for a shape.</div></div>
 </div>
 
-<aside>
-  <section>
-    <h2>Art</h2>
-    <div class="row">
-      <button id="open">Open image…</button>
-      <button id="reset" title="Back to the starting layout for this image">Reset layout</button>
-      <input id="file" type="file" hidden accept=".png,.gif,.webp,.jpg,.jpeg,.bmp,.apng,.aseprite,.ase,.mp4,.m4v,.mov,.webm,.mkv,.avi">
+<div id="side">
+  <div id="layersPane">
+    <div class="pane-head"><h2>Layers</h2>
+      <button id="addLayer" title="Add a layer above the selected one">+ Layer</button>
+      <button id="deleteLayer" title="Delete the selected layer and everything on it">Delete</button>
     </div>
-    <dl class="kv" id="srcInfo"></dl>
-    <div class="row">
-      <label title="Screen pixels per art pixel in the file. Detected automatically; set it by hand if the art was saved enlarged and blurry.">
-        Pixel size in file <input id="factor" type="number" min="1" max="32" step="1"></label>
-    </div>
-  </section>
-
-  <section>
-    <h2>Size</h2>
-    <div class="row">
-      <button id="smaller" title="Smaller ( - )">−</button>
-      <label title="Screen pixels per art pixel">× <input id="scale" type="number" min="0.01" step="1"></label>
-      <button id="bigger" title="Bigger ( + )">+</button>
-      <span id="placedSize" class="muted"></span>
-    </div>
-    <div class="grid2">
-      <button id="fitFront" title="Largest size that fits on the flat front">Fit flat front</button>
-      <button id="fitScreen" title="Largest size that fits the whole screen, curves included">Fit whole screen</button>
-      <button id="fillHeight" title="Top to bottom, centred on the flat front">Fill height</button>
-      <button id="fillScreen" title="Cover the whole screen, cropping what's left over">Fill screen</button>
-    </div>
-    <div class="row"><label><input id="fractional" type="checkbox"> Allow in-between sizes</label></div>
-    <div class="row"><label><input id="smooth" type="checkbox"> Smooth scaling (photos, not pixel art)</label></div>
-  </section>
-
-  <section>
-    <h2>Position</h2>
-    <div class="row">
-      <label>X <input id="x" type="number" step="1"></label>
-      <label>Y <input id="y" type="number" step="1"></label>
-    </div>
-    <div class="row"><span class="label">Across</span><span class="seg">
-      <button data-align="front-left">Front left</button><button data-align="front-centre">Centre</button><button data-align="front-right">Front right</button>
-    </span></div>
-    <div class="row"><span class="label"></span><button data-align="screen-centre" title="Centre on the whole screen, curves included">Centre on whole screen</button></div>
-    <div class="row"><span class="label">Down</span><span class="seg">
-      <button data-align="top">Top</button><button data-align="middle">Middle</button><button data-align="bottom">Bottom</button>
-    </span></div>
-    <div class="row">
-      <label title="Step for dragging and arrow keys">Snap <select id="snap">
-        <option value="1">1 px</option><option value="2" selected>2 px (sharpest on the glass)</option><option value="art">art pixel</option>
-      </select></label>
-    </div>
-    <div class="row">
-      <button id="rotate" title="Rotate 90° clockwise (R)">Rotate 90°</button>
-      <button id="flip" title="Mirror left-right (F)" aria-pressed="false">Flip</button>
-    </div>
-  </section>
-
-  <section>
-    <h2>Empty space</h2>
-    <div class="seg" id="fills">
-      <button data-fill="solid">Colour</button><button data-fill="extend" title="Repeat the art's outermost pixels outward">Stretch edges</button><button data-fill="mirror">Mirror</button><button data-fill="tile">Tile</button>
-    </div>
-    <div class="row">
-      <input id="bg" type="color" title="Fill colour, also shown behind transparent pixels">
-      <button id="pick" aria-pressed="false" title="Then click a colour in the preview">Pick from preview</button>
-      <button id="black">Black</button>
-    </div>
-  </section>
-
-  <section>
-    <h2>Text</h2>
-    <div class="seg">
-      <button data-layer="piece" title="Text on this piece only">This piece</button><button data-layer="global" title="The global layer: text drawn over every piece in the playlist">On top of everything</button>
-    </div>
-    <div id="textNote" class="row small muted"></div>
-    <div id="liveNote" class="row small warn" hidden>The player isn't running, so live values show as their placeholders.</div>
-    <ul id="widgets"></ul>
-    <div class="row">
-      <button id="addText">Add text</button>
-      <button id="removeText">Remove</button>
-    </div>
-    <div id="textProps" hidden>
-      <textarea id="wText" rows="3" spellcheck="false" title="Each line of text on its own line"></textarea>
+    <ul id="layers"></ul>
+  </div>
+  <div id="propsPane">
+    <section id="pScene">
+      <h2>Scene</h2>
+      <div class="row"><span class="label">Name</span><input id="sName" type="text" spellcheck="false" style="width: auto; flex: 1"></div>
+      <div class="row"><span class="label">Shows for</span><label><input id="sSeconds" type="number" min="1" step="1"> s</label></div>
+      <div class="row"><span class="label">Background</span><input id="sBg" type="color" title="Background colour">
+        <button id="sPick" aria-pressed="false" title="Then click a colour on the canvas">Eyedropper</button>
+        <button id="sBlack">Black</button></div>
+      <div id="sceneNote" class="small muted"></div>
+    </section>
+    <section id="pGlobal" hidden>
+      <h2>Global</h2>
+      <div class="small muted">These layers are drawn over every scene. The scene behind is shown dimmed for reference.</div>
+    </section>
+    <section id="pLayer" hidden>
+      <h2>Layer</h2>
+      <div class="row"><span class="label">Name</span><input id="lName" type="text" spellcheck="false" style="width: auto; flex: 1"></div>
+      <div class="row"><span class="label">Opacity</span><input id="lOpacityR" type="range" min="0" max="100" step="1">
+        <input id="lOpacity" type="number" min="0" max="100" step="5"> %</div>
+      <div class="small muted">Applies to the layer as a whole: overlapping objects don't show through each other.</div>
+    </section>
+    <section id="pObject" hidden>
+      <h2 id="oKind">Object</h2>
+      <div class="row"><span class="label">Name</span><input id="oName" type="text" spellcheck="false" style="width: auto; flex: 1"></div>
+      <div class="row"><span class="label">Opacity</span><input id="oOpacityR" type="range" min="0" max="100" step="1">
+        <input id="oOpacity" type="number" min="0" max="100" step="5"> %</div>
+      <div class="row">
+        <label>X <input id="oX" type="number" step="1"></label>
+        <label>Y <input id="oY" type="number" step="1"></label>
+        <span id="oSizeRow" style="display: contents">
+          <label>W <input id="oW" type="number" step="1"></label>
+          <label>H <input id="oH" type="number" step="1"></label>
+        </span>
+      </div>
+      <div class="row" id="oTurnRow"><span class="label">Rotate</span><span class="seg" id="oRotate">
+        <button data-value="0">0</button><button data-value="90">90</button><button data-value="180">180</button><button data-value="270">270</button></span>
+        <label><input id="oFlip" type="checkbox"> Flip</label></div>
+    </section>
+    <section id="pMedia" hidden>
+      <h2 id="mKind">Image</h2>
+      <div id="mInfo" class="small muted"></div>
+      <div class="row">
+        <span class="label">Scale</span>
+        <button id="mSmaller" title="One art pixel smaller">−</button>
+        <span id="mScale" class="muted" style="min-width: 40px; text-align: center"></span>
+        <button id="mBigger" title="One art pixel bigger">+</button>
+        <label title="How many pixels of the file make one art pixel">pixel <input id="mPixel" type="number" min="1" max="32" step="1"></label>
+      </div>
+      <div class="grid2">
+        <button id="fitFront" title="Largest size that fits on the flat front">Fit flat front</button>
+        <button id="fitScreen" title="Largest size that fits the whole screen, curves included">Fit whole screen</button>
+        <button id="fillHeight" title="Top to bottom, centred on the flat front">Fill height</button>
+        <button id="fillScreen" title="Cover the whole screen, cropping what's left over">Fill screen</button>
+      </div>
+      <div class="row"><label><input id="mSmooth" type="checkbox"> Smooth scaling (photos, not pixel art)</label></div>
+      <div class="row"><span class="label">Beyond</span><span class="seg" id="mFill">
+        <button data-value="none">Nothing</button><button data-value="extend" title="Repeat the outermost pixels outward">Stretch edges</button><button data-value="mirror">Mirror</button><button data-value="tile">Tile</button></span></div>
+      <div class="row"><span class="label">Background</span><button id="mPick" aria-pressed="false" title="Set the scene's background from a colour on the canvas">Eyedropper</button>
+        <button id="mEdge" title="Set the scene's background to this file's edge colour">Edge colour</button></div>
+      <div id="mNote" class="small muted"></div>
+    </section>
+    <section id="pText" hidden>
+      <h2>Text</h2>
+      <div id="liveNote" class="small warn" hidden></div>
+      <textarea id="wText" rows="3" spellcheck="false" title="Each line of text on its own line. Type { for a live value."></textarea>
       <div class="row"><input id="wFontFilter" type="search" spellcheck="false" placeholder="Font: type to filter"></div>
       <select id="wFont" size="5" title="Font"></select>
       <div class="row">
         <label title="Size in screen pixels (the em size)">Size <input id="wSize" type="number" min="1" step="1"></label>
         <input id="wColor" type="color" title="Colour">
-        <label>Opacity <input id="wOpacity" type="number" min="0" max="100" step="5"> %</label>
-      </div>
-      <div class="row">
-        <label title="Where the text is anchored: see Across and Down">X <input id="wX" type="number" step="1"></label>
-        <label>Y <input id="wY" type="number" step="1"></label>
         <label title="Distance between lines, as a multiple of the size">Lines × <input id="wLineHeight" type="number" min="0.1" step="0.05"></label>
       </div>
       <div class="row"><span class="label">Across</span><span class="seg" id="wAlign">
@@ -307,73 +349,58 @@
       </div>
       <div class="row"><label title="No smoothed edges: every pixel all or nothing. For pixel fonts.">
         <input id="wCrisp" type="checkbox"> Crisp edges (pixel fonts)</label></div>
-    </div>
-  </section>
+      <div class="row small"><button id="openSources2">Data sources…</button><span id="dataNote" class="warn" hidden>The player isn't running: no live values.</span></div>
+    </section>
+    <section id="pShape" hidden>
+      <h2 id="shKind">Shape</h2>
+      <div class="row"><span class="label">Fill</span><select id="shFillType"><option value="none">None</option><option value="solid">Solid</option><option value="linear">Gradient</option></select>
+        <input id="shColor" type="color" title="Fill colour"></div>
+      <div class="row" id="shGradRow"><span class="label"></span>
+        <input id="shColor2" type="color" title="Gradient end colour">
+        <label title="0 runs left to right, 90 top to bottom">angle <input id="shAngle" type="number" step="15"></label></div>
+      <div class="row"><span class="label">Stroke</span><label><input id="shStrokeOn" type="checkbox"></label>
+        <input id="shStrokeColor" type="color" title="Stroke colour">
+        <label><input id="shStrokeWidth" type="number" min="0" step="1"> px</label></div>
+      <div class="row" id="shRadiusRow"><span class="label">Corners</span><label><input id="shRadius" type="number" min="0" step="1"> px radius</label></div>
+      <div class="row"><label title="A pixel is painted exactly when its centre is inside: no anti-aliasing, so the player matches exactly">
+        <input id="shCrisp" type="checkbox"> Crisp edges</label></div>
+    </section>
+    <section id="pExport" hidden>
+      <h2>Export</h2>
+      <div class="row"><button id="export" title="A PNG of this scene, rendered by the player into out/">Export PNG</button>
+        <button id="reveal">Open folder</button><span id="exportResult" class="small muted"></span></div>
+    </section>
+    <section class="small">
+      <h2>Keys</h2>
+      <div class="keys">
+        <span><kbd>V</kbd> <kbd>T</kbd> <kbd>I</kbd> <kbd>R</kbd> <kbd>H</kbd></span><span>tools; <kbd>Space</kbd> drags the view</span>
+        <span>Click</span><span>select; <kbd>Shift</kbd> adds to the selection; drag to move, corners to resize</span>
+        <span><kbd>Alt</kbd></span><span>while dragging: no snapping</span>
+        <span><kbd>←</kbd><kbd>→</kbd><kbd>↑</kbd><kbd>↓</kbd></span><span>nudge 1 px (<kbd>Shift</kbd>: 10)</span>
+        <span><kbd>Ctrl</kbd> <kbd>Z</kbd> / <kbd>Y</kbd></span><span>undo / redo</span>
+        <span><kbd>Ctrl</kbd> <kbd>C</kbd> <kbd>V</kbd> <kbd>D</kbd></span><span>copy, paste, duplicate</span>
+        <span><kbd>Del</kbd> <kbd>Esc</kbd></span><span>delete / deselect</span>
+        <span><kbd>G</kbd></span><span>guides</span>
+      </div>
+    </section>
+  </div>
+</div>
 
-  <section id="dataSection">
-    <h2>Data</h2>
-    <div class="small muted">Live values for text: type <code>{</code> in a text to pick a key, or click one in the
-      sources window.</div>
-    <div id="dataNote" class="row small warn" hidden>The player isn't running, so there are no live values, and Test
-      needs it too. Start it with Play on cooler.</div>
-    <div class="row"><button id="openSources">Data sources…</button><span id="dataStatus" class="small muted"></span></div>
-    <div class="row"><label title="Draw text as written, {key} and all, rather than with the values filled in">
-      <input id="showRaw" type="checkbox"> Show placeholders in the preview</label></div>
-  </section>
-
-  <section>
-    <h2>Playlist</h2>
-    <div class="row"><input id="name" type="text" spellcheck="false" placeholder="name"></div>
+<div id="strip">
+  <div id="scenes"></div>
+  <button id="addScene" title="Add a scene">+</button>
+  <div id="playerBox">
     <div class="row">
-      <button id="addToPlaylist" class="primary">Add to playlist</button>
-      <label title="How long it stays on screen before the next piece">for <input id="itemSeconds" type="number" min="1" step="1" value="30"> s</label>
-    </div>
-    <ol id="playlist"></ol>
-    <div id="playlistTotal" class="small muted"></div>
-    <div class="row">
-      <button id="playerStart">Play on cooler</button>
+      <button id="playerStart" class="primary">Play on cooler</button>
       <button id="playerStop">Stop</button>
+      <button id="openSources">Data sources…</button>
     </div>
-    <div id="playerState" class="small muted"></div>
+    <div id="playerState" class="muted"></div>
     <div class="row"><label title="Plays the playlist after you log in, without opening the studio">
-      <input id="autostart" type="checkbox"> Start playing when Windows starts</label></div>
-    <div id="rivals" class="small warn"></div>
-  </section>
-
-  <section>
-    <h2>Export files</h2>
-    <div class="row">
-      <label><input type="checkbox" name="fmt" value="png" checked> PNG</label>
-      <label><input type="checkbox" name="fmt" value="gif"> GIF</label>
-      <label><input type="checkbox" name="fmt" value="mp4"> MP4</label>
-    </div>
-    <div class="row small muted">Named as above. PNG is animated if the art is.</div>
-    <div class="row">
-      <button id="export">Export to out/</button>
-      <button id="reveal">Open folder</button>
-    </div>
-    <div id="exportResult" class="small"></div>
-  </section>
-
-  <section class="small">
-    <h2>Keys</h2>
-    <div class="keys">
-      <span>Drag</span><span>move (Shift: one direction only)</span>
-      <span>Drag a corner</span><span>resize, keeping its shape</span>
-      <span>Click text</span><span>select it, in the layer Text is editing; drag to move it. Click the art to deselect.</span>
-      <span><kbd>Alt</kbd></span><span>while dragging: don't snap to edges and curve lines</span>
-      <span>Click a piece</span><span>in the playlist: change its layout</span>
-      <span><kbd>←</kbd><kbd>→</kbd><kbd>↑</kbd><kbd>↓</kbd></span><span>nudge the selected text, or the art when no text is selected, one snap step (Shift: ×10)</span>
-      <span><kbd>Esc</kbd></span><span>deselect the text</span>
-      <span><kbd>+</kbd> <kbd>-</kbd></span><span>bigger / smaller</span>
-      <span><kbd>R</kbd> <kbd>F</kbd></span><span>rotate / flip</span>
-      <span><kbd>Space</kbd> <kbd>,</kbd> <kbd>.</kbd></span><span>play / step frames</span>
-      <span><kbd>G</kbd></span><span>curve guides</span>
-    </div>
-  </section>
-</aside>
-
-<footer><span id="msg"></span><span id="status" style="display: contents"></span></footer>
+      <input id="autostart" type="checkbox"> Start with Windows</label><span id="dataStatus" class="muted"></span></div>
+    <div id="rivals" class="warn"></div>
+  </div>
+</div>
 
 <dialog id="sourcesDlg" aria-labelledby="srcTitle">
   <div class="dlg-head">
@@ -392,1927 +419,6 @@
 </dialog>
 <div id="acPop" class="ac" role="listbox" hidden></div>
 
-<script>
-"use strict";
-const $ = (id) => document.getElementById(id);
-const api = (path, opts = {}) => fetch(path, { ...opts, headers: { "X-Studio": "1", ...opts.headers } });
-
-let W = 2400, H = 1080, SAFE = { left: 0, right: 0, top: 0, bottom: 0 };  // replaced from the server
-let CAMERA = null;  // the camera punch-hole, {x, y, r}: no pixels there
-const M = 140;   // off-screen margin shown around the screen, in screen px
-const GROW = 4;  // placed art can be up to this many screens wide or tall
-const DEFAULTS = { factor: 1, scale: 1, fractional: false, smooth: false, x: 0, y: 0, rotate: 0, flip: false,
-                   fill: "solid", bg: "#000000", snap: "2",
-                   widgets: Object.freeze([]) };  // this piece's text: replaced when it changes, never changed in place
-
-let S = { ...DEFAULTS };  // the layout, remembered per image
-let src = null;           // the art: server info plus decoded frames
-const view = { zoom: "fit", k: 0.3, guides: true, ghost: true, playing: true, frame: 0, picking: false,
-               snapped: null };  // while dragging: the lines an edge has snapped to, {x, y}
-
-const stage = $("stage"), screenCv = $("screen"), ghostCv = $("ghost"), overlayCv = $("overlay");
-const sctx = screenCv.getContext("2d");
-const FRONT = () => ({ x: SAFE.left, y: SAFE.top, w: W - SAFE.left - SAFE.right, h: H - SAFE.top - SAFE.bottom });
-const WHOLE = () => ({ x: 0, y: 0, w: W, h: H });
-
-// --- Geometry ------------------------------------------------------------------
-
-function turnedSize() { return S.rotate % 180 ? [src.height, src.width] : [src.width, src.height]; }
-function artSize() { const [w, h] = turnedSize(); return [w / S.factor, h / S.factor]; }
-function placedSize() {
-  const [aw, ah] = artSize();
-  return [Math.max(1, Math.round(aw * S.scale)), Math.max(1, Math.round(ah * S.scale))];
-}
-function snapStep() { return S.snap === "art" ? Math.max(1, Math.round(S.scale)) : +S.snap; }
-function snap(v) { const s = snapStep(); return Math.round(v / s) * s; }
-// MP4 stores colour per 2x2 block: art-pixel edges on even screen pixels keep it exact.
-function videoAligned() {
-  return S.smooth || (Number.isInteger(S.scale) && S.scale % 2 === 0 && S.x % 2 === 0 && S.y % 2 === 0);
-}
-
-// --- Drawing (export rebuilds exactly this in studio.py) -----------------------------
-
-let turned = [];  // per frame: the art turned and flipped, still at file resolution
-const scaled = document.createElement("canvas"), mirrored = document.createElement("canvas");
-let scaledKey = "";
-
-function turnedFrame(i) {
-  if (turned[i] && !src.video) return turned[i];  // a video's one "frame" changes as it plays
-  const [w, h] = turnedSize(), sw = src.width, sh = src.height;
-  const c = turned[i] || document.createElement("canvas");
-  c.width = w; c.height = h;
-  const g = c.getContext("2d");
-  g.imageSmoothingEnabled = false;
-  if (S.flip) g.setTransform(-1, 0, 0, 1, w, 0);
-  // clockwise quarter turns: whole pixels land on whole pixels, so nothing is resampled
-  g.transform(...{ 0: [1, 0, 0, 1, 0, 0], 90: [0, 1, -1, 0, sh, 0], 180: [-1, 0, 0, -1, sw, sh], 270: [0, -1, 1, 0, 0, sw] }[S.rotate]);
-  g.drawImage(src.frames[i], 0, 0);
-  return (turned[i] = c);
-}
-
-function scaledFrame(i) {
-  const [dw, dh] = placedSize();
-  const key = [src.id, i, dw, dh, S.smooth, S.rotate, S.flip].join();
-  if (key !== scaledKey || src.video) {
-    scaled.width = dw; scaled.height = dh;
-    const g = scaled.getContext("2d");
-    g.imageSmoothingEnabled = S.smooth;
-    g.imageSmoothingQuality = "high";
-    g.drawImage(turnedFrame(i), 0, 0, dw, dh);
-    mirrored.width = 0;  // stale
-    scaledKey = key;
-  }
-  return scaled;
-}
-
-function paint(ctx, img, x, y, fill, bg) {
-  const dw = img.width, dh = img.height;
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.imageSmoothingEnabled = false;
-  ctx.fillStyle = bg;
-  ctx.fillRect(0, 0, W, H);
-  if (fill === "tile" || fill === "mirror") {
-    const mirror = fill === "mirror";
-    if ((W / dw + 2) * (H / dh + 2) > 300) {
-      // lots of small tiles: one pattern fill, mirroring baked into a 2x2 block
-      let tile = img;
-      if (mirror) {
-        if (!mirrored.width) {
-          mirrored.width = 2 * dw; mirrored.height = 2 * dh;
-          const g = mirrored.getContext("2d");
-          for (const [fx, fy] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
-            g.setTransform(fx ? -1 : 1, 0, 0, fy ? -1 : 1, fx * 2 * dw, fy * 2 * dh);
-            g.drawImage(img, 0, 0);
-          }
-        }
-        tile = mirrored;
-      }
-      const pattern = ctx.createPattern(tile, "repeat");
-      pattern.setTransform(new DOMMatrix([1, 0, 0, 1, x, y]));
-      ctx.fillStyle = pattern;
-      ctx.fillRect(0, 0, W, H);
-      return;
-    }
-    for (let j = Math.floor(-y / dh); y + j * dh < H; j++) {
-      for (let i = Math.floor(-x / dw); x + i * dw < W; i++) {
-        const fx = mirror ? i & 1 : 0, fy = mirror ? j & 1 : 0;
-        ctx.setTransform(fx ? -1 : 1, 0, 0, fy ? -1 : 1, x + (i + fx) * dw, y + (j + fy) * dh);
-        ctx.drawImage(img, 0, 0);
-      }
-    }
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    return;
-  }
-  ctx.drawImage(img, x, y);
-  if (fill !== "extend") return;
-  const r = x + dw, b = y + dh;
-  const strip = (sx, sy, sw, sh, tx, ty, tw, th) => {
-    if (tw > 0 && th > 0) ctx.drawImage(img, sx, sy, sw, sh, tx, ty, tw, th);
-  };
-  strip(0, 0, 1, dh, 0, y, x, dh);              // left edge column, stretched
-  strip(dw - 1, 0, 1, dh, r, y, W - r, dh);     // right
-  strip(0, 0, dw, 1, x, 0, dw, y);              // top row
-  strip(0, dh - 1, dw, 1, x, b, dw, H - b);     // bottom
-  strip(0, 0, 1, 1, 0, 0, x, y);                // corner pixels fill the corners
-  strip(dw - 1, 0, 1, 1, r, 0, W - r, y);
-  strip(0, dh - 1, 1, 1, 0, b, x, H - b);
-  strip(dw - 1, dh - 1, 1, 1, r, b, W - r, H - b);
-}
-
-function drawGhost(img) {
-  const g = ghostCv.getContext("2d"), q = ghostCv.width / (W + 2 * M);
-  g.setTransform(1, 0, 0, 1, 0, 0);
-  g.clearRect(0, 0, ghostCv.width, ghostCv.height);
-  if (!view.ghost || !img) return;
-  g.setTransform(q, 0, 0, q, M * q, M * q);
-  g.imageSmoothingEnabled = q < 1 || S.smooth;
-  g.globalAlpha = 0.3;
-  g.drawImage(img, S.x, S.y);
-  g.globalAlpha = 1;
-}
-
-function drawOverlay() {
-  const g = overlayCv.getContext("2d"), q = overlayCv.width / (W + 2 * M);
-  const css = 1 / view.k;  // one CSS pixel, in screen pixels
-  g.setTransform(1, 0, 0, 1, 0, 0);
-  g.clearRect(0, 0, overlayCv.width, overlayCv.height);
-  g.setTransform(q, 0, 0, q, M * q, M * q);
-  g.lineWidth = css;
-  g.strokeStyle = "rgba(255,255,255,.35)";
-  g.strokeRect(-css / 2, -css / 2, W + css, H + css);
-  if (view.guides) {
-    g.fillStyle = "rgba(255,176,32,.13)";
-    for (const [x, y, w, h] of [[0, 0, SAFE.left, H], [W - SAFE.right, 0, SAFE.right, H],
-                                [0, 0, W, SAFE.top], [0, H - SAFE.bottom, W, SAFE.bottom]]) {
-      if (w > 0 && h > 0) g.fillRect(x, y, w, h);
-    }
-    g.strokeStyle = "rgba(255,176,32,.85)";
-    g.setLineDash([6 * css, 5 * css]);
-    g.beginPath();
-    for (const x of [SAFE.left, W - SAFE.right]) {
-      if (x > 0 && x < W) { g.moveTo(x, -22 * css); g.lineTo(x, H + 22 * css); }  // none where there's no curve
-    }
-    g.stroke();
-    g.setLineDash([]);
-    g.font = `${12 * css}px system-ui, "Segoe UI", sans-serif`;
-    g.fillStyle = "rgba(255,176,32,.95)";
-    g.textAlign = "center";
-    g.textBaseline = "bottom";
-    const f = FRONT();
-    g.fillText(`flat front, ${f.w} px`, f.x + f.w / 2, -8 * css);
-    if (SAFE.right) g.fillText("wraps around the side", W - SAFE.right / 2, -8 * css);
-    if (SAFE.left) { g.textAlign = "right"; g.fillText("curls away", SAFE.left, -8 * css); }
-    if (CAMERA) {  // the punch-hole: drawn as it looks on the cooler, a black dot, outlined so it shows on black
-      g.beginPath();
-      g.arc(CAMERA.x, CAMERA.y, CAMERA.r, 0, 2 * Math.PI);
-      g.fillStyle = "#000";
-      g.fill();
-      g.strokeStyle = g.fillStyle = "rgba(255,176,32,.95)";
-      g.stroke();
-      g.textAlign = "left";
-      g.textBaseline = "middle";
-      g.fillText("camera", -8 * css - g.measureText("camera").width, CAMERA.y);
-    }
-  }
-  const w = selectedWidget(), lay = w && textLayout(w);
-  if (lay) {  // the selected text's block, which snaps like the art, and its anchor point (X, Y)
-    g.strokeStyle = "rgba(120,255,170,.95)";
-    g.setLineDash([4 * css, 3 * css]);
-    g.strokeRect(lay.box.x, lay.box.y, Math.max(lay.box.w, css), lay.box.h);
-    g.setLineDash([]);
-    const ax = num(w.x, 0), ay = num(w.y, 0), arm = 5 * css;
-    g.beginPath();
-    g.moveTo(ax - arm, ay); g.lineTo(ax + arm, ay);
-    g.moveTo(ax, ay - arm); g.lineTo(ax, ay + arm);
-    g.stroke();
-  }
-  if (src) {
-    const [dw, dh] = placedSize();
-    g.strokeStyle = "rgba(124,196,255,.9)";
-    g.setLineDash([4 * css, 4 * css]);
-    g.strokeRect(S.x, S.y, dw, dh);
-    g.setLineDash([]);
-  }
-  if (view.snapped) {  // while dragging art or text
-    g.strokeStyle = "#ff4fd8";
-    g.lineWidth = 2 * css;
-    g.beginPath();
-    if (view.snapped.x !== null) { g.moveTo(view.snapped.x, -M); g.lineTo(view.snapped.x, H + M); }
-    if (view.snapped.y !== null) { g.moveTo(-M, view.snapped.y); g.lineTo(W + M, view.snapped.y); }
-    g.stroke();
-    g.lineWidth = css;
-  }
-  if (src) {
-    const half = 5 * css;  // corner handles for resizing
-    g.fillStyle = "#fff";
-    g.strokeStyle = "rgba(0,0,0,.85)";
-    for (const [cx, cy] of corners()) {
-      g.fillRect(cx - half, cy - half, 2 * half, 2 * half);
-      g.strokeRect(cx - half, cy - half, 2 * half, 2 * half);
-    }
-  }
-}
-
-/** The placed art's corners in screen pixels: top left, top right, bottom left, bottom right. */
-function corners() {
-  const [dw, dh] = placedSize();
-  return [[S.x, S.y], [S.x + dw, S.y], [S.x, S.y + dh], [S.x + dw, S.y + dh]];
-}
-
-function draw() {
-  if (!src) {
-    sctx.fillStyle = "#000";
-    sctx.fillRect(0, 0, W, H);
-    drawGhost(null);
-  } else {
-    const img = scaledFrame(view.frame);
-    paint(sctx, img, S.x, S.y, S.fill, S.bg);
-    drawGhost(img);
-  }
-  if (S.widgets?.length || overlay.length) {  // the text over it, as the player draws it
-    sctx.setTransform(1, 0, 0, 1, 0, 0);
-    sctx.drawImage(textLayer(), 0, 0);
-  }
-  drawOverlay();
-}
-
-function layout() {
-  const wrap = $("stageWrap"), fw = W + 2 * M, fh = H + 2 * M;
-  view.k = view.zoom === "fit"
-    ? Math.max(0.05, Math.min((wrap.clientWidth - 24) / fw, (wrap.clientHeight - 24) / fh)) : +view.zoom;
-  const k = view.k, res = Math.min(window.devicePixelRatio || 1, 6000 / (fw * k));
-  stage.style.width = `${fw * k}px`;
-  stage.style.height = `${fh * k}px`;
-  Object.assign(screenCv.style, { left: `${M * k}px`, top: `${M * k}px`, width: `${W * k}px`, height: `${H * k}px`,
-                                  imageRendering: k >= 1 ? "pixelated" : "auto" });
-  for (const cv of [ghostCv, overlayCv]) {
-    cv.style.width = `${fw * k}px`;
-    cv.style.height = `${fh * k}px`;
-    cv.width = Math.round(fw * k * res);
-    cv.height = Math.round(fh * k * res);
-  }
-  draw();
-}
-
-// --- Changing the layout ---------------------------------------------------------------
-
-function changed() { draw(); syncControls(); save(); }
-
-function setScale(s, keepCentre = true) {
-  const [aw, ah] = artSize();
-  const lo = S.fractional ? Math.max(1 / aw, 1 / ah, 0.01) : 1, hi = Math.min(GROW * W / aw, GROW * H / ah);
-  s = Math.min(Math.max(s, lo), Math.max(hi, lo));
-  if (!S.fractional) s = Math.max(1, Math.round(s));
-  const [dw0, dh0] = placedSize(), cx = S.x + dw0 / 2, cy = S.y + dh0 / 2;
-  S.scale = s;
-  if (keepCentre) {
-    const [dw, dh] = placedSize();
-    S.x = snap(cx - dw / 2);
-    S.y = snap(cy - dh / 2);
-  }
-}
-
-function stepScale(dir) {
-  setScale(S.fractional ? S.scale * (dir > 0 ? 1.05 : 1 / 1.05) : S.scale + dir);
-}
-
-function fitInto(box, cover) {
-  const [aw, ah] = artSize();
-  const exact = () => (cover ? Math.max : Math.min)(box.w / aw, box.h / ah);
-  let s = exact();
-  if (!S.fractional) {
-    s = cover ? Math.ceil(s - 1e-9) : Math.floor(s + 1e-9);
-    if (s < 1) {  // art bigger than the box: only scaling down will do
-      S.fractional = S.smooth = true;
-      s = exact();
-      message("This art is bigger than that, so in-between sizes and smooth scaling are now on.", "info");
-    }
-  }
-  setScale(s, false);
-  const [dw, dh] = placedSize();
-  S.x = snap(box.x + (box.w - dw) / 2);
-  S.y = snap(box.y + (box.h - dh) / 2);
-  changed();
-}
-
-function fillHeight() {
-  const [, ah] = artSize();
-  setScale(S.fractional ? H / ah : Math.ceil(H / ah - 1e-9), false);
-  const [dw, dh] = placedSize(), f = FRONT();
-  S.x = snap(f.x + (f.w - dw) / 2);
-  S.y = snap((H - dh) / 2);
-  changed();
-}
-
-function align(where) {
-  const [dw, dh] = placedSize(), f = FRONT();
-  const across = { "front-left": f.x, "front-centre": f.x + (f.w - dw) / 2, "front-right": f.x + f.w - dw,
-                   "screen-centre": (W - dw) / 2 };
-  const down = { top: 0, middle: (H - dh) / 2, bottom: H - dh };
-  if (where in across) S.x = snap(across[where]);
-  else S.y = snap(down[where]);
-  changed();
-}
-
-function rotate() {
-  const [dw0, dh0] = placedSize(), cx = S.x + dw0 / 2, cy = S.y + dh0 / 2;
-  S.rotate = (S.rotate + 90) % 360;
-  turned = [];
-  const [dw, dh] = placedSize();
-  S.x = snap(cx - dw / 2);
-  S.y = snap(cy - dh / 2);
-  changed();
-}
-
-function flip() { S.flip = !S.flip; turned = []; changed(); }
-
-function startLayout(widgets = DEFAULTS.widgets) {
-  S = { ...DEFAULTS, factor: src.factor, bg: src.edge, widgets };
-  turned = [];
-  fitInto(FRONT(), false);
-}
-
-// --- Controls ----------------------------------------------------------------------
-
-function syncControls() {
-  const set = (id, v) => { if (document.activeElement !== $(id)) $(id).value = v; };
-  set("scale", +S.scale.toFixed(3));
-  set("x", S.x);
-  set("y", S.y);
-  set("factor", S.factor);
-  $("scale").step = S.fractional ? "0.05" : "1";
-  $("fractional").checked = S.fractional;
-  $("smooth").checked = S.smooth;
-  $("snap").value = S.snap;
-  $("bg").value = S.bg;
-  $("flip").setAttribute("aria-pressed", S.flip);
-  for (const b of document.querySelectorAll("[data-fill]")) b.setAttribute("aria-pressed", b.dataset.fill === S.fill);
-  const [dw, dh] = placedSize();
-  $("placedSize").textContent = `${dw} × ${dh} px`;
-  showStatus();
-}
-
-function showStatus() {
-  const [dw, dh] = placedSize(), f = FRONT(), out = [];
-  const add = (text, cls = "") => { const s = document.createElement("span"); s.textContent = text; s.className = cls; out.push(s); };
-  add(`${dw} × ${dh} at ${S.x}, ${S.y}`);
-  const cut = [["left", -S.x], ["right", S.x + dw - W], ["top", -S.y], ["bottom", S.y + dh - H]].filter(([, v]) => v > 0);
-  if (cut.length) add(`cut off: ${cut.map(([side, v]) => `${side} ${v} px`).join(", ")}`, "info");
-  const curved = [["left", Math.min(S.x + dw, f.x) - Math.max(S.x, 0)],
-                  ["right", Math.min(S.x + dw, W) - Math.max(S.x, f.x + f.w)]].filter(([, v]) => v > 0);
-  if (curved.length) add(`on the curve: ${curved.map(([side, v]) => `${side} ${v} px`).join(", ")}`, "info");
-  if (CAMERA && S.fill === "solid") {  // does the art reach the camera hole?
-    const nx = Math.min(Math.max(CAMERA.x, S.x), S.x + dw), ny = Math.min(Math.max(CAMERA.y, S.y), S.y + dh);
-    if ((nx - CAMERA.x) ** 2 + (ny - CAMERA.y) ** 2 < CAMERA.r ** 2) add("the camera hole covers part of the art", "info");
-  }
-  if (!Number.isInteger(S.scale) && !S.smooth)
-    add(`in-between size: art pixels come out uneven (${Math.floor(S.scale)} or ${Math.ceil(S.scale)} px)`, "warn");
-  if (!src.video && (src.colors > 256 || S.smooth))
-    add("over 256 colours: a GIF will approximate them, PNG and MP4 keep them all", "warn");
-  if (S.smooth) add("smooth preview is close; the export is a little sharper", "muted");
-  if (Number.isInteger(S.scale) && !S.smooth)
-    add(S.scale % 2 ? "odd size: art pixels come out slightly uneven on the glass"
-                    : `each art pixel is ${S.scale * 1.5}×${S.scale * 1.5} glass pixels`, "muted");
-  if (!videoAligned() && document.querySelector("input[name=fmt][value=mp4]").checked)
-    add("MP4 will use full colour (4:4:4) so pixel edges stay crisp", "muted");
-  $("status").replaceChildren(...out);
-}
-
-function showSource() {
-  $("fileName").textContent = src.name;
-  const n = src.durations.length, loop = src.durations.reduce((a, b) => a + b, 0) / 1000;
-  const [aw, ah] = [src.width / S.factor, src.height / S.factor];
-  const rows = [
-    ["File", `${src.width} × ${src.height}`],
-    ["Art", S.factor > 1 ? `${+aw.toFixed(2)} × ${+ah.toFixed(2)}, saved ${S.factor}× enlarged` : "file pixels = art pixels"],
-    ["Frames", src.video ? `video, ${loop.toFixed(1)} s at ${+src.video.fps.toFixed(2)} fps${src.video.trimmed ? " (the first 30 s)" : ""}`
-      : n > 1 ? `${n}, ${loop.toFixed(2)} s loop` : "still image"],
-    ["Colours", src.video ? "video" : src.colors > 256 ? "over 256" : String(src.colors)],
-  ];
-  $("srcInfo").replaceChildren(...rows.flatMap(([k, v]) => {
-    const dt = document.createElement("dt"), dd = document.createElement("dd");
-    dt.textContent = k; dd.textContent = v;
-    return [dt, dd];
-  }));
-  showFrame();
-}
-
-function showFrame() {
-  const v = src?.video && src.frames[0], n = v ? 2 : src ? src.frames.length : 0;
-  $("frameNo").textContent = v ? `${v.currentTime.toFixed(1)} / ${v.duration.toFixed(1)} s`
-    : n > 1 ? `${view.frame + 1} / ${n}` : "";
-  for (const id of ["prev", "play", "next"]) $(id).disabled = n < 2;
-  $("play").textContent = view.playing ? "Pause" : "Play";
-}
-
-function message(text, cls = "") { $("msg").textContent = text; $("msg").className = cls; }
-
-const storeKey = () => `wv-studio:${src.name}:${src.width}x${src.height}`;
-function save() { try { localStorage.setItem(storeKey(), JSON.stringify(S)); } catch {} }
-function restore() {
-  try {
-    const v = JSON.parse(localStorage.getItem(storeKey()));
-    return v && typeof v === "object" ? v : null;
-  } catch { return null; }
-}
-
-// --- Loading and exporting ----------------------------------------------------------
-
-async function openFile(file) {
-  message(`Opening ${file.name}…`);
-  try {
-    const res = await api(`/api/load?name=${encodeURIComponent(file.name)}`, { method: "POST", body: file });
-    const info = await res.json();
-    if (!res.ok) throw new Error(info.error || res.statusText);
-    editing = null;
-    await useSource(info);
-    showPlaylist();
-    message("");
-  } catch (err) {
-    message(`Couldn't open ${file.name}: ${err.message}`, "warn");
-  }
-}
-
-async function loadVideo(url) {
-  const video = make("video");
-  Object.assign(video, { muted: true, loop: true, playsInline: true, preload: "auto" });
-  await new Promise((ok, fail) => {
-    video.onloadeddata = ok;
-    video.onerror = () => fail(new Error("the browser couldn't play the preview"));
-    video.src = url;
-  });
-  return video;
-}
-
-async function useSource(info, layout = null, widgets = null) {
-  const frames = info.video ? [await loadVideo(info.video.url)] : await Promise.all(info.durations.map(async (_, i) => {
-    const blob = await (await api(`/api/frame/${info.id}/${i}.png`)).blob();
-    return createImageBitmap(blob, { colorSpaceConversion: "none" });
-  }));
-  if (src?.video) src.frames[0].removeAttribute("src");  // let the old preview go
-  src = { ...info, frames };
-  if (src.video && view.playing) frames[0].play();
-  // PNG or GIF of a whole video would be enormous: MP4 only
-  for (const c of document.querySelectorAll("input[name=fmt]")) {
-    c.disabled = !!src.video && c.value !== "mp4";
-    if (src.video) c.checked = c.value === "mp4";
-  }
-  view.frame = 0;
-  turned = [];
-  const saved = layout || restore();
-  if (saved) S = { ...DEFAULTS, ...saved };
-  else startLayout();
-  if (widgets) S.widgets = widgets;  // a playlist piece's own text
-  if (!Array.isArray(S.widgets)) S.widgets = DEFAULTS.widgets;
-  if (text.layer === "piece") text.selected = null;
-  $("name").value = info.name.replace(/\.[^.]+$/, "");
-  $("exportResult").replaceChildren();
-  document.body.classList.add("loaded");
-  showSource();
-  changed();
-  showText();
-}
-
-function placement() {
-  const [width, height] = placedSize();
-  return { width, height, x: S.x, y: S.y, rotate: S.rotate, flip: S.flip, smooth: S.smooth, fill: S.fill, bg: S.bg };
-}
-
-async function postJson(path, body, opts = {}) {
-  const res = await api(path, { method: "POST", headers: { "Content-Type": "application/json" },
-                                body: JSON.stringify(body), ...opts });
-  const out = await res.json();
-  if (!res.ok) throw new Error(out.error || res.statusText);
-  return out;
-}
-
-async function doExport() {
-  const formats = [...document.querySelectorAll("input[name=fmt]:checked")].map((c) => c.value);
-  if (!src) return;
-  if (!formats.length) return message("Tick at least one format to export.", "warn");
-  const button = $("export"), result = $("exportResult");
-  button.disabled = true;
-  button.textContent = formats.includes("mp4") ? "Exporting (MP4 takes a bit)…" : "Exporting…";
-  result.replaceChildren();
-  try {
-    const out = await postJson("/api/export", { id: src.id, name: $("name").value, formats, yuv444: !videoAligned(),
-                                                place: placement() });
-    const list = document.createElement("ul");
-    for (const f of out.files) {
-      const li = document.createElement("li");
-      li.textContent = `${f.name}  (${f.bytes < 1e6 ? `${Math.round(f.bytes / 1e3)} KB` : `${(f.bytes / 1e6).toFixed(1)} MB`})`;
-      list.append(li);
-    }
-    const where = document.createElement("div");
-    where.className = "muted";
-    where.textContent = `Saved in ${out.folder}.`;
-    result.append(list, where);
-    for (const note of out.notes) {
-      const p = document.createElement("div");
-      p.className = "warn";
-      p.textContent = note;
-      result.append(p);
-    }
-    message("");
-  } catch (err) {
-    message(`Export failed: ${err.message}`, "warn");
-  } finally {
-    button.disabled = false;
-    button.textContent = "Export to out/";
-  }
-}
-
-// --- Playlist ------------------------------------------------------------------------
-
-let playlist = [];
-let editing = null;  // the playlist piece loaded for laying out again, if any
-let playlistState = { items: [], log: "", rivals: [] };
-
-function minutes(s) {
-  return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min${s % 60 ? ` ${s % 60} s` : ""}`;
-}
-
-function make(tag, cls = "", text) {
-  const el = document.createElement(tag);
-  el.className = cls;
-  if (text !== undefined) el.textContent = text;
-  return el;
-}
-
-function showPlaylist(state = playlistState) {
-  playlistState = state;
-  playlist = state.items;
-  if (editing && !playlist.some((item) => item.file === editing)) editing = null;  // removed: nothing to save to
-  const rows = playlist.map((item, i) => {
-    const img = make("img");
-    img.src = `/api/thumb/${encodeURIComponent(item.file)}?v=${item.version}`;
-    img.alt = "";
-    const name = make("span", "pl-name", item.file.replace(/\.[^.]+$/, ""));
-    name.title = item.file;
-    const seconds = make("input");
-    seconds.type = "number";
-    seconds.min = "1";
-    seconds.value = item.seconds;
-    seconds.title = "Seconds on screen";
-    seconds.addEventListener("change", () => {
-      const v = parseInt(seconds.value, 10);
-      if (v >= 1) editPlaylist((items) => { items[i].seconds = v; });
-    });
-    const meta = make("span", "pl-meta");
-    meta.append(seconds, `s · ${item.frames === "video" ? "video" : item.frames > 1 ? `${item.frames} frames` : "still"}`);
-    const button = (label, title, disabled, edit) => {
-      const b = make("button", "", label);
-      b.title = title;
-      b.disabled = disabled;
-      b.addEventListener("click", () => editPlaylist(edit));
-      return b;
-    };
-    const buttons = make("span", "pl-buttons");
-    buttons.append(
-      button("↑", "Play earlier", i === 0, (items) => items.splice(i - 1, 0, items.splice(i, 1)[0])),
-      button("↓", "Play later", i === playlist.length - 1, (items) => items.splice(i + 1, 0, items.splice(i, 1)[0])),
-      button("✕", "Remove from the playlist", false, (items) => items.splice(i, 1)));
-    const li = make("li", item.file === editing ? "editing" : "");
-    li.title = "Click to change its layout";
-    li.addEventListener("click", (e) => { if (!e.target.closest("button, input")) editPiece(item); });
-    li.append(img, name, buttons, meta);
-    return li;
-  });
-  if (!rows.length) rows.push(make("li", "empty", "Empty. Lay out some art, then Add to playlist."));
-  $("playlist").replaceChildren(...rows);
-  const total = playlist.reduce((a, item) => a + item.seconds, 0);
-  $("playlistTotal").textContent =
-    playlist.length > 1 ? `${playlist.length} pieces, ${minutes(total)} round, then it repeats` : "";
-  showPlayer(state);
-  showAddButton();
-  showText();  // where this piece's text saves to
-}
-
-/** "Update" when the name matches a piece already in the playlist (adding it again replaces that piece). */
-function showAddButton() {
-  const stem = $("name").value.replace(/[^\w .()-]/g, "_").trim();
-  const exists = playlist.some((item) => item.file.replace(/\.[^.]+$/, "") === stem);
-  if (!$("addToPlaylist").disabled) $("addToPlaylist").textContent = exists ? "Update in playlist" : "Add to playlist";
-}
-
-async function editPiece(item) {
-  const name = item.file.replace(/\.[^.]+$/, "");
-  message(`Opening ${name}…`);
-  try {
-    await flush("piece");  // text still to save, perhaps to this piece
-    const out = await postJson("/api/playlist/edit", { file: item.file });
-    await useSource(out.source, out.layout, out.widgets || []);
-    editing = item.file;
-    $("name").value = name;
-    $("itemSeconds").value = item.seconds;
-    showPlaylist();
-    message(out.original
-      ? `Editing ${name}: change anything, then Update in playlist.`
-      : `Editing ${name}. It was added before the studio kept originals, so this is the finished version: `
-        + "you can still resize, move and crop it.", "info");
-  } catch (err) {
-    message(`Couldn't open ${name}: ${err.message}`, "warn");
-  }
-}
-
-function editPlaylist(edit) {
-  const items = playlist.map(({ file, seconds }) => ({ file, seconds }));
-  edit(items);
-  postJson("/api/playlist", { items }).then(showPlaylist)
-    .catch((err) => message(`Couldn't save the playlist: ${err.message}`, "warn"));
-}
-
-function showPlayer(state) {
-  const waiting = state.log.match(/(?:waiting for the panel|nothing to play yet): (.*)/);
-  const el = $("playerState");
-  el.className = `small ${waiting ? "warn" : state.running ? "info" : "muted"}`;
-  el.textContent = !state.built ? "The player isn't built yet: run cargo build --release in the player folder."
-    : waiting ? `The player is running but can't reach the cooler: ${waiting[1]}`
-    : state.running ? "Playing on the cooler. Playlist changes show up within a second."
-    : "Not playing.";
-  $("playerStart").disabled = state.running || !state.built;
-  $("playerStop").disabled = !state.running;
-  $("autostart").checked = state.autostart;
-  $("autostart").disabled = !state.built;
-  $("rivals").textContent = state.rivals.length
-    ? `Also set to start with Windows, and would take the cooler first: ${state.rivals.join(", ")}. `
-      + "Turn it off there (Task Scheduler, or Task Manager's Startup apps)."
-    : "";
-}
-
-async function addToPlaylist() {
-  if (!src) return;
-  const button = $("addToPlaylist");
-  button.disabled = true;
-  button.textContent = src.video ? "Adding (about as long as the video)…" : "Adding…";
-  try {
-    const { widgets = [], ...layout } = S;  // the text goes as the piece's own `widgets`, which the player draws
-    const out = await postJson("/api/playlist/add", { id: src.id, name: $("name").value, place: placement(),
-                                                      layout, widgets, seconds: parseInt($("itemSeconds").value, 10) || 30 });
-    editing = out.added;
-    showPlaylist(out);
-    const name = out.added.replace(/\.[^.]+$/, "");
-    message(`${out.replaced ? "Updated" : "Added"} ${name}.${out.running ? "" : " Press Play on cooler to start."}`,
-            "info");
-  } catch (err) {
-    message(`Couldn't add it: ${err.message}`, "warn");
-  } finally {
-    button.disabled = false;
-    showAddButton();
-  }
-}
-
-async function player(action) {
-  $(action === "start" ? "playerStart" : "playerStop").disabled = true;
-  try {
-    showPlayer(await postJson(`/api/player/${action}`, {}));
-  } catch (err) {
-    message(`Couldn't ${action} the player: ${err.message}`, "warn");
-    showPlayer(await (await api("/api/player")).json());
-  }
-}
-
-// --- Text ----------------------------------------------------------------------------
-//
-// Text drawn over the art, laid out as docs/widgets.md says so the preview matches the player: this piece's own
-// (S.widgets, kept with the layout and stored as the playlist item's `widgets`) and the global layer over every
-// piece (the playlist's `overlay`), drawn in that order.
-
-let DEFAULT_FONT = "C:\\Windows\\Fonts\\segoeui.ttf";  // replaced from the server
-let overlay = [];        // the global layer
-let fontList = [];       // [{path, family, style}]: the fonts the picker offers
-const fonts = new Map(); // font path (lower case) -> {family, state}: a FontFace per file, loaded when first used
-let fontsArrived = 0;    // counts loads finished, so the text is drawn again
-const text = { layer: "piece", selected: null };  // the layer being edited, and its selected widget's id
-const textCv = document.createElement("canvas"), textCtx = textCv.getContext("2d");  // all the text, drawn once
-// one widget at a time: outline (or everything), and the fill on its own for crisp text
-const glyphs = [0, 1].map(() => document.createElement("canvas").getContext("2d", { willReadFrequently: true }));
-let textKey = "";
-
-const num = (v, fallback) => (typeof v === "number" && Number.isFinite(v) ? v : fallback);
-const hex = (v, fallback) => (/^#[0-9a-f]{6}$/i.test(v) ? v : fallback);
-function layerWidgets(layer = text.layer) { return layer === "global" ? overlay : S.widgets || []; }
-function setLayerWidgets(layer, list) { if (layer === "global") overlay = list; else S.widgets = list; }
-function selectedWidget() { return layerWidgets().find((w) => w.id === text.selected) || null; }
-
-/** A font file as a CSS family, loaded from the studio the first time it's asked for. */
-function fontFace(path) {
-  const key = path.toLowerCase();  // Windows paths
-  let f = fonts.get(key);
-  if (!f) {
-    f = { family: `wv-font-${fonts.size}`, state: "loading" };
-    fonts.set(key, f);
-    const face = new FontFace(f.family, `url("/api/font?path=${encodeURIComponent(path)}")`);
-    face.load().then(() => { document.fonts.add(face); f.state = "ready"; }, () => { f.state = "failed"; })
-      .finally(() => { fontsArrived++; draw(); });
-  }
-  return f;
-}
-
-/** A widget's font family; Segoe UI when its own can't be read, as in the player. Null while it loads, or when
- *  neither font will do (then the widget isn't drawn). */
-function widgetFamily(w) {
-  for (const path of [typeof w.font === "string" && w.font ? w.font : DEFAULT_FONT, DEFAULT_FONT]) {
-    const f = fontFace(path);
-    if (f.state !== "failed") return f.state === "ready" ? f.family : null;
-  }
-  return null;
-}
-
-/** A text widget laid out (docs/widgets.md, Geometry): each line's text, start, width and baseline, the block's
- *  box, and the font's ascent and descent. Null for other kinds of widget, and until the font has loaded. */
-function textLayout(w) {
-  const family = w.type === "text" && widgetFamily(w);
-  if (!family) return null;
-  const g = textCtx, size = Math.max(1, num(w.size, 48)), step = size * num(w.line_height, 1.2);
-  const font = `${size}px "${family}"`;
-  g.font = font;
-  g.fontKerning = "normal";
-  const m = g.measureText("x"), ascent = m.fontBoundingBoxAscent, descent = m.fontBoundingBoxDescent;
-  const texts = shownText(w).split("\n"), height = ascent + descent + (texts.length - 1) * step;
-  const x = num(w.x, 0), y = num(w.y, 0);
-  const top = w.valign === "middle" ? y - height / 2 : w.valign === "bottom" ? y - height : y;
-  const lines = texts.map((t, i) => {
-    const width = g.measureText(t).width;  // the advances, kerned
-    return { text: t, width, baseline: top + ascent + i * step,
-             x: w.align === "center" ? x - width / 2 : w.align === "right" ? x - width : x };
-  });
-  const left = Math.min(...lines.map((l) => l.x)), right = Math.max(...lines.map((l) => l.x + l.width));
-  return { lines, ascent, descent, font, box: { x: left, y: top, w: right - left, h: height } };
-}
-
-/** Crisp text: each pixel all or nothing at 50% coverage, in the one colour drawn there. */
-function threshold(g, x, y, w, h, colour) {
-  const img = g.getImageData(x, y, w, h), d = img.data;
-  const [r, gr, b] = [1, 3, 5].map((i) => parseInt(colour.slice(i, i + 2), 16));
-  for (let i = 0; i < d.length; i += 4) {
-    const on = d[i + 3] >= 128;
-    d[i] = r; d[i + 1] = gr; d[i + 2] = b; d[i + 3] = on ? 255 : 0;
-  }
-  g.putImageData(img, x, y);
-}
-
-/** Draws one widget onto `out`: the outline (the glyphs grown by its width) under the fill, then the two
- *  together at the widget's opacity. */
-function drawWidget(out, w) {
-  const lay = textLayout(w);
-  if (!lay) return;
-  const o = Math.max(0, num(w.outline?.width, 0)), colour = hex(w.color, "#ffffff");
-  const outline = hex(w.outline?.color, "#000000"), pad = Math.ceil(o + lay.ascent + lay.descent);  // glyphs can overhang
-  const x0 = Math.max(0, Math.floor(lay.box.x - pad)), y0 = Math.max(0, Math.floor(lay.box.y - pad));
-  const x1 = Math.min(W, Math.ceil(lay.box.x + lay.box.w + pad)), y1 = Math.min(H, Math.ceil(lay.box.y + lay.box.h + pad));
-  if (x1 <= x0 || y1 <= y0) return;  // all off the screen
-  const [a, b] = glyphs, bw = x1 - x0, bh = y1 - y0;
-  for (const g of glyphs) {
-    if (g.canvas.width !== W || g.canvas.height !== H) { g.canvas.width = W; g.canvas.height = H; }
-    g.clearRect(x0, y0, bw, bh);
-    Object.assign(g, { font: lay.font, fontKerning: "normal", textAlign: "left", textBaseline: "alphabetic",
-                       lineWidth: 2 * o, lineJoin: "round" });
-  }
-  const fill = (g, c) => { g.fillStyle = c; for (const l of lay.lines) g.fillText(l.text, l.x, l.baseline); };
-  const stroke = (g, c) => { g.strokeStyle = c; for (const l of lay.lines) g.strokeText(l.text, l.x, l.baseline); };
-  if (w.crisp) {
-    if (o > 0) {  // the whole grown shape, then the fill over it, each thresholded
-      stroke(a, outline);
-      fill(a, outline);
-      threshold(a, x0, y0, bw, bh, outline);
-    }
-    fill(b, colour);
-    threshold(b, x0, y0, bw, bh, colour);
-    a.drawImage(b.canvas, x0, y0, bw, bh, x0, y0, bw, bh);
-  } else {
-    if (o > 0) stroke(a, outline);
-    fill(a, colour);
-  }
-  out.globalAlpha = Math.min(1, Math.max(0, num(w.opacity, 1)));
-  out.drawImage(a.canvas, x0, y0, bw, bh, x0, y0, bw, bh);
-  out.globalAlpha = 1;
-}
-
-/** All the text, this piece's then the global layer's, drawn again only when something about it changes. */
-function textLayer() {
-  const key = JSON.stringify([S.widgets, overlay, fontsArrived, W, H, live.version, live.raw]);
-  if (key !== textKey) {
-    textKey = key;
-    if (JSON.stringify(liveTexts()) !== live.asked) resolveSoon();  // new placeholders to fill in
-    textCv.width = W; textCv.height = H;  // which clears it
-    for (const w of [...(S.widgets || []), ...overlay]) drawWidget(textCtx, w);
-  }
-  return textCv;
-}
-
-/** The active layer's widget under the pointer: the selected one anywhere in its box, else the topmost whose
- *  text is there. */
-/** The text under the pointer, in either layer: {widget, layer}, or null. The selected widget's whole box
- *  counts; otherwise only its lines, topmost first (the global layer draws over the piece's). */
-function textAt(e) {
-  const [px, py] = screenPoint(e, true), slop = 3 / view.k;
-  const inside = (x, y, w, h, grow) => px >= x - grow && px <= x + w + grow && py >= y - grow && py <= y + h + grow;
-  const chosen = selectedWidget(), box = chosen && textLayout(chosen)?.box;
-  if (box && inside(box.x, box.y, box.w, box.h, slop)) return { widget: chosen, layer: text.layer };
-  for (const layer of ["global", "piece"]) {
-    const list = layerWidgets(layer);
-    for (let i = list.length - 1; i >= 0; i--) {
-      const w = list[i], lay = textLayout(w), grow = Math.max(0, num(w.outline?.width, 0)) + slop;
-      if (lay?.lines.some((l) => l.width > 0 && inside(l.x, l.baseline - lay.ascent, l.width, lay.ascent + lay.descent, grow)))
-        return { widget: w, layer };
-    }
-  }
-  return null;
-}
-
-/** Moves the dragged widget, its block's edges snapping to the same lines as the art's. */
-function dragText(e) {
-  const w = drag.widget;
-  let dx = (e.clientX - drag.cx) / view.k, dy = (e.clientY - drag.cy) / view.k;
-  if (e.shiftKey) { if (Math.abs(dx) > Math.abs(dy)) dy = 0; else dx = 0; }
-  let x = snap(drag.x + dx), y = snap(drag.y + dy), edge;
-  view.snapped = { x: null, y: null };
-  const lay = textLayout(w);
-  if (!e.altKey && lay) {
-    const lines = snapLines(), ox = lay.box.x - num(w.x, 0), oy = lay.box.y - num(w.y, 0);  // the box from X, Y
-    if (dx || !e.shiftKey) { [edge, view.snapped.x] = snapSpan(x + ox, lay.box.w, lines.x); x = Math.round(edge - ox); }
-    if (dy || !e.shiftKey) { [edge, view.snapped.y] = snapSpan(y + oy, lay.box.h, lines.y); y = Math.round(edge - oy); }
-  }
-  if (x !== w.x || y !== w.y) { w.x = x; w.y = y; textChanged(); }
-  else drawOverlay();
-}
-
-// Saving, a moment after the last change: the global layer to the playlist, and this piece's text with its layout
-// and, when it's a piece in the playlist, to that piece too (without making its art again).
-const saves = {};  // per kind: {timer, send, last}
-function later(kind, send, ms = 400) {
-  const s = (saves[kind] ||= { last: Promise.resolve() });
-  clearTimeout(s.timer);
-  s.send = send;
-  s.timer = setTimeout(() => flush(kind), ms);
-}
-function flush(kind) {  // now, after the one before it, so saves arrive in order
-  const s = saves[kind];
-  if (!s?.send) return s?.last || Promise.resolve();
-  clearTimeout(s.timer);
-  const send = s.send;
-  s.send = null;
-  return (s.last = s.last.then(send).catch((err) => message(`Couldn't save the text: ${err.message}`, "warn")));
-}
-window.addEventListener("pagehide", () => { flush("overlay"); flush("piece"); });
-
-/** After any change to the text in `layer`: draws it and saves it. */
-function textChanged(layer = text.layer) {
-  draw();
-  showText();
-  const keep = { keepalive: true };  // finishes even if the page is closing
-  if (layer === "global") {
-    const body = { overlay: structuredClone(overlay) };
-    later("overlay", () => postJson("/api/playlist/overlay", body, keep));
-  } else {
-    save();
-    if (editing) {
-      const body = { file: editing, widgets: structuredClone(S.widgets) };
-      later("piece", () => postJson("/api/playlist/widgets", body, keep));
-    }
-  }
-}
-
-function selectWidget(id) {
-  text.selected = id;
-  showText();
-  drawOverlay();
-}
-
-function setTextLayer(layer) {
-  text.layer = layer;
-  text.selected = null;
-  showText();
-  drawOverlay();
-}
-
-function addText() {
-  const layer = text.layer, list = layerWidgets(layer), prefix = layer === "global" ? "g" : "w", f = FRONT();
-  if (layer === "piece" && !src) return;
-  let n = 1;
-  while (list.some((w) => w.id === `${prefix}${n}`)) n++;
-  const w = { id: `${prefix}${n}`, type: "text", text: "Text", font: DEFAULT_FONT, size: 48, color: "#ffffff",
-              opacity: 1, x: Math.round(f.x + f.w / 2), y: Math.round(H / 2 + [0, 64, -64, 128, -128][list.length % 5]),
-              align: "center", valign: "middle", line_height: 1.2, outline: { color: "#000000", width: 0 },
-              crisp: false };  // centred on the flat front, a little apart from the last few
-  setLayerWidgets(layer, [...list, w]);
-  text.selected = w.id;
-  textChanged(layer);
-  $("wText").focus();
-  $("wText").select();
-}
-
-function removeText() {
-  const w = selectedWidget();
-  if (!w) return;
-  setLayerWidgets(text.layer, layerWidgets().filter((other) => other !== w));
-  text.selected = null;
-  textChanged();
-}
-
-function showText() {
-  const piece = text.layer === "piece", list = layerWidgets(), w = selectedWidget();
-  for (const b of document.querySelectorAll("[data-layer]")) b.setAttribute("aria-pressed", b.dataset.layer === text.layer);
-  $("textNote").textContent = !piece ? "Drawn over every piece. Saved to the playlist as you edit."
-    : !src ? "Open some art first."
-    : editing ? `Saved to ${editing.replace(/\.[^.]+$/, "")} in the playlist as you edit.`
-    : "Kept with this layout: Add to playlist to show it on the cooler.";
-  $("addText").disabled = piece && !src;
-  $("removeText").disabled = !w;
-  const rows = list.map((item) => {
-    const li = make("li", item.id === text.selected ? "selected" : "");
-    li.append(make("span", "w-text", String(item.text ?? "").split("\n")[0] || "(empty)"), make("span", "muted", item.id));
-    li.addEventListener("click", () => selectWidget(item.id));
-    return li;
-  });
-  if (!rows.length) rows.push(make("li", "empty", piece ? "No text on this piece." : "No text on top."));
-  $("widgets").replaceChildren(...rows);
-  $("textProps").hidden = !w;
-  if (!w) return;
-  const set = (id, v) => { if (document.activeElement !== $(id)) $(id).value = v; };
-  set("wText", String(w.text ?? ""));
-  set("wSize", num(w.size, 48));
-  set("wColor", hex(w.color, "#ffffff"));
-  set("wOpacity", Math.round(100 * num(w.opacity, 1)));
-  set("wX", num(w.x, 0));
-  set("wY", num(w.y, 0));
-  set("wLineHeight", num(w.line_height, 1.2));
-  set("wOutlineColor", hex(w.outline?.color, "#000000"));
-  set("wOutlineWidth", num(w.outline?.width, 0));
-  $("wCrisp").checked = !!w.crisp;
-  for (const b of $("wAlign").children) b.setAttribute("aria-pressed", b.dataset.value === (w.align || "left"));
-  for (const b of $("wValign").children) b.setAttribute("aria-pressed", b.dataset.value === (w.valign || "top"));
-  showFonts(w);
-}
-
-let fontsShown = "";
-/** The font picker: the fonts whose names have every word typed in the filter, plus the widget's own. */
-function showFonts(w) {
-  const words = $("wFontFilter").value.toLowerCase().split(/\s+/).filter(Boolean);
-  const current = typeof w.font === "string" && w.font ? w.font : DEFAULT_FONT;
-  const key = JSON.stringify([words, current, fontList.length]);
-  if (key === fontsShown) return;  // rebuilt only when it changes, so the list keeps its scroll position
-  fontsShown = key;
-  const name = (f) => `${f.family} ${f.style}`.trim(), count = {};
-  for (const f of fontList) count[name(f)] = (count[name(f)] || 0) + 1;
-  const label = (f) => count[name(f)] > 1 ? `${name(f)} · ${f.path.split("\\").pop()}` : name(f);  // which file
-  const same = (path) => path.toLowerCase() === current.toLowerCase();
-  const options = fontList.filter((f) => words.every((word) => name(f).toLowerCase().includes(word)))
-    .map((f) => new Option(label(f), f.path, false, same(f.path)));
-  if (!options.some((o) => o.selected)) {
-    const known = fontList.find((f) => same(f.path)), file = current.split("\\").pop();
-    options.unshift(new Option(known ? label(known) : fontList.length ? `${file} (not listed: previewed in Segoe UI)` : file,
-                               current, false, true));
-  }
-  $("wFont").replaceChildren(...options);
-}
-
-for (const b of document.querySelectorAll("[data-layer]")) b.addEventListener("click", () => setTextLayer(b.dataset.layer));
-$("addText").addEventListener("click", addText);
-$("removeText").addEventListener("click", removeText);
-$("wFontFilter").addEventListener("input", () => { const w = selectedWidget(); if (w) showFonts(w); });
-/** A property control: `apply` changes the selected widget, or returns false when the value won't do. */
-const textControl = (id, apply, event = "input") => $(id).addEventListener(event, () => {
-  const w = selectedWidget();
-  if (w && apply(w, $(id)) !== false) textChanged();
-});
-const number = (el, ok) => { const v = parseFloat(el.value); return ok(v) ? v : null; };
-textControl("wText", (w, el) => { w.text = el.value; });
-textControl("wFont", (w, el) => { w.font = el.value; }, "change");
-textControl("wSize", (w, el) => { const v = number(el, (v) => v > 0); if (v === null) return false; w.size = v; });
-textControl("wColor", (w, el) => { w.color = el.value; });
-textControl("wOpacity", (w, el) => { const v = number(el, (v) => v >= 0 && v <= 100); if (v === null) return false; w.opacity = v / 100; });
-textControl("wX", (w, el) => { const v = number(el, Number.isFinite); if (v === null) return false; w.x = v; });
-textControl("wY", (w, el) => { const v = number(el, Number.isFinite); if (v === null) return false; w.y = v; });
-textControl("wLineHeight", (w, el) => { const v = number(el, (v) => v > 0); if (v === null) return false; w.line_height = v; });
-textControl("wOutlineColor", (w, el) => { w.outline = { width: 0, ...w.outline, color: el.value }; });
-textControl("wOutlineWidth", (w, el) => {
-  const v = number(el, (v) => v >= 0);
-  if (v === null) return false;
-  w.outline = { color: "#000000", ...w.outline, width: v };
-});
-textControl("wCrisp", (w, el) => { w.crisp = el.checked; }, "change");
-for (const [group, key] of [["wAlign", "align"], ["wValign", "valign"]]) {
-  for (const b of $(group).children) {
-    b.addEventListener("click", () => { const w = selectedWidget(); if (w) { w[key] = b.dataset.value; textChanged(); } });
-  }
-}
-
-// --- Live data -----------------------------------------------------------------------
-//
-// Text can show live values, written as placeholders like {pc.cpu.load:d} (docs/data.md). Their sources are set up
-// in the sources window (docs/sources.md) and saved to the playlist's data.json: what each source is, needs and
-// provides comes from the player's catalog, and the values, and the formatting, from the player through the studio.
-// Widgets keep their placeholders: only the preview shows them filled in, and as written when the player isn't
-// running.
-
-const live = {
-  config: null,         // data.json as the studio gives it: no passwords, `<key>_set` instead
-  catalog: [],          // the player's catalog: manifests, each with its `status`
-  pluginsDir: "",       // where plugins go
-  player: null,         // whether the player answered last time (null: not asked yet)
-  values: {},           // key -> {value, at, stale, source}
-  resolved: new Map(),  // a widget's text -> as the player would draw it now
-  asked: "",            // the texts last sent to be filled in
-  version: 0,           // changes whenever the preview's text does
-  raw: false,           // show placeholders as written
-  selected: null,       // the source shown in the window
-  formKey: "",          // what the settings form was built for
-  timer: 0, seq: 0, saveTimer: 0, saving: Promise.resolve(),
-};
-const SECRET_KEY = /(^|_)(token|password|secret|api_?key)$/i;  // a setting the page never gets back
-
-/** Whether a text has a placeholder: `{key}` and the rest, not counting {{ and }}. */
-const isLive = (t) => /\{[^{}]+\}/.test(String(t ?? "").replace(/\{\{|\}\}/g, ""));
-function liveTexts() {
-  const all = [...(S.widgets || []), ...overlay].filter((w) => w.type === "text" && isLive(w.text));
-  return [...new Set(all.map((w) => String(w.text)))];
-}
-
-/** The text a widget shows in the preview: filled in with the current values, when the player could. */
-function shownText(w) {
-  const raw = String(w.text ?? "");
-  return !live.raw && live.resolved.has(raw) ? live.resolved.get(raw) : raw;
-}
-
-/** Asks the player to fill in every live text at once: soon after they change, and every 10 s. */
-function resolveSoon(ms = 300) { clearTimeout(live.timer); live.timer = setTimeout(resolveTexts, ms); }
-async function resolveTexts() {
-  clearTimeout(live.timer);
-  const texts = liveTexts(), seq = ++live.seq;
-  live.asked = JSON.stringify(texts);
-  if (!texts.length) return showLiveNote();
-  let out;
-  try { out = await postJson("/api/data/resolve", { texts }); } catch { out = {}; }
-  if (seq !== live.seq) return;  // a newer ask went out meanwhile
-  if (out.player === false) live.player = false;
-  else if (Array.isArray(out.texts)) live.player = true;
-  const resolved = new Map(Array.isArray(out.texts) ? texts.map((t, i) => [t, String(out.texts[i] ?? t)]) : []);
-  if (JSON.stringify([...resolved]) !== JSON.stringify([...live.resolved])) {
-    live.resolved = resolved;
-    live.version++;
-    draw();
-  }
-  showLiveNote();
-}
-
-function showLiveNote() {
-  const down = live.player === false;
-  $("dataNote").hidden = !down;
-  $("liveNote").hidden = !(down && liveTexts().length);
-  showDataStatus();
-}
-
-/** A value as the page shows it: near the player's default form. */
-function formatValue(v) {
-  if (typeof v === "number") return String(Math.round(v * 10) / 10);
-  if (typeof v === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d/.test(v) && !isNaN(Date.parse(v))) {
-    const d = new Date(v), time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
-    return d.toDateString() === new Date().toDateString() ? time : `${d.toLocaleDateString([], { weekday: "short" })} ${time}`;
-  }
-  return v === null || v === undefined ? "--" : typeof v === "object" ? JSON.stringify(v) : String(v);
-}
-
-/** One value: its key and value, clicked to put {key} in the selected text. */
-function valueRow(key, entry) {
-  const full = entry !== null && typeof entry === "object" && "value" in entry, v = full ? entry.value : entry;
-  const b = make("button", `dv${full && entry.stale ? " stale" : ""}`);
-  b.append(make("span", "k", key), make("span", "v", formatValue(v)));
-  b.title = `Click to put {${key}} in the selected text` + (full ? `\nFrom ${entry.source || "?"}, read ${
-    entry.at ? new Date(entry.at).toLocaleString() : "?"}${entry.stale ? ": stale, no update for a while" : ""}` : "");
-  b.addEventListener("click", () => insertKeyOrCopy(key));
-  return b;
-}
-
-async function refreshValues() {
-  let out;
-  try { out = await (await api("/api/data/values")).json(); } catch { out = { player: false }; }
-  live.player = out.player !== false;
-  live.values = live.player && !out.error ? out : {};
-  showLiveNote();
-  if ($("sourcesDlg").open) showSource();
-  if (ac.open) acUpdate();
-}
-
-/** Puts {key} into the selected text where its cursor is: at the end when it hasn't been in it. */
-function insertKey(key) {
-  const w = selectedWidget(), el = $("wText");
-  if (!w) return message("Select a text first (in Text, above): the value goes into it.", "warn");
-  const text = String(w.text ?? ""), put = `{${key}}`;
-  if (el.value !== text) el.value = text;
-  const at = el.selectionStart, end = el.selectionEnd;
-  w.text = text.slice(0, at) + put + text.slice(end);
-  textChanged();
-  if (el.value !== w.text) el.value = w.text;
-  el.setSelectionRange(at + put.length, at + put.length);  // the next one goes after it
-}
-
-/** From the window: into the selected text if there is one, else onto the clipboard. */
-function insertKeyOrCopy(key) {
-  const w = selectedWidget(), put = `{${key}}`;
-  if (w) {
-    insertKey(key);
-    return srcNote(`${put} put into ${w.id}.`);
-  }
-  const copied = () => srcNote(`${put} copied: no text is selected to put it in.`);
-  const failed = () => srcNote(`No text is selected: write ${put} in one.`, "warn");
-  try { navigator.clipboard.writeText(put).then(copied, failed); } catch { failed(); }
-}
-function srcNote(text, cls = "") { $("srcMsg").textContent = text; $("srcMsg").className = `small ${cls}`; }
-
-// --- The catalog and the sources window ------------------------------------------------
-
-const manifestOf = (id) => live.catalog.find((m) => m.id === id) || null;
-const sourceName = (id) => manifestOf(id)?.name || id || "?";
-const settingsOf = (m) => (Array.isArray(m?.settings) ? m.settings : []).filter((s) => s && typeof s.key === "string");
-const providesOf = (m) => (Array.isArray(m?.provides) ? m.provides : []).filter((p) => p && typeof p.key === "string");
-const isSecret = (id, key) => settingsOf(manifestOf(id)).some((s) => s.key === key && s.type === "password") || SECRET_KEY.test(key);
-const intervalOf = (m) => ({ default: Math.max(1, num(m?.interval?.default, 60)), min: Math.max(1, num(m?.interval?.min, 5)) });
-
-/** A new source of this type: off, with the manifest's defaults. */
-function defaultsOf(m) {
-  const d = { interval: intervalOf(m).default };
-  for (const s of settingsOf(m)) {
-    if (s.type !== "password") d[s.key] = s.default ?? ({ bool: false, list: [], number: 0 }[s.type] ?? "");
-  }
-  return d;
-}
-
-/** This type's source in data.json: the first of that type, added when `add` and there isn't one. */
-function sourceFor(type, add = true) {
-  const list = live.config.sources;
-  let s = list.find((x) => x && x.type === type);
-  if (!s && add) list.push(s = { type, enabled: false, ...structuredClone(defaultsOf(manifestOf(type))) });
-  return s;
-}
-/** A source as it stands: the manifest's defaults under what's saved. */
-const currentSource = (m) => ({ ...defaultsOf(m), ...(live.config && sourceFor(m.id, false)) });
-
-/** Whether a source is on: as saved, or as the player says for one not in data.json yet (time, say). */
-function isOn(m) {
-  const s = live.config && sourceFor(m.id, false);
-  return s ? !!s.enabled : !!m.status?.enabled;
-}
-
-/** The status dot: [class, title]. */
-function dotFor(m) {
-  const st = m.status || {};
-  if (!isOn(m)) return ["off", "Off"];
-  if (st.error) return ["err", `Error: ${st.error}`];
-  if (st.ok || st.updated_at) return ["on", "On" + (st.updated_at ? `, updated ${new Date(st.updated_at).toLocaleTimeString()}` : "")];
-  return ["wait", live.player === false ? "On, once the player runs" : "On: waiting for its first update"];
-}
-
-/** The sidebar's line: "3 on, 1 error". */
-function showDataStatus() {
-  const on = live.catalog.filter(isOn), errors = on.filter((m) => m.status?.error).length;
-  $("dataStatus").textContent = !live.catalog.length ? "" : !on.length ? "None on"
-    : `${on.length} on` + (errors ? `, ${errors} error${errors > 1 ? "s" : ""}` : "");
-}
-
-async function refreshCatalog() {
-  let out;
-  try { out = await (await api("/api/data/catalog")).json(); } catch { out = { player: false, sources: [] }; }
-  live.catalog = (Array.isArray(out.sources) ? out.sources : []).filter((m) => m && typeof m.id === "string");
-  live.pluginsDir = typeof out.plugins_dir === "string" ? out.plugins_dir : "";
-  if (out.player === false) live.player = false;
-  showDataStatus();
-  if ($("sourcesDlg").open) showSources();
-}
-
-function openSources() {
-  const d = $("sourcesDlg");
-  if (!d.open) d.showModal();
-  srcNote("");
-  if (!manifestOf(live.selected)) live.selected = live.catalog[0]?.id ?? null;
-  showSources();
-  refreshCatalog();
-  refreshValues();
-}
-
-/** The window: the list on the left, and the selected source on the right. */
-function showSources() {
-  if (!manifestOf(live.selected)) live.selected = live.catalog[0]?.id ?? null;
-  const rows = live.catalog.map((m) => {
-    const li = make("li", m.id === live.selected ? "selected" : "");
-    li.dataset.id = m.id;
-    const [cls, title] = dotFor(m), dot = make("span", `dot ${cls}`);
-    dot.title = title;
-    const sw = make("label", "switch"), cb = make("input");
-    cb.type = "checkbox";
-    cb.checked = isOn(m);
-    cb.disabled = !live.config;
-    cb.title = cb.checked ? "On: click to turn off" : "Off: click to turn on";
-    cb.addEventListener("change", () => { sourceFor(m.id).enabled = cb.checked; saveDataSoon(); showSources(); });
-    sw.addEventListener("click", (e) => e.stopPropagation());
-    sw.append(cb, make("span", "slider"));
-    li.append(dot, make("span", "name", m.name || m.id));
-    if (m.plugin) li.append(make("span", "small muted", "plugin"));
-    li.append(sw);
-    li.addEventListener("click", () => { live.selected = m.id; showSources(); });
-    return li;
-  });
-  if (!rows.length) rows.push(make("li", "empty small", live.player === false ? "The player isn't running: start it with Play on cooler." : "Asking the player…"));
-  $("srcList").replaceChildren(...rows);
-  $("srcHeadNote").textContent = live.player === false ? "The player isn't running: built-in sources only, and no live values."
-    : !live.config ? "data.json couldn't be read." : "";
-  $("pluginsDir").textContent = live.pluginsDir;
-  showSource();
-}
-
-/** The right-hand side: built once per source, then kept up to date. */
-function showSource() {
-  const m = manifestOf(live.selected), panel = $("srcPanel");
-  if (!m) { panel.replaceChildren(); live.formKey = ""; return; }
-  const key = JSON.stringify([m.id, m.settings, m.interval, m.provides]);
-  if (key !== live.formKey) {
-    live.formKey = key;
-    buildSource(m);
-  }
-  const st = m.status || {}, [cls, title] = dotFor(m);
-  const status = $("srcStatus");
-  status.className = `small ${cls === "err" ? "warn" : "muted"}`;
-  status.textContent = (st.error ? `Error: ${st.error}` : title) + (st.notes ? ` · ${st.notes}` : "");
-  fillForm(m);
-  showProvides(m);
-}
-
-function buildSource(m) {
-  const panel = $("srcPanel"), head = make("div", "row");
-  head.append(make("h3", "", m.name || m.id), make("span", "spacer"), Object.assign(make("span", "small muted"), { id: "srcStatus" }));
-  const form = Object.assign(make("div"), { id: "srcForm" });
-  for (const s of settingsOf(m)) form.append(settingRow(m, s));
-  const iv = intervalOf(m), ivRow = make("div", "row setting"), ivIn = make("input");
-  ivIn.type = "number"; ivIn.min = iv.min; ivIn.step = 1; ivIn.dataset.k = "interval";
-  ivIn.title = `How often it's read: ${iv.default} s unless set, ${iv.min} s at least`;
-  const ivBox = make("span");
-  ivBox.append(ivIn, make("span", "small muted", ` s (default ${iv.default}, at least ${iv.min})`));
-  ivRow.append(make("span", "label", "Read every"), ivBox);
-  form.append(ivRow);
-  ivIn.addEventListener("change", () => {
-    const v = parseInt(ivIn.value, 10);
-    if (!(v > 0) || !live.config) return;
-    sourceFor(m.id).interval = Math.max(iv.min, v);
-    saveDataSoon();
-  });
-  const test = Object.assign(make("button", "", "Test"), { id: "srcTest", title: "Read it once now, as set up here, without saving" });
-  test.addEventListener("click", () => testSource(m));
-  const testRow = make("div", "row");
-  testRow.append(test);
-  const out = Object.assign(make("div", "test-out small"), { id: "srcTestOut" });
-  const table = Object.assign(make("table", "provides"), { id: "srcProvides" });
-  panel.replaceChildren(head, make("div", "small muted", m.description || ""), form, testRow, out,
-                        make("h4", "", "Provides"), make("div", "small muted", "Click a key to put it in the selected text."), table);
-}
-
-/** One setting's row, from its manifest entry. */
-function settingRow(m, s) {
-  const row = make("div", "row setting"), label = make("span", "label", s.label || s.key);
-  let el;
-  if (s.type === "bool") {
-    el = make("input"); el.type = "checkbox";
-    const wrap = make("label"); wrap.append(el, make("span", "", s.label || s.key));
-    row.append(make("span", "label", ""), wrap);
-  } else {
-    if (s.type === "choice") {
-      el = make("select");
-      for (const c of Array.isArray(s.choices) ? s.choices : []) el.append(new Option(String(c), String(c)));
-    } else if (s.type === "list") {
-      el = make("textarea"); el.rows = 3; el.title = "One per line";
-    } else {
-      el = make("input");
-      el.type = s.type === "number" ? "number" : s.type === "password" ? "password" : "text";
-      if (s.type === "number") { el.step = "any"; if (s.min !== undefined) el.min = s.min; if (s.max !== undefined) el.max = s.max; }
-      if (s.type === "password") el.autocomplete = "off";
-    }
-    if (typeof s.placeholder === "string") el.placeholder = s.placeholder;
-    row.append(label, el);
-  }
-  el.spellcheck = false;
-  el.dataset.k = s.key;
-  el.dataset.type = s.type || "text";
-  if (s.help) { el.title = s.help; row.append(make("div", "help small muted", s.help)); }
-  const onInput = s.type === "text" || s.type === "list" || s.type === "number";  // the rest when done: a whole password, say
-  el.addEventListener(onInput ? "input" : "change", () => {
-    if (!live.config) return;
-    const src = sourceFor(m.id);
-    if (s.type === "bool") src[s.key] = el.checked;
-    else if (s.type === "number") { const v = parseFloat(el.value); if (!Number.isFinite(v)) return; src[s.key] = v; }
-    else if (s.type === "list") src[s.key] = el.value.split("\n").map((e) => e.trim()).filter(Boolean);
-    else if (s.type === "password") { if (!el.value.trim()) return; src[s.key] = el.value.trim(); }
-    else src[s.key] = el.value;
-    saveDataSoon();
-  });
-  return row;
-}
-
-/** The form's values, from data.json, for everything not being typed in. */
-function fillForm(m) {
-  const cur = currentSource(m), specs = Object.fromEntries(settingsOf(m).map((s) => [s.key, s]));
-  for (const el of $("srcForm").querySelectorAll("[data-k]")) {
-    const k = el.dataset.k, s = specs[k] || {};
-    el.disabled = !live.config;
-    if (el === document.activeElement) continue;
-    if (s.type === "bool") el.checked = !!cur[k];
-    else if (s.type === "list") el.value = (Array.isArray(cur[k]) ? cur[k] : [cur[k] ?? ""]).filter((e) => e !== "").join("\n");
-    else if (s.type === "password") {  // never shown: only whether there is one
-      el.value = "";
-      el.placeholder = cur[`${k}_set`] ? "Set: type a new one to replace it" : s.placeholder || "Not set";
-    } else el.value = cur[k] ?? "";
-  }
-}
-
-/** The glob of a pattern key, like hwinfo.* or claude.week.*, as a regex. */
-const globRe = (pattern) => new RegExp("^" + pattern.split("*").map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*") + "$");
-
-/** The Provides table: each documented key with its live value, and the live keys each pattern covers. */
-function showProvides(m) {
-  const table = $("srcProvides"), provides = providesOf(m), explicit = new Set(provides.filter((p) => !p.pattern).map((p) => p.key));
-  const header = make("tr");
-  for (const h of ["Key", "Label", "Unit", "Value"]) header.append(make("th", "", h));
-  const rows = [header], covered = new Set();
-  const row = (key, label, unit, entry) => {
-    const tr = make("tr", entry?.stale ? "stale" : ""), td = make("td"), b = make("button", "key", key);
-    b.title = `Click to put {${key}} in the selected text` + (entry?.at ? `\nRead ${new Date(entry.at).toLocaleString()}${entry.stale ? ": stale" : ""}` : "");
-    b.addEventListener("click", () => insertKeyOrCopy(key));
-    td.append(b);
-    const val = make("td", entry ? "val" : "none", entry ? formatValue(entry.value) : "–");
-    tr.append(td, make("td", "", label || ""), make("td", "", unit || ""), val);
-    return tr;
-  };
-  for (const p of provides) {
-    if (!p.pattern) { covered.add(p.key); rows.push(row(p.key, p.label, p.unit, live.values[p.key])); continue; }
-    const re = globRe(p.key), keys = Object.keys(live.values).filter((k) => re.test(k) && !explicit.has(k) && !covered.has(k)).sort();
-    const tr = make("tr", "group"), td = make("td");
-    td.colSpan = 4;
-    td.append(make("code", "", p.key), ` ${p.label || ""}` + (keys.length ? "" : ": none yet"));
-    rows.push(tr);
-    tr.append(td);
-    for (const k of keys) { covered.add(k); rows.push(row(k, "", p.unit, live.values[k])); }
-  }
-  const others = Object.keys(live.values).filter((k) => live.values[k]?.source === m.id && !covered.has(k)).sort();
-  if (others.length) {
-    const tr = make("tr", "group"), td = make("td", "", "Also");
-    td.colSpan = 4;
-    tr.append(td);
-    rows.push(tr, ...others.map((k) => row(k, "", "", live.values[k])));
-  }
-  table.replaceChildren(...rows);
-}
-
-/** Saves the sources a moment after the last change. A password typed in goes once; the studio keeps it. */
-function saveDataSoon() { clearTimeout(live.saveTimer); live.saveTimer = setTimeout(saveData, 500); }
-function saveData() {
-  clearTimeout(live.saveTimer);
-  live.saveTimer = 0;
-  if (!live.config) return live.saving;
-  const body = { sources: structuredClone(live.config.sources) };  // the rest of data.json stays as it is
-  for (const s of live.config.sources) {
-    if (!s) continue;
-    for (const k of Object.keys(s)) if (k !== "type" && isSecret(s.type, k)) { delete s[k]; s[`${k}_set`] = true; }
-  }
-  live.saving = live.saving.then(() => postJson("/api/data/config", body, { keepalive: true }))
-    .then(() => showDataConfig(), (err) => message(`Couldn't save the data sources: ${err.message}`, "warn"));
-  return live.saving;
-}
-window.addEventListener("pagehide", () => { if (live.saveTimer) saveData(); });
-
-function showDataConfig() {
-  showDataStatus();
-  if ($("sourcesDlg").open) showSources();
-}
-
-async function loadDataConfig() {
-  try {
-    const res = await api("/api/data/config"), out = await res.json();
-    if (!res.ok) throw new Error(out.error || res.statusText);
-    live.config = { ...out, sources: Array.isArray(out.sources) ? out.sources : [] };
-  } catch (err) {
-    message(`Couldn't read the data sources: ${err.message}`, "warn");
-  }
-  showDataConfig();
-}
-
-/** Runs one source as it's set up in the window, once, and shows what it gives. */
-async function testSource(m) {
-  const out = $("srcTestOut"), button = $("srcTest");
-  const show = (cls, ...content) => { out.className = `test-out small ${cls}`; out.replaceChildren(...content); };
-  button.disabled = true;
-  show("muted", "Testing…");
-  try {
-    const source = { ...currentSource(m), type: m.id, enabled: true };
-    for (const el of $("srcForm").querySelectorAll("input[type=password]")) {
-      if (el.value.trim()) source[el.dataset.k] = el.value.trim();  // typed but not saved yet: used this once
-    }
-    const res = await postJson("/api/data/test", { source });
-    const values = res.values && typeof res.values === "object" ? res.values : {}, keys = Object.keys(values).sort();
-    if (res.player === false) show("warn", "The player isn't running: start it with Play on cooler to test.");
-    else if (res.error) show("warn", String(res.error));
-    else if (!keys.length) show("muted", "It worked, but gave no values.");
-    else {
-      const list = make("div", "values");
-      list.append(...keys.map((k) => valueRow(k, values[k])));
-      show("", make("span", "info", `${keys.length} value${keys.length > 1 ? "s" : ""}, now:`), list);
-    }
-  } catch (err) {
-    show("warn", err.message);
-  } finally {
-    button.disabled = false;
-  }
-}
-
-async function rescanPlugins() {
-  const button = $("srcRescan");
-  button.disabled = true;
-  srcNote("Rescanning…", "muted");
-  try {
-    const out = await postJson("/api/data/catalog/rescan", {});
-    if (out.player === false) srcNote("The player isn't running: it reads the plugins folder.", "warn");
-    else if (out.error) srcNote(String(out.error), "warn");
-    else {
-      await refreshCatalog();
-      const n = Number.isInteger(out.plugins) ? out.plugins : live.catalog.filter((m) => m.plugin).length;
-      const problems = Array.isArray(out.problems) ? out.problems : [];
-      srcNote(`Rescanned: ${n} plugin${n === 1 ? "" : "s"}.` + (problems.length ? ` Skipped: ${problems.join("; ")}` : ""),
-              problems.length ? "warn" : "");
-    }
-  } catch (err) {
-    srcNote(err.message, "warn");
-  } finally {
-    button.disabled = false;
-  }
-}
-
-$("openSources").addEventListener("click", openSources);
-$("srcClose").addEventListener("click", () => $("sourcesDlg").close());
-$("srcRescan").addEventListener("click", rescanPlugins);
-$("sourcesDlg").addEventListener("click", (e) => { if (e.target === e.currentTarget) e.currentTarget.close(); });  // the backdrop
-$("showRaw").addEventListener("change", () => { live.raw = $("showRaw").checked; live.version++; draw(); });
-setInterval(() => { if (!document.hidden) { refreshValues(); resolveTexts(); refreshCatalog(); } }, 10000);
-
-// --- Placeholder autocomplete ---------------------------------------------------------
-//
-// Typing { in the text box lists the keys the catalog documents and the live ones, filtered by what follows; after
-// {key: it offers formats that fit the value. It never touches the text except when an entry is accepted.
-
-const ac = { open: false, items: [], index: 0, mode: "key", from: 0, to: 0, mirror: null };
-const FORMATS = { number: [["d", "whole number"], [".1f", "one decimal"]],
-                  time: [["%H:%M", "hour and minute"], ["%a %H:%M", "weekday and time"], ["%d %b", "day and month"]] };
-
-/** The placeholder being typed at the caret: {mode: "key"|"fmt", key, query, from, to}, or null. */
-function acContext(el) {
-  const text = el.value, caret = el.selectionStart;
-  if (el.selectionEnd !== caret) return null;
-  const open = text.lastIndexOf("{", caret - 1);
-  if (open < 0) return null;
-  let run = 0;
-  for (let i = open; i >= 0 && text[i] === "{"; i--) run++;
-  if (run % 2 === 0) return null;  // {{ is a literal brace
-  const inside = text.slice(open + 1, caret);
-  if (/[{}\n|]/.test(inside)) return null;
-  const colon = inside.indexOf(":");
-  if (colon < 0) return { mode: "key", query: inside, from: open + 1, to: caret };
-  return { mode: "fmt", key: inside.slice(0, colon), query: inside.slice(colon + 1), from: open + colon + 2, to: caret };
-}
-
-/** What kind of value a key holds: from the catalog, else from its live value. */
-function kindOf(key) {
-  for (const m of live.catalog) {
-    const p = providesOf(m).find((p) => p.pattern ? globRe(p.key).test(key) : p.key === key);
-    if (p?.kind) return p.kind;
-  }
-  const v = live.values[key]?.value;
-  return typeof v === "number" ? "number" : typeof v === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d/.test(v) ? "time" : v === undefined ? null : "text";
-}
-
-/** Every key there is: the catalog's documented ones, then the live ones, with their labels, sources and values. */
-function acKeys() {
-  const seen = new Map();
-  for (const m of live.catalog) {
-    for (const p of providesOf(m)) if (!p.pattern) seen.set(p.key, { key: p.key, label: p.label || "", source: m.name || m.id });
-  }
-  for (const [k, e] of Object.entries(live.values)) {
-    if (!seen.has(k)) {
-      const m = live.catalog.find((m) => providesOf(m).some((p) => p.pattern && globRe(p.key).test(k))) || manifestOf(e?.source);
-      const p = m && providesOf(m).find((p) => p.pattern && globRe(p.key).test(k));
-      seen.set(k, { key: k, label: p?.label || "", source: m ? m.name || m.id : sourceName(e?.source) });
-    }
-    seen.get(k).entry = e;
-  }
-  return [...seen.values()];
-}
-
-function acUpdate() {
-  const el = $("wText"), ctx = document.activeElement === el ? acContext(el) : null;
-  if (!ctx) return acClose();
-  const q = ctx.query.toLowerCase();
-  let items;
-  if (ctx.mode === "key") {
-    const rank = (it) => it.key.toLowerCase().startsWith(q) ? 0 : it.key.toLowerCase().includes(q) ? 1 : it.label.toLowerCase().includes(q) ? 2 : 3;
-    items = acKeys().map((it) => ({ ...it, rank: rank(it) })).filter((it) => it.rank < 3)
-      .sort((a, b) => a.rank - b.rank || a.key.localeCompare(b.key))
-      .map((it) => ({ insert: it.key, key: it.key, meta: [it.label, it.source].filter(Boolean).join(" · "),
-                      value: it.entry ? formatValue(it.entry.value) + (it.entry.stale ? " (stale)" : "") : "" }));
-  } else {
-    const kind = kindOf(ctx.key), v = live.values[ctx.key]?.value;
-    items = (FORMATS[kind] || []).filter(([f]) => f.toLowerCase().startsWith(q))
-      .map(([f, what]) => ({ insert: f, key: f, meta: what, value: v === undefined ? "" : sampleFormat(v, f) }));
-  }
-  if (!items.length) return acClose();
-  Object.assign(ac, { open: true, items, mode: ctx.mode, from: ctx.from, to: ctx.to, index: 0 });
-  acRender();
-}
-
-/** A value formatted roughly as the player would, for the format list only: the player's resolve is the truth. */
-function sampleFormat(v, f) {
-  if (typeof v === "number") return f === "d" ? String(Math.round(v)) : f === ".1f" ? v.toFixed(1) : formatValue(v);
-  const d = new Date(v);
-  if (isNaN(d)) return formatValue(v);
-  const two = (n) => String(n).padStart(2, "0");
-  return f.replace(/%[HMadb]/g, (c) => ({ "%H": two(d.getHours()), "%M": two(d.getMinutes()), "%d": two(d.getDate()),
-    "%a": d.toLocaleDateString([], { weekday: "short" }), "%b": d.toLocaleDateString([], { month: "short" }) })[c]);
-}
-
-function acRender() {
-  const pop = $("acPop"), el = $("wText");
-  pop.replaceChildren(...ac.items.map((it, i) => {
-    const d = make("div", "ac-item");
-    d.setAttribute("role", "option");
-    d.setAttribute("aria-selected", i === ac.index);
-    d.append(make("span", "ac-key", it.key), make("span", "ac-val", it.value));
-    if (it.meta) d.append(make("span", "ac-meta", it.meta));
-    d.addEventListener("mousedown", (e) => e.preventDefault());  // the text box keeps the focus
-    d.addEventListener("click", () => acAccept(i));
-    return d;
-  }));
-  pop.hidden = false;
-  const c = caretXY(el), w = pop.offsetWidth, h = pop.offsetHeight;
-  let top = c.y + c.h + 2;
-  if (top + h > innerHeight - 8) top = Math.max(8, c.y - h - 2);
-  pop.style.left = `${Math.max(8, Math.min(c.x, innerWidth - w - 8))}px`;
-  pop.style.top = `${top}px`;
-  pop.children[ac.index]?.scrollIntoView({ block: "nearest" });
-}
-
-/** Where the caret is on screen, measured in a hidden copy of the text box with the same text and styling. */
-function caretXY(el) {
-  const mirror = ac.mirror ||= document.body.appendChild(make("div", "ac-mirror"));
-  const cs = getComputedStyle(el);
-  for (const p of ["fontFamily", "fontSize", "fontWeight", "fontStyle", "letterSpacing", "lineHeight", "tabSize", "textIndent",
-                   "wordSpacing", "paddingTop", "paddingLeft", "paddingRight", "paddingBottom", "borderTopWidth",
-                   "borderLeftWidth", "borderRightWidth", "borderBottomWidth", "boxSizing"]) mirror.style[p] = cs[p];
-  mirror.style.width = `${el.clientWidth + parseFloat(cs.borderLeftWidth) + parseFloat(cs.borderRightWidth)}px`;
-  mirror.textContent = el.value.slice(0, el.selectionStart);
-  const mark = make("span", "", "\u200b");
-  mirror.append(mark);
-  const r = el.getBoundingClientRect();
-  return { x: r.left + mark.offsetLeft - el.scrollLeft, y: r.top + mark.offsetTop - el.scrollTop,
-           h: mark.offsetHeight || parseFloat(cs.lineHeight) || 16 };
-}
-
-function acClose() {
-  if (!ac.open) return;
-  ac.open = false;
-  ac.items = [];
-  $("acPop").hidden = true;
-}
-
-/** Puts the entry in, closing the placeholder: `key}` or `fmt}`, unless the } is already there. */
-function acAccept(i = ac.index) {
-  const it = ac.items[i], el = $("wText"), w = selectedWidget();
-  if (!it) return acClose();
-  const text = el.value, closed = text[ac.to] === "}", put = it.insert + (closed ? "" : "}");
-  el.value = text.slice(0, ac.from) + put + text.slice(ac.to);
-  const pos = ac.from + put.length + (closed ? 1 : 0);
-  el.setSelectionRange(pos, pos);
-  if (w) { w.text = el.value; textChanged(); }
-  acClose();
-}
-
-$("wText").addEventListener("input", acUpdate);
-$("wText").addEventListener("click", () => { if (ac.open) acUpdate(); });
-$("wText").addEventListener("blur", acClose);
-$("wText").addEventListener("keydown", (e) => {
-  if (!ac.open) return;
-  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-    ac.index = (ac.index + (e.key === "ArrowDown" ? 1 : ac.items.length - 1)) % ac.items.length;
-    acRender();
-  } else if (e.key === "Enter" || e.key === "Tab") {
-    acAccept();
-  } else if (e.key === "Escape") {
-    acClose();
-    e.stopPropagation();
-  } else if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) {
-    return setTimeout(acUpdate);
-  } else return;
-  e.preventDefault();
-});
-addEventListener("resize", () => { if (ac.open) acRender(); });
-
-// --- Wiring --------------------------------------------------------------------------
-
-let drag = null, resize = null;
-function screenPoint(e, exact = false) {
-  const r = screenCv.getBoundingClientRect(), x = (e.clientX - r.left) / view.k, y = (e.clientY - r.top) / view.k;
-  return exact ? [x, y] : [Math.floor(x), Math.floor(y)];
-}
-
-/** Which corner handle the pointer is on, or -1. */
-function cornerAt(e) {
-  if (!src) return -1;
-  const [px, py] = screenPoint(e, true), reach = 9 / view.k;
-  return corners().findIndex(([cx, cy]) => Math.abs(px - cx) <= reach && Math.abs(py - cy) <= reach);
-}
-const RESIZE_CURSORS = ["nwse-resize", "nesw-resize", "nesw-resize", "nwse-resize"];
-
-// Edges snap to the screen's edges and the curve guides when they come this close (CSS pixels on screen).
-const SNAP_REACH = 10;
-
-function snapLines() {
-  const unique = (a) => [...new Set(a)];
-  return { x: unique([0, W, SAFE.left, W - SAFE.right]), y: unique([0, H, SAFE.top, H - SAFE.bottom]) };
-}
-
-/** Shifts a span starting at `start` so whichever end is nearest a line within reach sits on it.
- *  Returns [new start, the line, or null]. */
-function snapSpan(start, size, lines) {
-  const reach = SNAP_REACH / view.k;
-  let best = null;
-  for (const line of lines) {
-    for (const edge of [start, start + size]) {
-      if (Math.abs(line - edge) <= reach && (!best || Math.abs(line - edge) < Math.abs(best.line - best.edge)))
-        best = { line, edge };
-    }
-  }
-  return best ? [start + best.line - best.edge, best.line] : [start, null];
-}
-
-/** Resizes from the dragged corner with the opposite one held still, keeping the art's shape. */
-function resizeTo(e) {
-  const [px, py] = screenPoint(e, true), [ax, ay] = resize.anchor, [aw, ah] = artSize();
-  const left = resize.corner % 2 === 0, top = resize.corner < 2;
-  // the size whose corner lands nearest the pointer: its projection onto the art's diagonal
-  let s = (Math.abs(px - ax) * aw + Math.abs(py - ay) * ah) / (aw * aw + ah * ah), snapped = false;
-  view.snapped = { x: null, y: null };
-  if (S.fractional && !e.altKey) {
-    // the dragged corner onto the nearest line within reach (whole-number sizes can't land on lines)
-    const reach = SNAP_REACH / view.k, lines = snapLines();
-    const corner = { x: left ? ax - aw * s : ax + aw * s, y: top ? ay - ah * s : ay + ah * s };
-    let best = null;
-    for (const [axis, anchor, size] of [["x", ax, aw], ["y", ay, ah]]) {
-      for (const line of lines[axis]) {
-        const d = Math.abs(line - corner[axis]), k = Math.abs(line - anchor) / size;
-        if (d <= reach && k > 0 && (!best || d < best.d)) best = { d, k, axis, line };
-      }
-    }
-    if (best) {
-      s = best.k;
-      view.snapped[best.axis] = best.line;
-      snapped = true;
-    }
-  }
-  const before = [S.scale, S.x, S.y].join();
-  setScale(!S.fractional ? Math.round(s) : snapped ? s : Math.round(s * 1000) / 1000, false);
-  const [dw, dh] = placedSize();
-  S.x = left ? (view.snapped.x ?? snap(ax - dw)) : ax;
-  S.y = top ? (view.snapped.y ?? snap(ay - dh)) : ay;
-  if ([S.scale, S.x, S.y].join() !== before) changed();
-  else drawOverlay();
-}
-
-stage.addEventListener("pointerdown", (e) => {
-  if (e.button !== 0) return;
-  if (view.picking && src) {
-    const [px, py] = screenPoint(e);
-    setPicking(false);
-    if (px >= 0 && py >= 0 && px < W && py < H) {
-      const [r, g, b] = sctx.getImageData(px, py, 1, 1).data;
-      S.bg = `#${[r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("")}`;
-      changed();
-    }
-    return;
-  }
-  const corner = cornerAt(e), hit = corner < 0 ? textAt(e) : null;
-  if (!src && !hit) return;
-  try { stage.setPointerCapture(e.pointerId); } catch {}  // keeps the drag going outside the stage
-  if (corner >= 0) {
-    resize = { corner, anchor: corners()[3 - corner] };
-    return;
-  }
-  if (hit) {  // any text: switch to its layer if need be, select it, and drag it
-    if (hit.layer !== text.layer) setTextLayer(hit.layer);
-    if (hit.widget.id !== text.selected) selectWidget(hit.widget.id);
-    drag = { widget: hit.widget, cx: e.clientX, cy: e.clientY, x: num(hit.widget.x, 0), y: num(hit.widget.y, 0) };
-  } else {
-    if (text.selected !== null) selectWidget(null);  // the art: the arrow keys move it again
-    drag = { cx: e.clientX, cy: e.clientY, x: S.x, y: S.y };
-  }
-  stage.classList.add("dragging");
-});
-stage.addEventListener("pointermove", (e) => {
-  const [px, py] = screenPoint(e);
-  $("cursor").textContent = px >= 0 && py >= 0 && px < W && py < H ? `x ${px}, y ${py}` : "";
-  if (resize) return resizeTo(e);
-  if (!drag) {
-    const corner = view.picking ? -1 : cornerAt(e);
-    stage.style.cursor = corner >= 0 ? RESIZE_CURSORS[corner] : !view.picking && textAt(e) ? "move" : "";
-    return;
-  }
-  if (drag.widget) return dragText(e);
-  let dx = (e.clientX - drag.cx) / view.k, dy = (e.clientY - drag.cy) / view.k;
-  if (e.shiftKey) { if (Math.abs(dx) > Math.abs(dy)) dy = 0; else dx = 0; }
-  let x = snap(drag.x + dx), y = snap(drag.y + dy);
-  view.snapped = { x: null, y: null };
-  if (!e.altKey) {  // edges onto the screen's edges and the curve guides (not along an axis Shift has locked)
-    const [dw, dh] = placedSize(), lines = snapLines();
-    if (dx || !e.shiftKey) [x, view.snapped.x] = snapSpan(x, dw, lines.x);
-    if (dy || !e.shiftKey) [y, view.snapped.y] = snapSpan(y, dh, lines.y);
-  }
-  if (x !== S.x || y !== S.y) { S.x = x; S.y = y; changed(); }
-  else drawOverlay();
-});
-const endDrag = () => {
-  drag = resize = null;
-  stage.classList.remove("dragging");
-  if (view.snapped) { view.snapped = null; drawOverlay(); }
-};
-stage.addEventListener("pointerup", endDrag);
-stage.addEventListener("pointercancel", endDrag);
-stage.addEventListener("pointerleave", () => { $("cursor").textContent = ""; });
-
-function setPicking(on) {
-  view.picking = on;
-  stage.classList.toggle("picking", on);
-  $("pick").setAttribute("aria-pressed", on);
-  message(on ? "Click a colour in the preview (Esc to cancel)." : "");
-}
-
-const onClick = (id, fn) => $(id).addEventListener("click", () => { if (src || id === "open") fn(); });
-onClick("open", () => $("file").click());
-$("file").addEventListener("change", () => { if ($("file").files[0]) openFile($("file").files[0]); $("file").value = ""; });
-onClick("reset", () => { startLayout(S.widgets); });  // the art's layout: the text stays
-onClick("smaller", () => { stepScale(-1); changed(); });
-onClick("bigger", () => { stepScale(1); changed(); });
-onClick("fitFront", () => fitInto(FRONT(), false));
-onClick("fitScreen", () => fitInto(WHOLE(), false));
-onClick("fillHeight", fillHeight);
-onClick("fillScreen", () => fitInto(WHOLE(), true));
-onClick("rotate", rotate);
-onClick("flip", flip);
-onClick("pick", () => setPicking(!view.picking));
-onClick("black", () => { S.bg = "#000000"; changed(); });
-onClick("export", doExport);
-onClick("addToPlaylist", addToPlaylist);
-$("name").addEventListener("input", showAddButton);
-$("playerStart").addEventListener("click", () => player("start"));
-$("playerStop").addEventListener("click", () => player("stop"));
-$("autostart").addEventListener("change", async () => {
-  try {
-    showPlayer(await postJson("/api/autostart", { on: $("autostart").checked }));
-  } catch (err) {
-    message(`Couldn't change the startup setting: ${err.message}`, "warn");
-  }
-});
-setInterval(async () => {
-  try { showPlayer(await (await api("/api/player")).json()); } catch {}
-}, 4000);
-$("reveal").addEventListener("click", () => api("/api/reveal", { method: "POST" }));
-for (const b of document.querySelectorAll("[data-align]")) b.addEventListener("click", () => { if (src) align(b.dataset.align); });
-for (const b of document.querySelectorAll("[data-fill]")) b.addEventListener("click", () => { if (src) { S.fill = b.dataset.fill; changed(); } });
-
-const onChange = (id, fn) => $(id).addEventListener("change", () => { if (src) { fn($(id)); changed(); } });
-onChange("scale", (el) => { const v = parseFloat(el.value); if (v > 0) setScale(v); });
-onChange("x", (el) => { const v = parseInt(el.value, 10); if (Number.isFinite(v)) S.x = v; });
-onChange("y", (el) => { const v = parseInt(el.value, 10); if (Number.isFinite(v)) S.y = v; });
-onChange("snap", (el) => { S.snap = el.value; });
-onChange("smooth", (el) => { S.smooth = el.checked; });
-onChange("fractional", (el) => { S.fractional = el.checked; if (!S.fractional) setScale(S.scale); });
-$("bg").addEventListener("input", () => { if (src) { S.bg = $("bg").value; changed(); } });
-$("factor").addEventListener("change", () => {
-  const v = parseInt($("factor").value, 10);
-  if (!src || !(v >= 1 && v <= 32)) return;
-  S.factor = v;
-  showSource();
-  fitInto(FRONT(), false);
-});
-
-$("showGuides").addEventListener("change", () => { view.guides = $("showGuides").checked; draw(); });
-$("showGhost").addEventListener("change", () => { view.ghost = $("showGhost").checked; draw(); });
-$("zoom").addEventListener("change", () => { view.zoom = $("zoom").value; layout(); });
-$("play").addEventListener("click", togglePlay);
-$("prev").addEventListener("click", () => stepFrame(-1));
-$("next").addEventListener("click", () => stepFrame(1));
-
-function togglePlay() {
-  view.playing = !view.playing;
-  if (src?.video) view.playing ? src.frames[0].play() : src.frames[0].pause();
-  showFrame();
-}
-function stepFrame(d) {
-  if (!src || src.durations.length < 2) return;
-  view.playing = false;
-  if (src.video) {
-    const v = src.frames[0];
-    v.pause();
-    v.currentTime = Math.min(Math.max(v.currentTime + d / src.video.fps, 0), v.duration);
-    v.addEventListener("seeked", () => { draw(); showFrame(); }, { once: true });
-    return;
-  }
-  view.frame = (view.frame + d + src.frames.length) % src.frames.length;
-  draw();
-  showFrame();
-}
-
-window.addEventListener("keydown", (e) => {
-  if ($("sourcesDlg").open) return;  // the window has its own keys, and Esc closes it
-  if (e.key === "Escape" && view.picking) return setPicking(false);
-  if (e.ctrlKey || e.metaKey || e.altKey || e.target.closest("input:not([type=checkbox]), select, textarea")) return;
-  const step = snapStep() * (e.shiftKey ? 10 : 1), w = selectedWidget();
-  const move = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[e.key];
-  if (w && (move || e.key === "Escape")) {  // with text selected, the arrows move it rather than the art
-    if (move) { w.x = num(w.x, 0) + move[0]; w.y = num(w.y, 0) + move[1]; textChanged(); }
-    else selectWidget(null);
-    return e.preventDefault();
-  }
-  if (!src) return;
-  if (move) { S.x += move[0]; S.y += move[1]; changed(); }
-  else if (e.key === "+" || e.key === "=") { stepScale(1); changed(); }
-  else if (e.key === "-" || e.key === "_") { stepScale(-1); changed(); }
-  else if (e.key === "r" || e.key === "R") rotate();
-  else if (e.key === "f" || e.key === "F") flip();
-  else if (e.key === "g" || e.key === "G") $("showGuides").click();
-  else if (e.key === " ") togglePlay();
-  else if (e.key === ",") stepFrame(-1);
-  else if (e.key === ".") stepFrame(1);
-  else return;
-  e.preventDefault();
-});
-
-window.addEventListener("dragover", (e) => { e.preventDefault(); document.body.classList.add("dragover"); });
-window.addEventListener("dragleave", (e) => { if (!e.relatedTarget) document.body.classList.remove("dragover"); });
-window.addEventListener("drop", (e) => {
-  e.preventDefault();
-  document.body.classList.remove("dragover");
-  const f = e.dataTransfer.files[0];
-  if (f) openFile(f);
-});
-window.addEventListener("paste", (e) => {
-  const f = [...e.clipboardData.files][0];
-  if (f) openFile(new File([f], f.name || "pasted.png", { type: f.type }));
-});
-let resizeQueued = false;
-window.addEventListener("resize", () => {
-  if (!resizeQueued) { resizeQueued = true; requestAnimationFrame(() => { resizeQueued = false; layout(); }); }
-});
-
-// Animation: advance by each frame's own duration.
-let last = performance.now(), due = 0, lastVideoTime = -1;
-requestAnimationFrame(function tick(now) {
-  const dt = Math.min(now - last, 1000);
-  last = now;
-  if (src?.video) {
-    const t = src.frames[0].currentTime;  // redraw whenever the video has moved on
-    if (t !== lastVideoTime) { lastVideoTime = t; draw(); showFrame(); }
-  } else if (src && view.playing && src.frames.length > 1) {
-    due += dt;
-    let moved = false;
-    while (due >= src.durations[view.frame]) {
-      due -= src.durations[view.frame];
-      view.frame = (view.frame + 1) % src.frames.length;
-      moved = true;
-    }
-    if (moved) { draw(); showFrame(); }
-  }
-  requestAnimationFrame(tick);
-});
-
-(async () => {
-  try {
-    const cfg = await (await api("/api/config")).json();
-    [W, H] = cfg.screen;
-    SAFE = cfg.safe;
-    CAMERA = cfg.camera;
-    if (cfg.font) DEFAULT_FONT = cfg.font;
-    loadDataConfig();
-    refreshCatalog();
-    refreshValues();
-    screenCv.width = W;
-    screenCv.height = H;
-    layout();
-    showFrame();
-    api("/api/fonts").then((res) => res.json()).then((list) => { fontList = list; fontsShown = ""; showText(); })
-      .catch((err) => message(`Couldn't list the fonts: ${err.message}`, "warn"));
-    const state = await (await api("/api/playlist")).json();
-    overlay = state.overlay || [];  // from here on, edited here
-    showPlaylist(state);
-    draw();
-    if (cfg.initial) await useSource(cfg.initial);
-    else setTextLayer("global");  // with no art open, the global layer is the only text there is to edit
-  } catch (err) {
-    message(`Couldn't reach the studio server: ${err.message}`, "warn");
-  }
-})();
-</script>
+<script src="/studio.js"></script>
 </body>
 </html>

@@ -22,7 +22,7 @@ use crate::playlist::{self, Align, Valign, Widget};
 /// Used when a widget's own font is missing or unreadable.
 pub const DEFAULT_FONT: &str = r"C:\Windows\Fonts\segoeui.ttf";
 /// Bump when drawing changes, so text prepared by an older player is drawn again.
-const VERSION: u32 = 2;
+pub const VERSION: u32 = 2;
 /// Anything bigger is a typo, and would only make huge bitmaps.
 const MAX_SIZE: f32 = 2000.0;
 const MAX_OUTLINE: f32 = 500.0;
@@ -78,6 +78,11 @@ impl Layer {
 
     pub fn bounds(&self) -> Option<Bounds> {
         self.bounds
+    }
+
+    /// The whole 1600x720 layer (0x0 while there's no text).
+    pub fn image(&self) -> &RgbaImage {
+        &self.image
     }
 
     pub fn is_empty(&self) -> bool {

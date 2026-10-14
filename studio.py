@@ -1,10 +1,9 @@
-"""Studio: lay out existing art on the Wonder Vision screen by eye, build the playlist, and run the player.
+"""Studio: a scene editor for the Wonder Vision screen (docs/scenes.md), the playlist, and the player.
 
   python wv.py studio [image]
 
-Serves studio/index.html to a browser on this PC only. The page does the previewing and layout. Exports
-and playlist pieces rebuild the same layout here with numpy and go through wv.py's writers, so the files
-match the preview.
+Serves studio/index.html (and studio.js) to a browser on this PC only. The page draws the scenes and edits the
+playlist document, which saves here as it changes; the player draws the same document on the cooler.
 """
 import csv
 import errno
@@ -24,19 +23,16 @@ import winreg
 from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, urlparse
 
 import numpy as np
-from PIL import Image, ImageColor, ImageFont
+from PIL import Image, ImageFont
 
 import wv
 
 PAGE = wv.ROOT / "studio" / "index.html"
+SCRIPT = PAGE.with_name("studio.js")  # the page's code, served at /studio.js
 UPLOADS = wv.ROOT / ".cache" / "studio"
-FORMATS = ("png", "gif", "mp4")
-FILL_MODES = ("solid", "extend", "mirror", "tile")
-# Clockwise quarter turns, as the page applies them (PIL's ROTATE_* turn anticlockwise).
-TURNS = {0: None, 90: Image.Transpose.ROTATE_270, 180: Image.Transpose.ROTATE_180, 270: Image.Transpose.ROTATE_90}
 KEY = np.array([1 << 16, 1 << 8, 1], np.uint32)
 VIDEO_TYPES = {".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi"}
 VIDEO_FPS = 30  # the most frames a second a video is kept at: about what the panel shows comfortably
@@ -115,6 +111,7 @@ class Source:
         else:
             self.frames = wv.load_frames(path)
         self.pngs = {}
+        self.src = None  # its `src` in the playlist, once kept in sources/
         self.info = self.describe()
 
     def describe(self):
@@ -126,17 +123,11 @@ class Source:
         if len(border):
             keys, counts = np.unique(border.astype(np.uint32) @ KEY, return_counts=True)
             edge = int(keys[counts.argmax()])
-        colours = np.zeros(0, np.uint32)
-        for im, _ in self.frames:
-            a = np.asarray(im).reshape(-1, 4)
-            colours = np.union1d(colours, a[a[:, 3] > 0, :3].astype(np.uint32) @ KEY)
-            if len(colours) > 256:
-                break  # all the page needs to know is whether a GIF can keep every colour
         info = {"id": self.id, "name": self.name, "width": first.shape[1], "height": first.shape[0],
                 "durations": [self.frames[0][1]] * len(self.frames) if self.video else [d for _, d in self.frames],
                 # a compressed video never has clean enlarged pixels to find
-                "factor": 1 if self.video else wv.native_factor(self.frames),
-                "colors": len(colours), "edge": f"#{edge:06x}"}
+                "factor": 1 if self.video else max(1, wv.native_factor(self.frames)),
+                "edge": f"#{edge:06x}"}
         if self.video:
             info["video"] = {"url": f"/api/video/{self.id}.mp4", **self.video}
         return info
@@ -149,138 +140,14 @@ class Source:
         return self.pngs[i]
 
 
-def open_source(path, name):
-    src = Source(path, name)
-    while len(sources) >= 3:  # each holds every frame in memory (videos as JPEG)
-        sources.pop(next(iter(sources)))
-    sources[src.id] = src
-    return src.info
 
 
-# --- Layout, matching the page's drawing ----------------------------------------
-
-def axis_map(screen, at, size, src, mode):
-    """For each screen pixel along one axis: the source pixel shown there, and whether the art covers it.
-
-    The art is `size` px long on screen, starting at `at`, drawn from `src` source pixels.
-    """
-    u = np.arange(screen) - at
-    if mode == "extend":
-        u = u.clip(0, size - 1)
-    elif mode == "tile":
-        u = u % size
-    elif mode == "mirror":
-        u = u % (2 * size)
-        u = np.where(u < size, u, 2 * size - 1 - u)
-    covered = (u >= 0) & (u < size)
-    # nearest neighbour, sampling at pixel centres like the browser does
-    return (2 * u.clip(0, size - 1) + 1) * src // (2 * size), covered
-
-
-def layout_placer(x, y, width, height, src_size, mode):
-    """A `place` for wv.write_gif that lays a frame out the way the page draws it."""
-    ys, y_in = axis_map(wv.SCREEN_H, y, height, src_size[1], mode)
-    xs, x_in = axis_map(wv.SCREEN_W, x, width, src_size[0], mode)
-    uncovered = ~(y_in[:, None] & x_in[None, :])
-
-    def place(im, fill):
-        out = np.asarray(im)[ys[:, None], xs[None, :]]
-        out[uncovered] = fill
-        return Image.fromarray(out)
-    return place
-
-
-class Placed:
-    """Full-screen frames made on demand: at ~8 MB each, a whole animation is too much to hold."""
-
-    def __init__(self, frames, place, fill):
-        self.frames, self.place, self.fill = frames, place, fill
-
-    def __len__(self):
-        return len(self.frames)
-
-    def __getitem__(self, i):
-        return self.place(self.frames[i], self.fill)
-
-
-class Prepared:
-    """The art's frames turned, flipped, flattened and (when smooth) resized, one at a time as they're used:
-    a video's worth at once wouldn't fit in memory."""
-
-    def __init__(self, frames, turn, flip, bg, size):
-        self.frames, self.turn, self.flip, self.bg, self.size = frames, turn, flip, bg, size
-        self.last = (None, None)
-
-    def __len__(self):
-        return len(self.frames)
-
-    def __getitem__(self, i):
-        if self.last[0] != i:
-            im = self.frames[i][0]  # IndexError past the end ends iteration
-            if self.turn:
-                im = im.transpose(self.turn)
-            if self.flip:
-                im = im.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
-            im = wv.flatten([(im, 0)], self.bg)[0]
-            self.last = (i, im.resize(self.size, Image.LANCZOS) if self.size else im)
-        return self.last[1]
-
-
-def prepare(src, p):
-    """The page's layout `p` applied to the art: (frames to place, durations, background, place)."""
-    width, height, x, y = (int(p[k]) for k in ("width", "height", "x", "y"))
-    if not (0 < width <= 4 * wv.SCREEN_W and 0 < height <= 4 * wv.SCREEN_H):
-        raise ValueError(f"art size {width}x{height} out of range")
-    mode, turn, bg = p["fill"], TURNS[int(p["rotate"])], ImageColor.getrgb(p["bg"])[:3]
-    if mode not in FILL_MODES:
-        raise ValueError(f"unknown fill {mode}")
-    flat = Prepared(src.frames, turn, p["flip"], bg, (width, height) if p["smooth"] else None)
-    durations = [src.frames[0][1]] * len(src.frames) if src.video else [d for _, d in src.frames]
-    return flat, durations, bg, layout_placer(x, y, width, height, flat[0].size, mode)
-
-
-def write_video_mp4(src, flat, durations, bg, path, place, yuv444=False):
-    """An MP4 of a video source at its own frame rate, played once through (the player loops it)."""
-    return wv.write_mp4(Placed(flat, place, bg), durations, 1, (0, 0), bg, path, fps=round(src.video["fps"]),
-                        min_seconds=0, yuv444=yuv444, x264=wv.VIDEO_X264)
-
-
-def export(req):
-    src = sources.get(req["id"])
-    if not src:
-        raise ValueError("that image is no longer loaded; open it again")
-    flat, durations, bg, place = prepare(src, req["place"])
-    name = safe_name(req["name"])
-    formats = [f for f in req["formats"] if f in FORMATS]
-    if src.video and set(formats) - {"mp4"}:
-        raise ValueError("a video only exports as MP4: as PNG or GIF it would be enormous")
-
-    wv.OUT.mkdir(exist_ok=True)
-    written, notes = [], []
-    for fmt in formats:
-        path = wv.OUT / f"{name}.{fmt}"
-        if fmt == "png":
-            wv.write_png(flat, durations, bg, path, place)
-        elif fmt == "gif":
-            wv.write_gif(flat, durations, bg, path, place)
-        elif src.video:
-            write_video_mp4(src, flat, durations, bg, path, place, bool(req.get("yuv444")))
-        elif not wv.write_mp4(Placed(flat, place, bg), durations, 1, (0, 0), bg, path, yuv444=bool(req.get("yuv444"))):
-            notes.append("MP4 skipped: ffmpeg not found (winget install BtbN.FFmpeg.GPL.8.1)")
-            continue
-        written.append({"name": path.name, "bytes": path.stat().st_size})
-    return {"files": written, "notes": notes, "folder": str(wv.OUT)}
-
-
-def safe_name(name):
-    return re.sub(r"[^\w .()-]", "_", name).strip(" .") or "untitled"
-
-
-# --- Playlist and player -------------------------------------------------------------
+# --- The playlist: scenes of layers and objects (docs/scenes.md) ---------------------------------
 #
-# The playlist is playlist/playlist.json plus one 1600x720 PNG (animated PNG for animations) per piece, which
-# is what player/ (wvplay) plays, drawing text over it (docs/widgets.md). wvplay re-reads the playlist whenever
-# it changes, so editing here is live.
+# playlist/playlist.json, version 2: scenes, each a stack of layers holding image, video, text and shape objects,
+# plus a global layer stack over every scene. The page edits the whole document and sends it back as it changes;
+# the player re-reads it whenever it changes, so editing here is live. Media lives in playlist/sources/, named by
+# content hash. A version 1 file (one piece file plus text per item) is converted the first time it's read.
 
 PLAYLIST_DIR = wv.ROOT / "playlist"
 PLAYLIST = PLAYLIST_DIR / "playlist.json"
@@ -291,188 +158,258 @@ RUN_NAME = "Wonder Vision player"
 RIVALS = re.compile(r"TRCC|InfoPanel|USBLCD", re.I)  # other programs that drive the cooler
 rivals_seen = (0.0, [])
 DEFAULT_SECONDS = 30
-thumbs = {}  # (file, mtime) -> PNG bytes
-# Requests run on their own threads, and text edits save as they happen: one change to playlist.json at a time.
+TIDY_AGE = 60  # seconds: a source newer than this may be an upload whose object hasn't been saved yet
+# Requests run on their own threads, and edits save as they happen: one change to playlist.json at a time.
 playlist_lock = threading.RLock()
 
 
-def read_json():
-    """playlist.json as it is, or {} before there is one."""
+def read_json(path):
+    """A JSON file as it is, or {} before there is one."""
     with playlist_lock:
         try:
-            return json.loads(PLAYLIST.read_text(encoding="utf-8"))
+            return json.loads(path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return {}
 
 
-def read_playlist():
-    """The playlist's items: file and seconds (what the player reads), each piece's own text (`widgets`), and
-    for re-editing the original's name, where it's kept (`source`) and the page's `layout`. Plus the global
-    layer of text over every piece (`overlay`). See docs/widgets.md."""
-    data = read_json()
-    items = [{**i, "seconds": i.get("seconds", DEFAULT_SECONDS)}
-             for i in data.get("items", []) if (PLAYLIST_DIR / i["file"]).is_file()]
-    return {"seconds": data.get("seconds", DEFAULT_SECONDS), "overlay": data.get("overlay", []), "items": items}
+def write_atomic(path, data):
+    """Writes JSON all at once, so the player never reads half a file."""
+    with playlist_lock:
+        PLAYLIST_DIR.mkdir(exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, path)
 
 
-def keep_source(src):
-    """Keeps a piece's original next to the playlist (a hard link where possible: no extra space)."""
-    sources_dir = PLAYLIST_DIR / "sources"  # each piece's original, so it can be laid out again
-    sources_dir.mkdir(parents=True, exist_ok=True)
-    kept = sources_dir / f"{src.id}{src.path.suffix.lower()}"
+def sources_dir():
+    return PLAYLIST_DIR / "sources"
+
+
+def source_name(path):
+    """The relative `src` of a kept file."""
+    return f"sources/{Path(path).name}"
+
+
+def keep_file(path, data=None):
+    """Keeps a media file in sources/ under its content hash (a hard link where possible: no extra space).
+    Returns (kept path, src)."""
+    sources_dir().mkdir(parents=True, exist_ok=True)
+    data = path.read_bytes() if data is None else data
+    kept = sources_dir() / f"{hashlib.sha1(data).hexdigest()[:12]}{Path(path).suffix.lower()}"
     if not kept.exists():
+        if path.exists():
+            try:
+                os.link(path, kept)
+            except OSError:  # another drive
+                shutil.copy2(path, kept)
+        else:
+            kept.write_bytes(data)
+    return kept, source_name(kept)
+
+
+def media_size(path):
+    """(width, height) of a media file as the studio and player see it: for a video, after the decode's
+    fit-to-screen scaling (decode_video), so a version 1 layout's scale applies to the same size."""
+    if path.suffix.lower() in VIDEO_TYPES:
+        ff = wv.find_ffmpeg()
+        probe = subprocess.run([ff, "-hide_banner", "-i", str(path)], capture_output=True, text=True, errors="replace",
+                               creationflags=NO_WINDOW).stderr if ff else ""
+        m = re.search(r"Stream #.*Video:.*?\b(\d{2,5})x(\d{2,5})\b", probe)
+        if not m:
+            return wv.SCREEN_W, wv.SCREEN_H
+        iw, ih = int(m[1]), int(m[2])
+        k = min(1, max(wv.SCREEN_W / iw, wv.SCREEN_H / ih))
+        return int(iw * k / 2) * 2, int(ih * k / 2) * 2
+    with Image.open(path) as im:
+        return im.size
+
+
+def convert_v1(data):
+    """A version 1 playlist as a version 2 document (docs/scenes.md, Moving from version 1)."""
+    scenes = []
+    for n, item in enumerate(data.get("items", [])):
+        if not isinstance(item, dict) or not isinstance(item.get("file"), str):
+            continue
+        piece = PLAYLIST_DIR / Path(item["file"]).name
+        lay = item.get("layout") if isinstance(item.get("layout"), dict) else {}
+        kept = item.get("source") and (PLAYLIST_DIR / item["source"])
+        art = {"id": "art", "type": "image", "name": Path(item["file"]).stem, "visible": True, "locked": False,
+               "opacity": 1.0, "x": 0, "y": 0, "w": wv.SCREEN_W, "h": wv.SCREEN_H, "rotate": 0, "flip": False,
+               "smooth": False, "fill": "none", "pixel": 1, "src": None}
+        background = "#000000"
+        if kept and kept.is_file():
+            art["src"] = item["source"]
+            if lay:
+                try:
+                    sw, sh = media_size(kept)
+                    rotate = int(lay.get("rotate", 0)) % 360
+                    factor = max(1, int(lay.get("factor", 1)))
+                    scale = float(lay.get("scale", 1))
+                    if rotate % 180:
+                        sw, sh = sh, sw
+                    art.update(w=max(1, round(sw / factor * scale)), h=max(1, round(sh / factor * scale)),
+                               x=int(lay.get("x", 0)), y=int(lay.get("y", 0)), rotate=rotate, flip=bool(lay.get("flip")),
+                               smooth=bool(lay.get("smooth")), pixel=factor)
+                    fill = lay.get("fill", "solid")
+                    art["fill"] = fill if fill in ("extend", "mirror", "tile") else "none"
+                    if isinstance(lay.get("bg"), str) and re.fullmatch(r"#[0-9a-fA-F]{6}", lay["bg"]):
+                        background = lay["bg"].lower()
+                except (OSError, ValueError, TypeError):
+                    pass  # the file can't be read for its size: shown at full screen, still editable
+        elif piece.is_file():  # no kept original: the finished piece itself, as it is
+            _, art["src"] = keep_file(piece)
+        else:
+            continue  # nothing left of it
+        if piece.suffix.lower() in VIDEO_TYPES or (art["src"] and Path(art["src"]).suffix.lower() in VIDEO_TYPES):
+            art["type"] = "video"
+        texts = [text_object(w) for w in item.get("widgets", []) if isinstance(w, dict)]
+        scenes.append({"id": f"s{n}", "name": Path(item["file"]).stem, "seconds": max(1, int(item.get("seconds") or DEFAULT_SECONDS)),
+                       "background": background,
+                       "layers": [{"id": "art", "name": "Art", "visible": True, "locked": False, "opacity": 1.0, "objects": [art]},
+                                  {"id": "text", "name": "Text", "visible": True, "locked": False, "opacity": 1.0, "objects": texts}]})
+    overlay = [text_object(w) for w in data.get("overlay", []) if isinstance(w, dict)]
+    rest = {k: v for k, v in data.items() if k not in ("items", "overlay", "version", "seconds", "global", "scenes")}
+    return {"version": 2, "seconds": data.get("seconds", DEFAULT_SECONDS),
+            "global": {"layers": [{"id": "text", "name": "Text", "visible": True, "locked": False, "opacity": 1.0, "objects": overlay}]},
+            "scenes": scenes, **rest}
+
+
+def text_object(w):
+    """A version 1 text widget as a text object: the widget's keys plus the common ones."""
+    return {"name": str(w.get("text", "")).split("\n")[0][:40] or "Text", "visible": True, "locked": False, "opacity": 1.0,
+            "w": 0, "h": 0, "rotate": 0, "flip": False, **w, "type": "text", "id": str(w.get("id", "w"))}
+
+
+def read_document():
+    """playlist.json as a version 2 document, converting a version 1 file (kept as playlist.v1.json) the first time."""
+    with playlist_lock:
+        data = read_json(PLAYLIST)
+        if data.get("version") == 2:
+            doc = data
+        elif not data:
+            doc = {"version": 2, "seconds": DEFAULT_SECONDS, "global": {"layers": []}, "scenes": []}
+        else:
+            doc = convert_v1(data)
+            backup = PLAYLIST.with_name("playlist.v1.json")
+            if not backup.exists():
+                shutil.copy2(PLAYLIST, backup)
+            write_atomic(PLAYLIST, doc)
+        doc.setdefault("seconds", DEFAULT_SECONDS)
+        doc.setdefault("global", {"layers": []})
+        doc.setdefault("scenes", [])
+        return doc
+
+
+def check_document(doc):
+    """The page's document, checked for shape only: the renderers skip what they don't understand."""
+    if not isinstance(doc, dict) or doc.get("version") != 2:
+        raise ValueError("expected a version 2 playlist document")
+    if not isinstance(doc.get("scenes"), list) or not all(isinstance(s, dict) for s in doc["scenes"]):
+        raise ValueError("scenes must be a list of objects")
+    if not isinstance(doc.get("global"), dict):
+        raise ValueError("global must be an object")
+    for holder in [doc["global"], *doc["scenes"]]:
+        layers = holder.setdefault("layers", [])
+        if not isinstance(layers, list) or not all(isinstance(l, dict) and isinstance(l.get("objects", []), list) for l in layers):
+            raise ValueError("layers must be a list of objects, each with its objects")
+        for layer in layers:
+            layer.setdefault("objects", [])
+            if not all(isinstance(o, dict) for o in layer["objects"]):
+                raise ValueError("a layer's objects must be objects")
+    for s in doc["scenes"]:
         try:
-            os.link(src.path, kept)
-        except OSError:  # another drive
-            shutil.copy2(src.path, kept)
-    return kept.relative_to(PLAYLIST_DIR).as_posix()
+            s["seconds"] = max(1, min(86400, int(s.get("seconds") or DEFAULT_SECONDS)))
+        except (TypeError, ValueError):
+            raise ValueError("a scene's seconds must be a number") from None
+    return doc
 
 
-def tidy_sources(items):
-    """Deletes kept originals that no piece uses any more."""
-    used = {i.get("source") for i in items}
-    if (sources_dir := PLAYLIST_DIR / "sources").exists():
-        for path in sources_dir.iterdir():
-            if f"sources/{path.name}" not in used:
+def used_sources(doc):
+    return {o.get("src") for holder in [doc.get("global", {}), *doc.get("scenes", [])]
+            for layer in holder.get("layers", []) for o in layer.get("objects", []) if isinstance(o, dict)}
+
+
+def tidy_sources(doc):
+    """Deletes kept media that no object uses any more, leaving fresh uploads whose objects may not be saved yet."""
+    used = used_sources(doc)
+    if sources_dir().exists():
+        for path in sources_dir().iterdir():
+            if source_name(path) not in used and time.time() - path.stat().st_mtime > TIDY_AGE:
                 path.unlink(missing_ok=True)
 
 
-def write_playlist(items=None, **keys):
-    """Writes playlist.json with these items (else the ones there) and top-level keys (`overlay`), keeping every
-    other key as it is: ones this version doesn't know about too."""
+def save_document(doc):
+    """The page's whole document, saved as it is (unknown keys and all)."""
+    doc = check_document(doc)
     with playlist_lock:
-        data = {"seconds": DEFAULT_SECONDS, **read_json(), **keys}
-        data["items"] = data.get("items", []) if items is None else items
-        PLAYLIST_DIR.mkdir(exist_ok=True)
-        tmp = PLAYLIST.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        os.replace(tmp, PLAYLIST)  # all at once, so the player never reads half a file
+        write_atomic(PLAYLIST, doc)
+        tidy_sources(doc)
+    return {"ok": True}
 
 
-def playlist_state():
-    items = []
-    playlist = read_playlist()
-    for item in playlist["items"]:
-        path = PLAYLIST_DIR / item["file"]
-        if path.suffix.lower() in VIDEO_TYPES:
-            frames = "video"
-        else:
-            with Image.open(path) as im:
-                frames = getattr(im, "n_frames", 1)
-        items.append({**item, "frames": frames, "version": int(path.stat().st_mtime)})
-    return {"items": items, "overlay": playlist["overlay"], **player_state()}
+def media_info(src):
+    """What the page needs to draw a kept media file: its frames' urls, size, timing and `pixel` factor."""
+    info = {**src.info, "src": src.src, "animated": bool(src.video) or len(src.info["durations"]) > 1,
+            "pixel": src.info["factor"]}
+    info["type"] = "video" if src.video else "image"
+    return info
 
 
-def widget_list(value):
-    """Text widgets from the page, checked only for shape: the player skips any it doesn't understand."""
-    if not isinstance(value, list) or not all(isinstance(w, dict) for w in value):
-        raise ValueError("widgets must be a list of objects")
-    return value
+def upload(body, name):
+    """A dropped or picked file: kept in sources/ by content hash, opened, and described for the page."""
+    if not body:
+        raise ValueError("the file is empty")
+    suffix = Path(name).suffix.lower()
+    if suffix not in VIDEO_TYPES and suffix not in (".png", ".gif", ".webp", ".jpg", ".jpeg", ".bmp", ".apng", ".aseprite", ".ase"):
+        raise ValueError(f"{suffix or 'that'} isn't a kind of file the studio can open")
+    kept, src_name = keep_file(Path(name), body)
+    try:
+        info = open_kept(src_name, name)
+    except Exception:
+        if time.time() - kept.stat().st_mtime < 5:  # just written and unreadable: not worth keeping
+            kept.unlink(missing_ok=True)
+        raise
+    return info
 
 
-def save_overlay(req):
-    """The global layer, the text over every piece: saved as it's edited."""
-    overlay = widget_list(req.get("overlay"))
-    write_playlist(overlay=overlay)
-    return {"overlay": overlay}
+def open_kept(src_name, name=None):
+    """Opens sources/<file> (cached) and describes it."""
+    file = Path(src_name).name
+    if not re.fullmatch(r"[\w.-]+", file):
+        raise ValueError("bad source name")
+    path = sources_dir() / file
+    if not path.is_file():
+        raise FileNotFoundError(f"{src_name} isn't in the playlist folder")
+    for s in sources.values():
+        if s.src == source_name(path):
+            return media_info(s)
+    src = Source(path, name or file)
+    src.src = source_name(path)
+    while len(sources) >= 12:  # each holds every frame in memory (videos as JPEG)
+        sources.pop(next(iter(sources)))
+    sources[src.id] = src
+    return media_info(src)
 
 
-def save_widgets(req):
-    """One piece's own text, saved as it's edited. Only playlist.json changes: the piece's art isn't made again."""
-    widgets = widget_list(req.get("widgets"))
-    with playlist_lock:
-        items = read_playlist()["items"]
-        item = next((i for i in items if i["file"] == Path(req["file"]).name), None)
-        if not item:
-            raise ValueError("that piece isn't in the playlist any more")
-        item["widgets"] = widgets
-        write_playlist(items)
-    return {"file": item["file"]}
+def export_scene(req):
+    """A PNG of a scene, rendered by the player (`wvplay render`), into out/."""
+    exe = PLAYER.with_name("wvplay.exe")
+    if not exe.exists():
+        raise ValueError("the player isn't built yet: run `cargo build --release` in the player folder")
+    index, name = int(req["scene"]), safe_name(req.get("name") or f"scene{req['scene']}")
+    wv.OUT.mkdir(exist_ok=True)
+    out = wv.OUT / f"{name}.png"
+    cmd = [str(exe), "render", str(PLAYLIST), str(index), str(out)]
+    if "time" in req:
+        cmd += ["--time", str(int(req["time"]))]
+    done = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=120, creationflags=NO_WINDOW)
+    if done.returncode or not out.exists():
+        raise ValueError(f"the player couldn't render it: {(done.stderr or done.stdout).strip()[-300:]}")
+    return {"files": [{"name": out.name, "bytes": out.stat().st_size}], "folder": str(wv.OUT)}
 
 
-def add_to_playlist(req):
-    src = sources.get(req["id"])
-    if not src:
-        raise ValueError("that image is no longer loaded; open it again")
-    flat, durations, bg, place = prepare(src, req["place"])
-    stem, ext = safe_name(req["name"]), ".mp4" if src.video else ".png"
-    file = stem + ext
-    PLAYLIST_DIR.mkdir(exist_ok=True)
-    source = keep_source(src)  # before writing the piece: editing an old piece, the piece is the original
-    tmp = PLAYLIST_DIR / f"{stem}.tmp{ext}"
-    if src.video:
-        write_video_mp4(src, flat, durations, bg, tmp, place)
-    else:
-        wv.write_png(flat, durations, bg, tmp, place)
-    os.replace(tmp, PLAYLIST_DIR / file)
-    entry = {"file": file, "seconds": max(1, int(req.get("seconds") or DEFAULT_SECONDS)), "name": src.name,
-             "source": source, "layout": req.get("layout")}
-    if "widgets" in req:
-        entry["widgets"] = widget_list(req["widgets"])  # the piece's own text: the player draws it
-    with playlist_lock:
-        items = read_playlist()["items"]
-        for other in [i for i in items if Path(i["file"]).stem == stem and i["file"] != file]:
-            items.remove(other)  # same name, other kind (a still replaced by a video, say)
-            (PLAYLIST_DIR / other["file"]).unlink(missing_ok=True)
-        existing = next((i for i in items if i["file"] == file), None)
-        if existing:
-            existing.update(entry)  # in place: it keeps its spot in the playlist
-        else:
-            items.append(entry)
-        write_playlist(items)
-        tidy_sources(items)
-    return {**playlist_state(), "added": file, "replaced": existing is not None}
-
-
-def save_playlist(req):
-    """The page's edited list: new order, times, and anything removed (whose files are deleted)."""
-    with playlist_lock:
-        old = {i["file"]: i for i in read_playlist()["items"]}
-        items = [{**old[name], "seconds": max(1, min(86400, int(i["seconds"])))}
-                 for i in req["items"] if (name := Path(i["file"]).name) in old]
-        write_playlist(items)
-        for gone in old.keys() - {i["file"] for i in items}:
-            (PLAYLIST_DIR / gone).unlink(missing_ok=True)
-        tidy_sources(items)
-    return playlist_state()
-
-
-def edit_piece(req):
-    """Opens a playlist piece for laying out again: its original and layout when kept, else the piece itself
-    (pieces added before originals were kept)."""
-    item = next((i for i in read_playlist()["items"] if i["file"] == Path(req["file"]).name), None)
-    if not item:
-        raise ValueError("that piece isn't in the playlist any more")
-    kept = item.get("source") and PLAYLIST_DIR / item["source"]
-    widgets = item.get("widgets", [])  # its text: saved as it's edited, so newer than the layout
-    if kept and kept.is_file():
-        return {"source": open_source(kept, item.get("name") or kept.name), "layout": item.get("layout"),
-                "widgets": widgets, "original": True}
-    # the finished piece fills the screen as it is; in-between sizes, since whole-number ones jump past the screen
-    as_is = {"factor": 1, "scale": 1, "fractional": True, "smooth": False, "x": 0, "y": 0, "fill": "solid",
-             "bg": "#000000"}
-    return {"source": open_source(PLAYLIST_DIR / item["file"], item["file"]), "layout": as_is, "widgets": widgets,
-            "original": False}
-
-
-def thumbnail(file):
-    path = PLAYLIST_DIR / Path(file).name
-    key = (path.name, path.stat().st_mtime)
-    if key not in thumbs:
-        if path.suffix.lower() in VIDEO_TYPES:
-            first = subprocess.run([wv.find_ffmpeg(), "-v", "error", "-i", str(path), "-frames:v", "1",
-                                    "-f", "image2pipe", "-c:v", "png", "-"], capture_output=True,
-                                   creationflags=NO_WINDOW).stdout
-            source = Image.open(io.BytesIO(first))
-        else:
-            source = Image.open(path)
-        with source as im:
-            small = im.convert("RGB").reduce(8)  # first frame, 200x90
-        buf = io.BytesIO()
-        small.save(buf, "PNG")
-        thumbs[key] = buf.getvalue()
-    return thumbs[key]
-
+def safe_name(name):
+    return re.sub(r"[^\w .()-]", "_", str(name)).strip(" .") or "untitled"
 
 def player_command():
     ffmpeg = ["--ffmpeg", wv.find_ffmpeg()] if wv.find_ffmpeg() else []  # for video pieces
@@ -543,8 +480,8 @@ def player_state():
 def start_player():
     if not PLAYER.exists():
         raise ValueError("the player isn't built yet: run `cargo build --release` in the player folder")
-    if not read_playlist()["items"]:
-        raise ValueError("the playlist is empty: add something first")
+    if not read_document()["scenes"]:
+        raise ValueError("the playlist is empty: add a scene first")
     if not player_running():
         PLAYER_LOG.parent.mkdir(exist_ok=True)
         # its own process group, so it keeps playing after the studio closes; it writes its own log
@@ -979,11 +916,19 @@ class Handler(BaseHTTPRequestHandler):
         elif (m := re.fullmatch(r"/api/video/(\w+)\.mp4", url.path)) and getattr(sources.get(m[1]), "video", None):
             self.send_file(sources[m[1]].preview, "video/mp4")
         elif url.path == "/api/playlist":
-            self.json(playlist_state())
+            try:
+                self.json(read_document())
+            except ValueError as e:
+                self.json({"error": str(e)}, 500)
         elif url.path == "/api/player":
             self.json(player_state())
-        elif (m := re.fullmatch(r"/api/thumb/([\w .()-]+\.(?:png|mp4))", unquote(url.path))) and (PLAYLIST_DIR / m[1]).is_file():
-            self.send(200, thumbnail(m[1]), "image/png")
+        elif url.path == "/studio.js":
+            self.send(200, SCRIPT.read_bytes(), "text/javascript; charset=utf-8")
+        elif (m := re.fullmatch(r"/api/media/([\w.-]+)", url.path)):
+            try:
+                self.json(open_kept(m[1]))
+            except (OSError, ValueError) as e:
+                self.json({"error": str(e)}, 404)
         elif url.path == "/api/fonts":
             self.json(font_list())
         elif url.path == "/api/font" and (path := font_file(parse_qs(url.query).get("path", [""])[0])):
@@ -1006,27 +951,16 @@ class Handler(BaseHTTPRequestHandler):
         url = urlparse(self.path)
         body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
         try:
-            if url.path == "/api/load":
+            if url.path == "/api/upload":
                 name = Path(parse_qs(url.query).get("name", ["upload.png"])[0]).name
-                UPLOADS.mkdir(parents=True, exist_ok=True)
-                path = UPLOADS / (hashlib.sha1(body).hexdigest()[:12] + Path(name).suffix.lower())
-                path.write_bytes(body)
-                self.json(open_source(path, name))
+                self.json(upload(body, name))
             elif url.path == "/api/export":
-                self.json(export(json.loads(body)))
+                self.json(export_scene(json.loads(body)))
             elif url.path == "/api/reveal":
                 os.startfile(wv.OUT)
                 self.json({})
-            elif url.path == "/api/playlist/add":
-                self.json(add_to_playlist(json.loads(body)))
             elif url.path == "/api/playlist":
-                self.json(save_playlist(json.loads(body)))
-            elif url.path == "/api/playlist/edit":
-                self.json(edit_piece(json.loads(body)))
-            elif url.path == "/api/playlist/overlay":
-                self.json(save_overlay(json.loads(body)))
-            elif url.path == "/api/playlist/widgets":
-                self.json(save_widgets(json.loads(body)))
+                self.json(save_document(json.loads(body)))
             elif url.path == "/api/player/start":
                 self.json(start_player())
             elif url.path == "/api/player/stop":
@@ -1104,7 +1038,8 @@ def serve(image=None, port=None, open_browser=True):
         path = Path(image)
         if not path.exists():
             raise SystemExit(f"can't find {image}")
-        initial = open_source(path, path.name)
+        _, src_name = keep_file(path)
+        initial = open_kept(src_name, path.name)
     addresses = listen_addresses(settings)
     port = port or settings.get("port", 8137)
     for p in range(port, port + 20):  # the first port free on every address
