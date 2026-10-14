@@ -1,8 +1,9 @@
 //! Text widgets (docs/widgets.md): a piece's own text plus the global layer, drawn into one transparent
 //! 1600x720 layer that's then laid over each of the piece's frames.
 //!
-//! The geometry follows the spec to the letter, so the studio's preview matches the cooler. Drawing a
-//! layer doesn't depend on preparing frames, so it can also run while playing.
+//! The geometry follows the spec to the letter, and lays text out as Chrome does on Windows (its line
+//! metrics, HarfBuzz shaping), so the studio's preview matches the cooler. Drawing a layer doesn't depend
+//! on preparing frames, so it can also run while playing.
 
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
@@ -13,6 +14,7 @@ use std::time::SystemTime;
 
 use fontdue::{Font, FontSettings, Metrics};
 use image::{RgbImage, Rgba, RgbaImage};
+use rustybuzz::{Face, UnicodeBuffer, ttf_parser};
 
 use crate::art::{HEIGHT, WIDTH};
 use crate::playlist::{self, Align, Valign, Widget};
@@ -20,7 +22,7 @@ use crate::playlist::{self, Align, Valign, Widget};
 /// Used when a widget's own font is missing or unreadable.
 pub const DEFAULT_FONT: &str = r"C:\Windows\Fonts\segoeui.ttf";
 /// Bump when drawing changes, so text prepared by an older player is drawn again.
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 /// Anything bigger is a typo, and would only make huge bitmaps.
 const MAX_SIZE: f32 = 2000.0;
 const MAX_OUTLINE: f32 = 500.0;
@@ -29,6 +31,9 @@ const MAX_OUTLINE: f32 = 500.0;
 const CURVES_FOR: f32 = 300.0;
 /// No covered pixel nearby.
 const NONE: u32 = u32::MAX;
+/// Half covered, where crisp text turns on. fontdue rounds coverage down to bytes, so exactly half is
+/// 127; the studio turns on at 128 of 255, Chrome's half.
+const HALF: f32 = 127.0 / 255.0;
 
 /// Text ready to lay over frames: RGBA (not premultiplied) in upright panel pixels.
 pub struct Layer {
@@ -110,7 +115,7 @@ impl Layer {
         let outline = if w.outline.width > 0.0 { w.outline.width.min(MAX_OUTLINE) } else { 0.0 };
         // how far beyond the glyphs the outline can reach
         let pad = if outline > 0.0 { outline.ceil() as i32 + 1 } else { 0 };
-        let Some(mut mask) = coverage(&font, size, &layout(&font, w, size), pad) else { return };
+        let Some(mut mask) = coverage(&font.glyphs, size, &layout(&font, w, size), pad) else { return };
         let mut ring = (outline > 0.0).then(|| dilate(&mask, outline));
         if w.crisp {
             // each mask on its own, so the fill and outline meet with a hard edge, like the studio's
@@ -176,7 +181,7 @@ fn rgb(s: &str, fallback: [u8; 3]) -> [u8; 3] {
 /// For crisp text: fully on or fully off.
 fn threshold(alpha: &mut [f32]) {
     for a in alpha {
-        *a = if *a >= 0.5 { 1.0 } else { 0.0 };
+        *a = if *a >= HALF { 1.0 } else { 0.0 };
     }
 }
 
@@ -187,19 +192,17 @@ struct Placed {
     y: f32,
 }
 
-/// The spec's geometry: lines `size * line_height` apart from the block's top, each lined up on `x`
-/// by its width (the sum of its advances, with kerning).
-fn layout(font: &Font, w: &Widget, size: f32) -> Vec<Placed> {
-    let (ascent, descent) = line_metrics(font, size);
-    let lines: Vec<Vec<u16>> = w.text
+/// The spec's geometry: lines `size * line_height` apart from the block's top, each lined up on `x` by
+/// its width.
+fn layout(font: &Typeface, w: &Widget, size: f32) -> Vec<Placed> {
+    let Some(face) = Face::from_slice(&font.data, 0) else { return Vec::new() };
+    let (ascent, descent) = font.line_metrics(size);
+    let lines: Vec<String> = w.text
         .split('\n')
         .map(|line| {
-            line.strip_suffix('\r')
-                .unwrap_or(line)
-                .chars()
-                // like a browser's canvas: other whitespace (a tab, say) is a space
-                .map(|c| font.lookup_glyph_index(if c.is_ascii_whitespace() { ' ' } else { c }))
-                .collect()
+            let line = line.strip_suffix('\r').unwrap_or(line);
+            // like a browser's canvas: other whitespace (a tab, say) is a space
+            line.chars().map(|c| if c.is_ascii_whitespace() { ' ' } else { c }).collect()
         })
         .collect();
     let step = size * w.line_height;
@@ -207,24 +210,34 @@ fn layout(font: &Font, w: &Widget, size: f32) -> Vec<Placed> {
     let mut placed = Vec::new();
     for (i, line) in lines.iter().enumerate() {
         let baseline = top + ascent + i as f32 * step;
-        let mut starts = Vec::with_capacity(line.len()); // each glyph's x from the line's start
-        let mut width = 0.0;
-        for (k, &index) in line.iter().enumerate() {
-            if k > 0 {
-                width += font.horizontal_kern_indexed(line[k - 1], index, size).unwrap_or(0.0);
-            }
-            starts.push(width);
-            width += font.metrics_indexed(index, size).advance_width;
-        }
+        let (glyphs, width) = shape(&face, line, size / font.units_per_em);
         let left = line_start(w.align, w.x, width);
-        placed.extend(line.iter().zip(starts).map(|(&index, x)| Placed { index, x: left + x, y: baseline }));
+        placed.extend(glyphs.into_iter().map(|g| Placed { x: left + g.x, y: baseline + g.y, ..g }));
     }
     placed
 }
 
-/// The font's ascent and descent at `size`, both as positive distances from the baseline.
-fn line_metrics(font: &Font, size: f32) -> (f32, f32) {
-    font.horizontal_line_metrics(size).map_or((size * 0.8, size * 0.2), |m| (m.ascent, m.descent.abs()))
+/// A line shaped as the browser shapes it (rustybuzz is a port of HarfBuzz, which Chrome uses): kerning
+/// from GPOS or `kern`, ligatures and so on. Gives each glyph's offset from the line's start on the
+/// baseline, and the line's width, the sum of its advances. `scale` is pixels per font unit.
+fn shape(face: &Face, line: &str, scale: f32) -> (Vec<Placed>, f32) {
+    let mut buffer = UnicodeBuffer::new();
+    buffer.push_str(line);
+    buffer.guess_segment_properties();
+    let shaped = rustybuzz::shape(face, &[], buffer);
+    let mut pen = 0i64; // in font units, so rounding doesn't add up along the line
+    let glyphs = shaped
+        .glyph_infos()
+        .iter()
+        .zip(shaped.glyph_positions())
+        .map(|(info, p)| {
+            let at = Placed { index: info.glyph_id as u16, x: (pen + p.x_offset as i64) as f32 * scale,
+                              y: -p.y_offset as f32 * scale };
+            pen += p.x_advance as i64;
+            at
+        })
+        .collect();
+    (glyphs, pen as f32 * scale)
 }
 
 /// A block of `lines` lines: ascent + descent, plus a step per extra line.
@@ -264,6 +277,7 @@ fn coverage(font: &Font, size: f32, glyphs: &[Placed], pad: i32) -> Option<Mask>
     let whole = |v: f32| v.clamp(-1e6, 1e6).round() as i32;
     let boxes: Vec<(u16, i32, i32, Metrics)> = glyphs
         .iter()
+        .filter(|g| g.index < font.glyph_count())
         .filter_map(|g| {
             let m = font.metrics_indexed(g.index, size);
             (m.width > 0 && m.height > 0)
@@ -422,9 +436,50 @@ fn nearest_covered(alpha: &[f32], w: usize, h: usize) -> Vec<u32> {
     nearest
 }
 
-/// Parsed fonts by path, kept for the life of the process. A font file that changes is read again.
-fn font(path: &Path) -> Option<Arc<Font>> {
-    type Fonts = HashMap<PathBuf, (Option<(SystemTime, u64)>, Option<Arc<Font>>)>;
+/// A font file, read for laying text out (rustybuzz shapes from its bytes) and for drawing its glyphs
+/// (fontdue).
+struct Typeface {
+    data: Vec<u8>,
+    glyphs: Font,
+    units_per_em: f32,
+    /// Ascent and descent in font units, both positive: the ones Chrome uses on Windows (DirectWrite's).
+    /// That's the OS/2 table's typographic ones if it says to use them, else its Windows ones (often
+    /// taller than hhea's), else hhea's.
+    ascent: f32,
+    descent: f32,
+}
+
+impl Typeface {
+    fn read(data: Vec<u8>) -> Option<Typeface> {
+        let face = ttf_parser::Face::parse(&data, 0).ok()?;
+        let hhea = face.tables().hhea;
+        let (ascent, descent) = match face.tables().os2 {
+            Some(os2) if os2.use_typographic_metrics() => {
+                (os2.typographic_ascender() as i32, -(os2.typographic_descender() as i32))
+            }
+            // unsigned in the file: ttf_parser reads them as signed (and negates the descent)
+            Some(os2) if (os2.windows_ascender(), os2.windows_descender()) != (0, 0) => {
+                (os2.windows_ascender() as u16 as i32, -(os2.windows_descender() as i32) as u16 as i32)
+            }
+            _ => (hhea.ascender as i32, -(hhea.descender as i32)),
+        };
+        let units_per_em = face.units_per_em() as f32;
+        // substitutions too: shaping can pick glyphs that only GSUB reaches (ligatures, say)
+        let settings = FontSettings { scale: CURVES_FOR, load_substitutions: true, ..FontSettings::default() };
+        let glyphs = Font::from_bytes(&data[..], settings).ok()?;
+        Some(Typeface { data, glyphs, units_per_em, ascent: ascent as f32, descent: descent as f32 })
+    }
+
+    /// Ascent and descent at `size`, both positive, in whole pixels as Chrome rounds them.
+    fn line_metrics(&self, size: f32) -> (f32, f32) {
+        let px = |units: f32| (units * size / self.units_per_em + 0.5).floor();
+        (px(self.ascent), px(self.descent))
+    }
+}
+
+/// Fonts by path, kept for the life of the process. A font file that changes is read again.
+fn font(path: &Path) -> Option<Arc<Typeface>> {
+    type Fonts = HashMap<PathBuf, (Option<(SystemTime, u64)>, Option<Arc<Typeface>>)>;
     static FONTS: OnceLock<Mutex<Fonts>> = OnceLock::new();
     let stamp = playlist::stamp(path);
     let mut fonts = FONTS.get_or_init(Default::default).lock().unwrap();
@@ -433,8 +488,7 @@ fn font(path: &Path) -> Option<Arc<Font>> {
     {
         return font.clone();
     }
-    let settings = FontSettings { scale: CURVES_FOR, load_substitutions: false, ..FontSettings::default() };
-    let font = std::fs::read(path).ok().and_then(|bytes| Font::from_bytes(bytes, settings).ok()).map(Arc::new);
+    let font = std::fs::read(path).ok().and_then(Typeface::read).map(Arc::new);
     fonts.insert(path.to_path_buf(), (stamp, font.clone()));
     font
 }
@@ -514,7 +568,7 @@ mod tests {
             Layer::render([&w]).bounds().unwrap()
         };
         let font = font(Path::new(DEFAULT_FONT)).unwrap();
-        let (ascent, descent) = line_metrics(&font, 100.0);
+        let (ascent, descent) = font.line_metrics(100.0);
         let step = 100.0 * 1.2f32;
         let height = block_height(ascent, descent, 2, step);
         // H sits on the baseline, with a small side bearing either side
@@ -546,14 +600,61 @@ mod tests {
         }
         let font = font(Path::new(DEFAULT_FONT)).unwrap();
         let placed = layout(&font, &text("AV"), 100.0);
-        let advance = font.metrics('A', 100.0).advance_width;
-        let kern = font.horizontal_kern('A', 'V', 100.0).unwrap();
-        assert!(kern < -1.0);
-        assert!((placed[1].x - placed[0].x - (advance + kern)).abs() < 1e-3);
+        let advance = |c| font.glyphs.metrics(c, 100.0).advance_width;
+        assert!(placed[1].x - placed[0].x < advance('A') - 1.0);
         // and the line's width includes it: right-aligned, V ends where it would unkerned, less the kern
         let right = layout(&font, &Widget { align: Align::Right, x: 500.0, ..text("AV") }, 100.0);
-        let width = advance + kern + font.metrics('V', 100.0).advance_width;
-        assert!((right[0].x - (500.0 - width)).abs() < 1e-3);
+        let kern = placed[1].x - placed[0].x - advance('A');
+        assert!((right[0].x - (500.0 - (advance('A') + kern + advance('V')))).abs() < 1e-3);
+    }
+
+    /// Line widths as Chrome measures them, in a font that kerns only in GPOS (no `kern` table).
+    #[test]
+    fn shapes_like_chrome() {
+        let Some(path) = std::env::var_os("LOCALAPPDATA")
+            .map(|d| PathBuf::from(d).join(r"Microsoft\Windows\Fonts\Montserrat-Regular.ttf"))
+            .filter(|p| p.exists())
+        else {
+            return;
+        };
+        let font = font(&path).unwrap();
+        let face = Face::from_slice(&font.data, 0).unwrap();
+        for (line, size, chrome) in
+            [("Montserrat 24: AVATAR Toy Wolf", 24.0, 382.58), ("Montserrat AVATAR Toy", 48.0, 561.70), ("AVg", 120.0, 241.20)]
+        {
+            let (_, width) = shape(&face, line, size / font.units_per_em);
+            assert!((width - chrome).abs() < 0.01, "{line} at {size}: {width}, Chrome {chrome}");
+        }
+        // ligatures, as the browser makes them: "fi" is one glyph
+        let (glyphs, _) = shape(&face, "fi", 1.0);
+        assert_eq!(glyphs.len(), 1);
+    }
+
+    /// Ascent and descent as Chrome has them on Windows, to whole pixels.
+    #[test]
+    fn line_metrics_like_chrome() {
+        let windows = |name: &str| font(&Path::new(r"C:\Windows\Fonts").join(name));
+        // Consolas: OS/2's Windows ascent (1884 of 2048), much taller than its hhea one (1521)
+        if let Some(consolas) = windows("consola.ttf") {
+            assert_eq!(consolas.line_metrics(48.0), (44.0, 12.0));
+            assert_eq!(consolas.line_metrics(24.0), (22.0, 6.0));
+        }
+        if let Some(calibri) = windows("calibri.ttf") {
+            assert_eq!(calibri.line_metrics(32.0), (30.0, 9.0));
+        }
+        // Montserrat says to use its typographic metrics (968 and 251 of 1000)
+        let user = std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join(r"Microsoft\Windows\Fonts"));
+        if let Some(montserrat) = user.and_then(|d| font(&d.join("Montserrat-Regular.ttf"))) {
+            assert_eq!(montserrat.line_metrics(48.0), (46.0, 12.0));
+        }
+    }
+
+    #[test]
+    fn crisp_half_is_on() {
+        // fontdue gives exactly half covered as 127 of 255
+        let mut alpha = [127.0 / 255.0, 126.0 / 255.0, 0.5, 1.0, 0.0];
+        threshold(&mut alpha);
+        assert_eq!(alpha, [1.0, 0.0, 1.0, 1.0, 0.0]);
     }
 
     #[test]
@@ -638,7 +739,7 @@ mod tests {
         for (width, size) in [(0.5, 30.0), (1.0, 40.0), (2.5, 40.0), (7.0, 60.0), (20.0, 80.0)] {
             let pad = (width as f32).ceil() as i32 + 1;
             let w = Widget { x: 20.0, y: 20.0, ..text("Ag/o") };
-            let mask = coverage(&font, size, &layout(&font, &w, size), pad).unwrap();
+            let mask = coverage(&font.glyphs, size, &layout(&font, &w, size), pad).unwrap();
             let fast = dilate(&mask, width);
             let (mw, mh, reach) = (mask.width as i64, mask.height as i64, pad as i64);
             let mut worst = 0f32;
