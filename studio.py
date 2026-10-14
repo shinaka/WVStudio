@@ -601,21 +601,68 @@ def font_file(path):
 #
 # The sources the player polls are set up in playlist/data.json. Their values come from the player's own API,
 # which only answers on this PC: the page reaches it through the proxies here. data.json can hold a Home
-# Assistant token, which never goes back to the page.
+# Assistant token or a plugin's password, which never goes back to the page.
 
 DATA_API_PORT = 8139
 DATA_TIMEOUT = 2   # seconds: the player answers straight away, or isn't running
 TEST_TIMEOUT = 20  # a test polls the source once (a web request), so it can take a while
-MIN_INTERVAL = {"claude": 30}  # seconds; 5 for the rest
+RESCAN_TIMEOUT = 10
 no_proxy = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # straight to 127.0.0.1, never a proxy
+
+# The built-in sources, as the player describes them (docs/sources.md), for when it isn't running: the window
+# still shows them then, as the sidebar cards used to. With the player up, its catalog is used instead.
+BUILTIN_CATALOG = [
+    {"id": "claude", "name": "Claude usage", "description": "Your plan's session and weekly use, read with Claude "
+     "Code's login on this PC.", "interval": {"default": 60, "min": 30}, "settings": [],
+     "provides": [{"key": "claude.session", "label": "Session used", "unit": "%", "kind": "number"},
+                  {"key": "claude.session_resets", "label": "Session resets", "kind": "time"},
+                  {"key": "claude.session_resets_in", "label": "Session resets in", "kind": "text"},
+                  {"key": "claude.week", "label": "Week used", "unit": "%", "kind": "number"},
+                  {"key": "claude.week_resets", "label": "Week resets", "kind": "time"},
+                  {"key": "claude.week_resets_in", "label": "Week resets in", "kind": "text"},
+                  {"key": "claude.session_severity", "label": "Session severity", "kind": "text"},
+                  {"key": "claude.week_severity", "label": "Week severity", "kind": "text"},
+                  {"key": "claude.week.*", "label": "Per-model weekly use", "unit": "%", "kind": "number", "pattern": True}]},
+    {"id": "pc", "name": "PC sensors", "description": "CPU, memory and NVIDIA GPU. CPU temperature needs HWiNFO "
+     "running with Shared Memory Support on.", "interval": {"default": 60, "min": 5},
+     "settings": [{"key": "hwinfo", "label": "Read HWiNFO too", "type": "bool", "default": False}],
+     "provides": [{"key": "pc.cpu.load", "label": "CPU load", "unit": "%", "kind": "number"},
+                  {"key": "pc.cpu.temp", "label": "CPU temperature", "unit": "°C", "kind": "number"},
+                  {"key": "pc.ram.used_gb", "label": "RAM used", "unit": "GB", "kind": "number"},
+                  {"key": "pc.ram.total_gb", "label": "RAM total", "unit": "GB", "kind": "number"},
+                  {"key": "pc.ram.used_pct", "label": "RAM used", "unit": "%", "kind": "number"},
+                  {"key": "pc.gpu.temp", "label": "GPU temperature", "unit": "°C", "kind": "number"},
+                  {"key": "pc.gpu.load", "label": "GPU load", "unit": "%", "kind": "number"},
+                  {"key": "pc.gpu.power", "label": "GPU power", "unit": "W", "kind": "number"},
+                  {"key": "pc.gpu.vram_used_gb", "label": "VRAM used", "unit": "GB", "kind": "number"},
+                  {"key": "pc.gpu.vram_total_gb", "label": "VRAM total", "unit": "GB", "kind": "number"},
+                  {"key": "hwinfo.*", "label": "HWiNFO readings", "pattern": True}]},
+    {"id": "homeassistant", "name": "Home Assistant", "description": "The state and attributes of the entities listed.",
+     "interval": {"default": 60, "min": 5},
+     "settings": [{"key": "url", "label": "Address", "type": "text", "default": "", "placeholder": "http://homeassistant.local:8123"},
+                  {"key": "token", "label": "Token", "type": "password",
+                   "help": "A long-lived access token (your profile in Home Assistant, Security)."},
+                  {"key": "entities", "label": "Entities", "type": "list", "default": [],
+                   "placeholder": "sensor.living_room_temperature\nweather.home"}],
+     "provides": [{"key": "ha.*", "label": "Each entity's state, unit and attributes", "pattern": True}]},
+    {"id": "time", "name": "Time", "description": "The current local time. Always on.", "interval": {"default": 60, "min": 5},
+     "settings": [], "provides": [{"key": "time", "label": "Now", "kind": "time"}]},
+]
+SECRET_KEY = re.compile(r"(^|_)(token|password|secret|api_?key)$", re.I)  # a setting that must be a password
+catalog_cache = []  # the player's catalog as last seen, so password settings stay known when it's down
+plugins_folder_seen = ""  # where the player said its plugins are, when it has
 
 
 def data_path():
     return PLAYLIST_DIR / "data.json"
 
 
+def plugins_dir():
+    return PLAYLIST_DIR.parent / "plugins"
+
+
 def read_data():
-    """data.json as it is (token included: for this file only), or {} before there is one."""
+    """data.json as it is (passwords included: for this file only), or {} before there is one."""
     with playlist_lock:
         try:
             data = json.loads(data_path().read_text(encoding="utf-8"))
@@ -628,31 +675,129 @@ def read_data():
     return data
 
 
+def catalog_list(out):
+    """The manifests in a /catalog answer, whichever way the player wraps them."""
+    if isinstance(out, dict):
+        out = out.get("sources", out.get("catalog"))
+    return [m for m in out if isinstance(m, dict) and isinstance(m.get("id"), str)] if isinstance(out, list) else []
+
+
+def data_catalog():
+    """The player's catalog, for the page: {player, plugins_dir, sources}. Without the player, the built-ins alone."""
+    global catalog_cache
+    out = player_api("/catalog")
+    found = catalog_list(out)
+    if found:
+        for m in found:
+            m.pop("run", None)  # the studio never sees or sets a plugin's command
+        catalog_cache = found
+    up = not (isinstance(out, dict) and out.get("player") is False)
+    folder = out.get("folder") if isinstance(out, dict) and isinstance(out.get("folder"), str) else plugins_folder_seen or str(plugins_dir())
+    answer = {"player": up, "plugins_dir": folder, "sources": found if up else BUILTIN_CATALOG}
+    if isinstance(out, dict) and "error" in out:
+        answer["error"] = out["error"]
+    return answer
+
+
+def data_rescan():
+    """Has the player re-read the plugins folder: the catalog after, with the scan's `plugins` count, `problems`
+    (one line per folder it couldn't use) and `folder`."""
+    global plugins_folder_seen
+    out = player_api("/catalog/rescan", {}, RESCAN_TIMEOUT)
+    if not isinstance(out, dict) or out.get("player") is False or "error" in out:
+        return out
+    if isinstance(out.get("folder"), str):
+        plugins_folder_seen = out["folder"]
+    problems = out.get("problems")
+    return {**data_catalog(), "plugins": out.get("plugins"),
+            "problems": [str(p) for p in problems] if isinstance(problems, list) else []}
+
+
+def manifest(kind):
+    """What's known about one source type: its manifest, from the player if it has answered, else the built-in one."""
+    for m in [*catalog_cache, *BUILTIN_CATALOG]:
+        if m.get("id") == kind:
+            return m
+    return {}
+
+
+def settings_of(kind):
+    """The manifest's settings, keyed, with only the well-formed ones."""
+    return {s["key"]: s for s in manifest(kind).get("settings", []) if isinstance(s, dict) and isinstance(s.get("key"), str)}
+
+
+def password_keys(kind, source=()):
+    """The settings of a source that are secrets: never returned, never logged. Besides the manifest's `password`
+    settings, any key that looks like one (`token`, `api_key`), so a plugin's secret is kept back even before the
+    player has told us its manifest."""
+    keys = {k for k, s in settings_of(kind).items() if s.get("type") == "password"}
+    keys |= {k for k in source if isinstance(k, str) and SECRET_KEY.search(k)}
+    if kind == "homeassistant":
+        keys.add("token")
+    return keys
+
+
+def shown_source(s):
+    """A source for the page: each password left out, with `<key>_set` saying whether there is one."""
+    secrets = password_keys(s.get("type"), s)
+    shown = {k: v for k, v in s.items() if k not in secrets}
+    for k in sorted(secrets):
+        shown[f"{k}_set"] = isinstance(s.get(k), str) and bool(s[k])
+    return shown
+
+
 def data_config():
-    """data.json for the page: each source's token left out, with `token_set` saying whether there is one."""
+    """data.json for the page, with no secret in it."""
     data = read_data()
-    shown = []
-    for s in data.get("sources", []):
-        if isinstance(s, dict):
-            token = s.get("token")
-            s = {k: v for k, v in s.items() if k != "token"}
-            if s.get("type") == "homeassistant" or token is not None:
-                s["token_set"] = isinstance(token, str) and bool(token)
-        shown.append(s)
+    shown = [shown_source(s) if isinstance(s, dict) else s for s in data.get("sources", [])]
     return {**data, "api_port": data_port(data), "sources": shown}
 
 
-def same_url(a, b):
-    """Whether two source addresses are the same server: None when either is missing (nothing to compare)."""
-    if not (isinstance(a, str) and isinstance(b, str)):
-        return None
-    norm = lambda u: u.strip().rstrip("/").lower()
-    return norm(a) == norm(b)
+def same_server(kind, a, b):
+    """Whether two settings of a source point at the same place: every `text` setting in its manifest (and `url`,
+    whatever the manifest says) the same, compared trimmed, without a trailing /, and ignoring case. A plugin can
+    call its server setting anything, so all of them count; lists, numbers, bools and choices may differ freely."""
+    norm = lambda v: v.strip().rstrip("/").lower() if isinstance(v, str) else ""
+    keys = {k for k, s in settings_of(kind).items() if s.get("type") == "text"} | {"url"}
+    return all(norm(a.get(k)) == norm(b.get(k)) for k in keys)
+
+
+def min_interval(kind):
+    m = manifest(kind).get("interval")
+    try:
+        return max(1, int(m.get("min", 5))) if isinstance(m, dict) else 5
+    except (TypeError, ValueError):
+        return 5
+
+
+def check_setting(kind, spec, v):
+    """A setting's value as saved, checked against its manifest type; unknown types pass as they are."""
+    t, k = spec.get("type"), spec.get("key")
+    if v is None:
+        return v
+    if t == "number":
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            try:
+                v = float(v) if isinstance(v, str) and "." in v else int(v)
+            except (TypeError, ValueError):
+                raise ValueError(f"{kind}: {k} must be a number") from None
+        return v
+    if t == "bool":
+        return bool(v)
+    if t == "list":
+        if isinstance(v, str):
+            v = v.split("\n")
+        if not isinstance(v, list) or not all(isinstance(e, str) for e in v):
+            raise ValueError(f"{kind}: {k} must be a list")
+        return [e.strip() for e in v if e.strip()]
+    if t == "choice" and isinstance(spec.get("choices"), list) and spec["choices"] and v not in spec["choices"]:
+        raise ValueError(f"{kind}: {k} must be one of {', '.join(map(str, spec['choices']))}")
+    return v.strip() if isinstance(v, str) and t in ("text", "choice") else v
 
 
 def save_data_config(req):
     """The page's data sources, saved. Keys it doesn't send are kept, at the top and in each source (matched
-    with the saved ones by type, in order), and so is each saved token unless a new one is given."""
+    with the saved ones by type, in order), and so is each saved password unless a new one is given."""
     if not isinstance(req, dict) or not isinstance(req.get("sources", []), list):
         raise ValueError("expected {sources: [...]}")
     with playlist_lock:
@@ -671,28 +816,36 @@ def save_data_config(req):
                 kind = s.get("type")
                 n = seen[kind] = seen.get(kind, -1) + 1
                 was = saved.get(kind, [])[n] if n < len(saved.get(kind, [])) else {}
-                token = s.get("token")
-                s = {**was, **{k: v for k, v in s.items() if k not in ("token", "token_set")}}
-                if isinstance(token, str) and token.strip():
-                    s["token"] = token.strip()
-                elif same_url(s.get("url"), was.get("url")) is False:
-                    # a saved token only ever goes back to the server it was given for: anyone who can reach
-                    # the studio could otherwise point the address at their own and have it sent there
-                    s.pop("token", None)
+                secrets = password_keys(kind, [*s, *was])
+                flags = {f"{k}_set" for k in secrets}
+                merged = {**was, **{k: v for k, v in s.items() if k not in secrets and k not in flags}}
+                for k in secrets:
+                    new = s.get(k)
+                    if isinstance(new, str) and new.strip():
+                        merged[k] = new.strip()
+                    elif not same_server(kind, merged, was):
+                        # a saved secret only ever goes back to the server it was given for: anyone who can reach
+                        # the studio could otherwise point the address at their own and have it sent there
+                        merged.pop(k, None)
+                s = merged
                 if "interval" in s:
                     try:
-                        s["interval"] = max(MIN_INTERVAL.get(kind, 5), int(s["interval"]))
+                        s["interval"] = max(min_interval(kind), int(s["interval"]))
                     except (TypeError, ValueError):
                         raise ValueError(f"{kind}: interval must be a number of seconds") from None
-                if "entities" in s and not (isinstance(s["entities"], list)
-                                            and all(isinstance(e, str) for e in s["entities"])):
-                    raise ValueError(f"{kind}: entities must be a list of entity ids")
+                if "enabled" in s:
+                    s["enabled"] = bool(s["enabled"])
+                for k, spec in settings_of(kind).items():
+                    if k in s and spec.get("type") != "password":
+                        s[k] = check_setting(kind, spec, s[k])
+                if "entities" in s and kind == "homeassistant":
+                    s["entities"] = check_setting(kind, {"key": "entities", "type": "list"}, s["entities"])
                 data["sources"].append(s)
         if "api_port" in data and not (isinstance(data["api_port"], int) and 0 < data["api_port"] < 65536):
             raise ValueError("api_port must be a port number")
         PLAYLIST_DIR.mkdir(exist_ok=True)
         tmp = data_path().with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, data_path())  # all at once, so the player never reads half a file
     return data_config()
 
@@ -733,18 +886,22 @@ def data_resolve(req):
 
 
 def data_test(req):
-    """Runs one source as set up on the page, once, in the player. Without a new token, the saved one is used."""
+    """Runs one source as set up on the page, once, in the player. Without a new password, the saved one is used."""
     source = req.get("source") if isinstance(req, dict) else None
     if not isinstance(source, dict):
         raise ValueError("expected {source: {...}}")
-    source = {k: v for k, v in source.items() if k != "token_set"}
-    if not (isinstance(source.get("token"), str) and source["token"].strip()):
-        source.pop("token", None)
-        saved = next((s for s in read_data().get("sources", []) if isinstance(s, dict)
-                      and s.get("type") == source.get("type") and s.get("token")
-                      and same_url(s.get("url"), source.get("url")) is not False), None)  # only to its own server
-        if saved:
-            source["token"] = saved["token"]
+    kind = source.get("type")
+    secrets = password_keys(kind, source)
+    source = {k: v for k, v in source.items() if k not in {f"{s}_set" for s in secrets}}
+    missing = {k for k in secrets if not (isinstance(source.get(k), str) and source[k].strip())}
+    for k in missing:
+        source.pop(k, None)
+    if missing:
+        saved = next((s for s in read_data().get("sources", []) if isinstance(s, dict) and s.get("type") == kind
+                      and same_server(kind, s, source)), None)  # only to its own server
+        for k in missing:
+            if saved and isinstance(saved.get(k), str) and saved[k]:
+                source[k] = saved[k]
     return player_api("/test", {"source": source}, TEST_TIMEOUT)
 
 
@@ -838,6 +995,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.json({"error": str(e)}, 500)
         elif url.path == "/api/data/values":
             self.json(player_api("/values"))
+        elif url.path == "/api/data/catalog":
+            self.json(data_catalog())
         else:
             self.send(404, b"not found", "text/plain")
 
@@ -880,6 +1039,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.json(data_resolve(json.loads(body)))
             elif url.path == "/api/data/test":
                 self.json(data_test(json.loads(body)))
+            elif url.path == "/api/data/catalog/rescan":
+                self.json(data_rescan())
             else:
                 self.send(404, b"not found", "text/plain")
         except SystemExit as e:  # wv's helpers exit with a message on failure

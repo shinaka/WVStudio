@@ -1,0 +1,19 @@
+{
+  "id": "weather",
+  "name": "Weather",
+  "description": "Current conditions at a place, from Open-Meteo (free, no account needed).",
+  "interval": { "default": 600, "min": 60 },
+  "settings": [
+    { "key": "latitude",  "label": "Latitude",  "type": "number", "default": 40.7 },
+    { "key": "longitude", "label": "Longitude", "type": "number", "default": -74.0 },
+    { "key": "units", "label": "Units", "type": "choice", "choices": ["celsius", "fahrenheit"], "default": "celsius" }
+  ],
+  "provides": [
+    { "key": "weather.temp", "label": "Temperature", "unit": "°", "kind": "number" },
+    { "key": "weather.desc", "label": "Conditions", "kind": "text" },
+    { "key": "weather.wind", "label": "Wind speed", "unit": "km/h or mph", "kind": "number" },
+    { "key": "weather.humidity", "label": "Humidity", "unit": "%", "kind": "number" },
+    { "key": "weather.*", "label": "Anything else it reports", "pattern": true }
+  ],
+  "run": { "command": ["python", "weather.py"], "mode": "poll" }
+}

@@ -62,8 +62,10 @@ elsewhere.
 ## Text and live data
 
 The **Text** section adds text to the current piece, or to the layer drawn **on top of everything**. Text
-can show live values: write `{claude.week:d}%` or `GPU {pc.gpu.temp:d}°C`. The **Data** section sets up
-where values come from, and lists the current ones (click one to insert it):
+can show live values: write `{claude.week:d}%` or `GPU {pc.gpu.temp:d}°C`. Typing `{` in a text box
+autocompletes the available keys, with their current values, and then formats after `:`. **Data sources…**
+opens a window where you turn sources on and off, change their settings and test them, and see every key
+each one provides, with live values (click a key to insert it):
 
 - **Claude usage:** the session (5-hour) and weekly percentages and when they reset, from the endpoint
   Claude Code's `/usage` uses. It reads Claude Code's own login each time and never refreshes or stores
@@ -73,8 +75,13 @@ where values come from, and lists the current ones (click one to insert it):
 - **Home Assistant:** any entities, via your HA address and a long-lived token. The token only ever goes
   to the address it was entered with.
 
+- **Plugins:** any program in `plugins/<name>/`, described by a `plugin.json`. It prints JSON values, and the
+  player runs it on an interval or keeps it running. `plugins/example-weather/` (Open-Meteo, no account
+  needed) is a working example and a template, and its README explains the format. The studio can switch
+  plugins on and off and change their settings, but never create one or change the program it runs.
+
 Each source has its own interval (default 60 s). Write a placeholder as `{key}`, `{key:d}`, `{key:.1f}`,
-`{time:%H:%M}` or `{key|fallback}`. The full spec is in `docs/data.md` and `docs/widgets.md`. Settings are
+`{time:%H:%M}` or `{key|fallback}`. The full spec is in `docs/data.md`, `docs/sources.md` and `docs/widgets.md`. Settings are
 in `playlist/data.json`.
 
 ## Using the studio from other devices

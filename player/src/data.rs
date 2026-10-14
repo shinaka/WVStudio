@@ -17,7 +17,7 @@ use serde_json::json;
 
 use crate::player::log;
 use crate::sources::{self, Polled};
-use crate::{api, playlist};
+use crate::{api, catalog, playlist, plugin};
 
 /// What a placeholder shows for a missing or stale value, when it gives no fallback.
 const MISSING: &str = "--";
@@ -252,35 +252,82 @@ pub struct Source {
     #[serde(rename = "type")]
     pub kind: String,
     pub enabled: bool,
-    /// Seconds between polls.
-    pub interval: f64,
+    /// Seconds between polls; the manifest's default when left out.
+    pub interval: Option<f64>,
     /// pc: read HWiNFO's shared memory too.
     pub hwinfo: bool,
     /// homeassistant
     pub url: String,
     pub token: String,
     pub entities: Vec<String>,
+    /// A plugin's settings, whatever its manifest names.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Default for Source {
     fn default() -> Source {
-        Source { kind: String::new(), enabled: true, interval: 60.0, hwinfo: false, url: String::new(),
-                 token: String::new(), entities: Vec::new() }
+        Source { kind: String::new(), enabled: true, interval: None, hwinfo: false, url: String::new(),
+                 token: String::new(), entities: Vec::new(), extra: serde_json::Map::new() }
     }
 }
 
 impl Source {
-    /// Time between polls: 60 s unless set, at least 5 s, and at least 30 s for Claude.
+    /// Time between polls: the manifest's default unless set, and never under its minimum (30 s for
+    /// Claude, 5 s otherwise).
     pub fn every(&self) -> Duration {
-        let least = if self.kind == "claude" { 30.0 } else { 5.0 };
-        let secs = if self.interval.is_finite() { self.interval } else { 60.0 };
-        Duration::from_secs_f64(secs.max(least))
+        let spec = catalog::manifest(&self.kind).map(|m| m.interval).unwrap_or_default();
+        let secs = self.interval.filter(|i| i.is_finite()).unwrap_or(spec.default);
+        Duration::from_secs_f64(secs.max(spec.min).max(1.0))
+    }
+
+    /// A setting as it is in data.json, by its manifest key, or None when it isn't set.
+    pub fn setting(&self, key: &str) -> Option<serde_json::Value> {
+        match key {
+            "hwinfo" => Some(json!(self.hwinfo)),
+            "url" => Some(json!(self.url)).filter(|_| !self.url.is_empty()),
+            "token" => Some(json!(self.token)).filter(|_| !self.token.is_empty()),
+            "entities" => Some(json!(self.entities)).filter(|_| !self.entities.is_empty()),
+            _ => self.extra.get(key).cloned(),
+        }
+    }
+
+    /// Whether a password setting is blank, so the saved one should stand in (/test).
+    fn lacks_password(&self, key: &str) -> bool {
+        self.setting(key).is_none_or(|v| v.as_str().is_none_or(str::is_empty))
+    }
+
+    fn copy_setting(&mut self, key: &str, from: &Source) {
+        match key {
+            "token" => self.token = from.token.clone(),
+            "url" => self.url = from.url.clone(),
+            "hwinfo" | "entities" => {}
+            _ => {
+                if let Some(v) = from.extra.get(key) {
+                    self.extra.insert(key.to_string(), v.clone());
+                }
+            }
+        }
     }
 }
 
 /// data.json lives beside the playlist.
 pub fn file_for(playlist: &Path) -> PathBuf {
     playlist.parent().unwrap_or(Path::new(".")).join("data.json")
+}
+
+/// Plugins live in `plugins/`, next to the playlist's folder.
+pub fn plugins_for(playlist: &Path) -> PathBuf {
+    let folder = playlist.parent().unwrap_or(Path::new("."));
+    folder.parent().unwrap_or(folder).join("plugins")
+}
+
+/// How a source's last poll went, for the catalog and the report.
+#[derive(Clone)]
+pub struct Status {
+    pub result: Result<Vec<String>, String>,
+    /// When it last gave values.
+    pub updated_at: Option<DateTime<Utc>>,
 }
 
 /// The sources set up in `file`; none if there's no file yet.
@@ -301,9 +348,11 @@ pub struct Hub {
     /// The sources being polled, each with the flag that stops its thread.
     running: Mutex<Vec<(Source, Arc<AtomicBool>)>>,
     /// Each source's latest poll: its notes, or what went wrong.
-    status: Mutex<BTreeMap<String, Result<Vec<String>, String>>>,
+    status: Mutex<BTreeMap<String, Status>>,
     /// The API's server, so a new port can take over from it.
     pub(crate) server: Mutex<Option<Arc<tiny_http::Server>>>,
+    /// Where plugins are read from, at start-up and on rescan.
+    pub plugins: PathBuf,
 }
 
 /// Starts polling the sources in the data.json beside `playlist`, and serving the local API if `api`.
@@ -314,7 +363,12 @@ pub fn start(playlist: &Path, api: bool) -> Arc<Hub> {
         Config::default()
     });
     let hub = Arc::new(Hub { file, config: Mutex::default(), running: Mutex::default(), status: Mutex::default(),
-                             server: Mutex::default() });
+                             server: Mutex::default(), plugins: plugins_for(playlist) });
+    let found = catalog::rescan(&hub.plugins);
+    let plugins = found.manifests.len() - catalog::builtins().len();
+    if plugins > 0 || hub.plugins.is_dir() {
+        log(format_args!("plugins: {plugins} in {}", hub.plugins.display()));
+    }
     hub.apply(config);
     let watcher = hub.clone();
     std::thread::spawn(move || watcher.watch());
@@ -391,31 +445,23 @@ impl Hub {
     }
 
     /// Polls one source at its interval until it's stopped. Failures are logged once, when they start
-    /// or change, and its values just go stale.
+    /// or change, and its values just go stale. A streaming plugin is kept running instead.
     fn run(self: Arc<Self>, source: Source, stop: Arc<AtomicBool>) {
-        let mut state = sources::State::default();
         let mut failing: Option<String> = None;
+        if let Some(manifest) = catalog::manifest(&source.kind).filter(|m| m.streams()) {
+            return plugin::stream(&source, &manifest, &stop, |result| {
+                if !stop.load(Ordering::Relaxed) {
+                    self.record(&source, result, &mut failing);
+                }
+            });
+        }
+        let mut state = sources::State::default();
         while !stop.load(Ordering::Relaxed) {
             let result = sources::poll(&source, &mut state);
             if stop.load(Ordering::Relaxed) {
                 return; // replaced meanwhile
             }
-            match result {
-                Ok(Polled { values, notes }) => {
-                    store().put(&source.kind, source.every(), values);
-                    if failing.take().is_some() {
-                        log(format_args!("data: {} is working again", source.kind));
-                    }
-                    self.status.lock().unwrap().insert(source.kind.clone(), Ok(notes));
-                }
-                Err(e) => {
-                    if failing.as_ref() != Some(&e) {
-                        log(format_args!("data: {}: {e}", source.kind));
-                    }
-                    self.status.lock().unwrap().insert(source.kind.clone(), Err(e.clone()));
-                    failing = Some(e);
-                }
-            }
+            self.record(&source, result, &mut failing);
             let next = Instant::now() + source.every();
             while Instant::now() < next && !stop.load(Ordering::Relaxed) {
                 sleep(Duration::from_millis(250));
@@ -423,16 +469,91 @@ impl Hub {
         }
     }
 
-    /// Runs a source once without saving it (the API's /test). The browser never gets Home Assistant's
-    /// token, so a test without one uses the saved one.
+    /// Keeps a poll's values and status. `failing` is the error being logged, so each is logged once.
+    fn record(&self, source: &Source, result: Result<Polled, String>, failing: &mut Option<String>) {
+        let mut status = self.status.lock().unwrap();
+        let updated_at = status.get(&source.kind).and_then(|s| s.updated_at);
+        match result {
+            Ok(Polled { values, notes }) => {
+                let now = Utc::now();
+                store().put(source.kind.as_str(), source.every(), values);
+                if failing.take().is_some() {
+                    log(format_args!("data: {} is working again", source.kind));
+                }
+                status.insert(source.kind.clone(), Status { result: Ok(notes), updated_at: Some(now) });
+            }
+            Err(e) => {
+                if failing.as_ref() != Some(&e) {
+                    log(format_args!("data: {}: {e}", source.kind));
+                }
+                status.insert(source.kind.clone(), Status { result: Err(e.clone()), updated_at });
+                *failing = Some(e);
+            }
+        }
+    }
+
+    /// Runs a source once without saving it (the API's /test). The browser never gets a password
+    /// setting back, so a test without one uses the saved one.
     pub fn test(&self, mut source: Source) -> Result<Polled, String> {
-        if source.kind == "homeassistant" && source.token.is_empty() {
+        if let Some(manifest) = catalog::manifest(&source.kind) {
             let config = self.config.lock().unwrap();
-            if let Some(saved) = config.sources.iter().find(|s| s.kind == "homeassistant") {
-                source.token = saved.token.clone();
+            // A saved password only stands in while every text setting (an address, a host...) is as
+            // saved: whoever can reach the studio could otherwise point a source at their own server.
+            let same = |saved: &Source| {
+                let norm = |v: Option<serde_json::Value>| {
+                    v.and_then(|v| v.as_str().map(|s| s.trim().trim_end_matches('/').to_lowercase()))
+                };
+                manifest.settings.iter().filter(|s| s.kind == "text")
+                    .all(|s| norm(source.setting(&s.key)) == norm(saved.setting(&s.key)))
+            };
+            if let Some(saved) = config.sources.iter().find(|s| s.kind == source.kind).filter(|s| same(s)) {
+                for s in manifest.settings.iter().filter(|s| s.kind == "password") {
+                    if source.lacks_password(&s.key) {
+                        source.copy_setting(&s.key, saved);
+                    }
+                }
             }
         }
         sources::poll(&source, &mut sources::State::default())
+    }
+
+    /// Re-reads the plugins folder, and restarts the plugins that are on, so a changed command or
+    /// mode takes. Returns the new catalog.
+    pub fn rescan(self: &Arc<Self>) -> catalog::Catalog {
+        let found = catalog::rescan(&self.plugins);
+        let builtin = |kind: &str| catalog::builtins().iter().any(|m| m.id == kind);
+        let mut running = self.running.lock().unwrap();
+        running.retain(|(source, stop)| {
+            let keep = builtin(&source.kind);
+            if !keep {
+                stop.store(true, Ordering::Relaxed);
+                self.status.lock().unwrap().remove(&source.kind);
+            }
+            keep
+        });
+        drop(running);
+        let config = self.config.lock().unwrap().clone();
+        self.apply(config);
+        found
+    }
+
+    /// The catalog as the API gives it: each manifest, without `run`, with its status here.
+    pub fn catalog(&self) -> serde_json::Value {
+        let config = self.config.lock().unwrap().clone();
+        let status = self.status.lock().unwrap().clone();
+        catalog::current().json(|m| {
+            let enabled = m.id == "time" || config.sources.iter().any(|s| s.kind == m.id && s.enabled);
+            let (ok, error, notes, updated_at) = match (m.id.as_str(), status.get(&m.id)) {
+                ("time", _) => (true, None, Vec::new(), Some(iso(Utc::now()))),
+                (_, Some(s)) => match &s.result {
+                    Ok(notes) => (true, None, notes.clone(), s.updated_at.map(iso)),
+                    Err(e) => (false, Some(e.clone()), Vec::new(), s.updated_at.map(iso)),
+                },
+                // on, but not polled yet; or off
+                (_, None) => (false, None, Vec::new(), None),
+            };
+            json!({ "enabled": enabled, "ok": ok, "error": error, "notes": notes, "updated_at": updated_at })
+        })
     }
 
     /// Waits until every source has been polled once, or `timeout` passes.
@@ -456,7 +577,7 @@ impl Hub {
             let _ = writeln!(out, "no {} yet: only the time", self.file.display());
         }
         for (kind, status) in self.status.lock().unwrap().iter() {
-            match status {
+            match &status.result {
                 Ok(notes) if notes.is_empty() => _ = writeln!(out, "{kind}: ok"),
                 Ok(notes) => _ = writeln!(out, "{kind}: ok ({})", notes.join("; ")),
                 Err(e) => _ = writeln!(out, "{kind}: failed: {e}"),
@@ -592,5 +713,13 @@ mod tests {
         let every: Vec<u64> = c.sources.iter().map(|s| s.every().as_secs()).collect();
         assert_eq!(every, [30, 5, 60]);
         assert!(c.sources[0].enabled && !c.sources[1].enabled && c.sources[1].hwinfo);
+        // a plugin's settings ride along, and the manifest's interval is the default
+        let s: Source = serde_json::from_str(r#"{ "type": "weather", "latitude": 59.9, "units": "celsius" }"#).unwrap();
+        assert_eq!(s.setting("latitude"), Some(json!(59.9)));
+        assert_eq!(s.setting("units"), Some(json!("celsius")));
+        assert_eq!(s.setting("token"), None);
+        assert_eq!(s.every().as_secs(), 60);
+        assert_eq!(c.sources[1].setting("hwinfo"), Some(json!(true)));
+        assert_eq!(plugins_for(Path::new("C:/x/playlist/playlist.json")), Path::new("C:/x/plugins"));
     }
 }

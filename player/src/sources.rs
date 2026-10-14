@@ -13,6 +13,7 @@ use serde_json::Value as Json;
 use crate::data::{Source, Value};
 
 /// A poll's values, plus notes on parts that were skipped (no NVIDIA driver, HWiNFO not running...).
+#[derive(Debug)]
 pub struct Polled {
     pub values: Vec<(String, Value)>,
     pub notes: Vec<String>,
@@ -30,7 +31,11 @@ pub fn poll(source: &Source, state: &mut State) -> Result<Polled, String> {
         "claude" => Ok(Polled { values: claude()?, notes: Vec::new() }),
         "pc" => Ok(pc(source.hwinfo, state)),
         "homeassistant" => homeassistant(source),
-        other => Err(format!("unknown source type {other:?}")),
+        "time" => Ok(Polled { values: Vec::new(), notes: Vec::new() }), // always there, never polled
+        other => match crate::catalog::manifest(other) {
+            Some(manifest) => crate::plugin::poll(source, &manifest),
+            None => Err(format!("unknown source type {other:?}")),
+        },
     }
 }
 

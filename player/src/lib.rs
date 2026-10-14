@@ -3,10 +3,12 @@
 pub mod api;
 pub mod art;
 pub mod cache;
+pub mod catalog;
 pub mod cli;
 pub mod data;
 pub mod panel;
 pub mod player;
+pub mod plugin;
 pub mod playlist;
 pub mod sources;
 pub mod text;

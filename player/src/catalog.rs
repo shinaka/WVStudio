@@ -1,0 +1,320 @@
+//! The source catalog (docs/sources.md): every source describes itself with a manifest, so the studio
+//! builds its UI from these. The built-ins' manifests are compiled in; plugins bring their own in
+//! `plugin.json`, read from the plugins folder at start-up and on rescan.
+
+use std::path::{Path, PathBuf};
+use std::sync::{OnceLock, RwLock};
+
+use serde::{Deserialize, Serialize};
+use serde_json::{Value as Json, json};
+
+use crate::player::log;
+
+/// One source's manifest. `run` is only ever a plugin's, and never leaves the player.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Manifest {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub interval: Interval,
+    #[serde(default)]
+    pub settings: Vec<Setting>,
+    #[serde(default)]
+    pub provides: Vec<Provides>,
+    #[serde(default, skip_serializing)]
+    pub run: Option<Run>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Interval {
+    pub default: f64,
+    pub min: f64,
+}
+
+impl Default for Interval {
+    fn default() -> Interval {
+        Interval { default: 60.0, min: 5.0 }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Setting {
+    pub key: String,
+    pub label: String,
+    /// text, number, bool, choice, list or password.
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<Json>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub choices: Option<Vec<String>>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Provides {
+    pub key: String,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    /// number, text or time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// A family of keys, like `hwinfo.*`, filled in by the live values.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pattern: bool,
+}
+
+/// How a plugin runs: its command line, in its folder, in `poll` or `stream` mode.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Run {
+    pub command: Vec<String>,
+    #[serde(default = "poll")]
+    pub mode: String,
+    /// The plugin's folder: where the command runs. Filled in on discovery, not in the file.
+    #[serde(skip)]
+    pub dir: PathBuf,
+}
+
+fn poll() -> String {
+    "poll".into()
+}
+
+impl Manifest {
+    pub fn setting(&self, key: &str) -> Option<&Setting> {
+        self.settings.iter().find(|s| s.key == key)
+    }
+
+    /// Whether this is a plugin that keeps running, rather than one run per interval.
+    pub fn streams(&self) -> bool {
+        self.run.as_ref().is_some_and(|r| r.mode == "stream")
+    }
+}
+
+const BUILTINS: &str = include_str!("builtins.json");
+
+/// The compiled-in manifests: claude, pc, homeassistant and time.
+pub fn builtins() -> Vec<Manifest> {
+    serde_json::from_str(BUILTINS).expect("builtins.json is checked by a test")
+}
+
+/// The manifests the player knows, built-ins first, then plugins in folder order.
+#[derive(Clone)]
+pub struct Catalog {
+    pub manifests: Vec<Manifest>,
+    /// What went wrong reading plugin folders, for the rescan reply.
+    pub problems: Vec<String>,
+}
+
+impl Catalog {
+    pub fn get(&self, id: &str) -> Option<&Manifest> {
+        self.manifests.iter().find(|m| m.id == id)
+    }
+
+    /// The manifests as the API shows them: without `run`, each with its `status`.
+    pub fn json(&self, status: impl Fn(&Manifest) -> Json) -> Json {
+        let list: Vec<Json> = self
+            .manifests
+            .iter()
+            .map(|m| {
+                let mut entry = serde_json::to_value(m).unwrap_or(Json::Null);
+                entry["status"] = status(m);
+                entry["plugin"] = json!(m.run.is_some());
+                entry
+            })
+            .collect();
+        json!({ "sources": list })
+    }
+}
+
+fn catalog() -> &'static RwLock<Catalog> {
+    static CATALOG: OnceLock<RwLock<Catalog>> = OnceLock::new();
+    CATALOG.get_or_init(|| RwLock::new(Catalog { manifests: builtins(), problems: Vec::new() }))
+}
+
+/// The catalog as it is now: a copy, so callers never hold the lock.
+pub fn current() -> Catalog {
+    catalog().read().unwrap().clone()
+}
+
+pub fn manifest(id: &str) -> Option<Manifest> {
+    catalog().read().unwrap().get(id).cloned()
+}
+
+/// Reads the plugins in `dir` (each a folder with a plugin.json) into the catalog, after the
+/// built-ins. Broken ones are logged and left out. Returns the catalog it made.
+pub fn rescan(dir: &Path) -> Catalog {
+    let found = scan(dir);
+    for problem in &found.problems {
+        log(format_args!("plugins: {problem}"));
+    }
+    *catalog().write().unwrap() = found.clone();
+    found
+}
+
+/// The built-ins plus the plugins in `dir`, with what was wrong with the rest.
+fn scan(dir: &Path) -> Catalog {
+    let mut found = Catalog { manifests: builtins(), problems: Vec::new() };
+    let mut folders: Vec<PathBuf> = match std::fs::read_dir(dir) {
+        Ok(entries) => entries.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.join("plugin.json").is_file()).collect(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => {
+            found.problems.push(format!("couldn't read {}: {e}", dir.display()));
+            Vec::new()
+        }
+    };
+    folders.sort();
+    for folder in folders {
+        match read_plugin(&folder) {
+            Ok(m) if found.get(&m.id).is_some() => {
+                found.problems.push(format!("{}: there's already a source called {:?}", folder.display(), m.id));
+            }
+            Ok(m) => found.manifests.push(m),
+            Err(e) => found.problems.push(format!("{}: {e}", folder.display())),
+        }
+    }
+    found
+}
+
+/// A plugin's manifest from its folder, checked: it needs an id fit for keys and a command.
+fn read_plugin(folder: &Path) -> Result<Manifest, String> {
+    let file = folder.join("plugin.json");
+    let bytes = std::fs::read(&file).map_err(|e| format!("couldn't read plugin.json: {e}"))?;
+    let mut m: Manifest = serde_json::from_slice(&bytes).map_err(|e| format!("plugin.json isn't valid: {e}"))?;
+    check(&m)?;
+    // a plugin may only set keys under its id, so that's all it can promise (pc's hwinfo.* is a built-in's)
+    for p in &m.provides {
+        if !p.key.starts_with(&format!("{}.", m.id)) {
+            return Err(format!("provides {:?}, which isn't under {}.", p.key, m.id));
+        }
+    }
+    let run = m.run.as_mut().ok_or("plugin.json has no \"run\" section")?;
+    if run.command.is_empty() {
+        return Err("\"run\" has no command".into());
+    }
+    if run.mode != "poll" && run.mode != "stream" {
+        return Err(format!("\"run\" mode should be \"poll\" or \"stream\", not {:?}", run.mode));
+    }
+    run.dir = folder.to_path_buf();
+    Ok(m)
+}
+
+/// What every manifest needs: an id fit for keys, and well-formed settings.
+pub fn check(m: &Manifest) -> Result<(), String> {
+    let id_ok = !m.id.is_empty()
+        && m.id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-');
+    if !id_ok {
+        return Err(format!("the id {:?} should be lowercase letters, digits, _ or -", m.id));
+    }
+    if m.name.trim().is_empty() {
+        return Err("the manifest has no name".into());
+    }
+    if !(m.interval.min.is_finite() && m.interval.default.is_finite() && m.interval.min >= 1.0) {
+        return Err("the interval's min and default should be numbers, at least 1".into());
+    }
+    for s in &m.settings {
+        match s.kind.as_str() {
+            "text" | "number" | "bool" | "list" | "password" => {}
+            "choice" if s.choices.as_ref().is_some_and(|c| !c.is_empty()) => {}
+            "choice" => return Err(format!("setting {:?} is a choice with no choices", s.key)),
+            other => return Err(format!("setting {:?} has an unknown type {other:?}", s.key)),
+        }
+        if s.key.is_empty() || ["type", "enabled", "interval"].contains(&s.key.as_str()) {
+            return Err(format!("setting {:?} can't have that key", s.key));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builtins_are_sound() {
+        let all = builtins();
+        let ids: Vec<&str> = all.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["claude", "pc", "homeassistant", "time"]);
+        for m in &all {
+            check(m).unwrap_or_else(|e| panic!("{}: {e}", m.id));
+            assert!(m.run.is_none());
+            assert!(!m.description.is_empty());
+        }
+        let ha = all.iter().find(|m| m.id == "homeassistant").unwrap();
+        assert_eq!(ha.setting("token").unwrap().kind, "password");
+        assert_eq!(ha.setting("entities").unwrap().kind, "list");
+        assert!(ha.provides.iter().any(|p| p.key == "ha.*" && p.pattern));
+        let pc = all.iter().find(|m| m.id == "pc").unwrap();
+        assert_eq!(pc.setting("hwinfo").unwrap().kind, "bool");
+        assert!(pc.provides.iter().any(|p| p.key == "hwinfo.*" && p.pattern));
+        for key in ["pc.cpu.load", "pc.cpu.temp", "pc.ram.used_gb", "pc.gpu.temp", "pc.gpu.vram_total_gb"] {
+            assert!(pc.provides.iter().any(|p| p.key == key), "{key}");
+        }
+        let claude = all.iter().find(|m| m.id == "claude").unwrap();
+        assert_eq!(claude.interval.min, 30.0);
+        for key in ["claude.session", "claude.session_resets", "claude.session_resets_in", "claude.week_severity", "claude.week.*"] {
+            assert!(claude.provides.iter().any(|p| p.key == key), "{key}");
+        }
+        // the catalog JSON has no run section, and each entry has a status
+        let catalog = Catalog { manifests: all, problems: Vec::new() };
+        let j = catalog.json(|m| json!({ "enabled": m.id == "time" }));
+        let sources = j["sources"].as_array().unwrap();
+        assert_eq!(sources.len(), 4);
+        assert!(sources.iter().all(|s| s.get("run").is_none() && s["status"].is_object()));
+        assert_eq!(sources[3]["status"]["enabled"], json!(true));
+        assert_eq!(sources[0]["settings"], json!([]));
+    }
+
+    #[test]
+    fn plugin_manifests() {
+        let m: Manifest = serde_json::from_str(r#"{ "id": "weather", "name": "Weather",
+            "settings": [ { "key": "units", "label": "Units", "type": "choice", "choices": ["c", "f"], "default": "c" } ],
+            "provides": [ { "key": "weather.temp", "label": "T", "unit": "°", "kind": "number" },
+                          { "key": "weather.*", "label": "More", "pattern": true } ],
+            "run": { "command": ["python", "weather.py"] } }"#).unwrap();
+        check(&m).unwrap();
+        assert_eq!(m.interval.default, 60.0);
+        assert_eq!(m.run.as_ref().unwrap().mode, "poll");
+        assert!(!m.streams());
+        let j = serde_json::to_value(&m).unwrap();
+        assert!(j.get("run").is_none());
+        assert_eq!(j["provides"][1]["pattern"], json!(true));
+        assert!(j["provides"][0].get("pattern").is_none());
+        // what's refused
+        let bad = |s: &str| check(&serde_json::from_str::<Manifest>(s).unwrap()).unwrap_err();
+        assert!(bad(r#"{ "id": "Bad Id", "name": "x" }"#).contains("id"));
+        assert!(bad(r#"{ "id": "w", "name": "x", "settings": [ { "key": "k", "label": "", "type": "slider" } ] }"#).contains("unknown type"));
+        assert!(bad(r#"{ "id": "w", "name": "x", "settings": [ { "key": "k", "label": "", "type": "choice" } ] }"#).contains("no choices"));
+    }
+
+    #[test]
+    fn scanning_a_folder() {
+        let dir = std::env::temp_dir().join(format!("wvplay-catalog-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let make = |name: &str, body: &str| {
+            std::fs::create_dir_all(dir.join(name)).unwrap();
+            std::fs::write(dir.join(name).join("plugin.json"), body).unwrap();
+        };
+        make("good", r#"{ "id": "good", "name": "Good", "run": { "command": ["cmd", "/c", "echo"] } }"#);
+        make("broken", "{ not json");
+        make("norun", r#"{ "id": "norun", "name": "No run" }"#);
+        make("clash", r#"{ "id": "pc", "name": "PC again", "run": { "command": ["x"] } }"#);
+        make("mode", r#"{ "id": "mode", "name": "Mode", "run": { "command": ["x"], "mode": "push" } }"#);
+        make("keys", r#"{ "id": "keys", "name": "Keys", "provides": [ { "key": "claude.week", "label": "" } ], "run": { "command": ["x"] } }"#);
+        std::fs::create_dir_all(dir.join("empty")).unwrap();
+        let found = scan(&dir);
+        let ids: Vec<&str> = found.manifests.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["claude", "pc", "homeassistant", "time", "good"]);
+        assert_eq!(found.get("good").unwrap().run.as_ref().unwrap().dir, dir.join("good"));
+        assert_eq!(found.problems.len(), 5, "{:?}", found.problems);
+        assert!(found.problems.iter().any(|p| p.contains("keys") && p.contains("isn't under")));
+        assert!(found.problems.iter().any(|p| p.contains("broken") && p.contains("isn't valid")));
+        assert!(found.problems.iter().any(|p| p.contains("already a source")));
+        // a missing folder is just no plugins
+        let none = scan(&dir.join("nowhere"));
+        assert_eq!(none.manifests.len(), 4);
+        assert!(none.problems.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

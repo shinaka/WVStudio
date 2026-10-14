@@ -1,0 +1,66 @@
+[
+  {
+    "id": "claude",
+    "name": "Claude usage",
+    "description": "How much of your Claude plan you've used, from Claude Code's own login (sign in to Claude Code once; nothing else to set up).",
+    "interval": { "default": 60, "min": 30 },
+    "settings": [],
+    "provides": [
+      { "key": "claude.session", "label": "Session used", "unit": "%", "kind": "number" },
+      { "key": "claude.session_resets", "label": "Session resets at", "kind": "time" },
+      { "key": "claude.session_resets_in", "label": "Session resets in", "kind": "text" },
+      { "key": "claude.session_severity", "label": "Session severity", "kind": "text" },
+      { "key": "claude.week", "label": "Week used", "unit": "%", "kind": "number" },
+      { "key": "claude.week_resets", "label": "Week resets at", "kind": "time" },
+      { "key": "claude.week_resets_in", "label": "Week resets in", "kind": "text" },
+      { "key": "claude.week_severity", "label": "Week severity", "kind": "text" },
+      { "key": "claude.week.*", "label": "Week used, per model (e.g. claude.week.opus)", "unit": "%", "kind": "number", "pattern": true }
+    ]
+  },
+  {
+    "id": "pc",
+    "name": "This PC",
+    "description": "CPU load and memory from Windows, the GPU from NVIDIA's driver, and, with HWiNFO, every sensor it reads (HWiNFO needs Shared Memory Support on).",
+    "interval": { "default": 60, "min": 5 },
+    "settings": [
+      { "key": "hwinfo", "label": "Read HWiNFO sensors", "type": "bool", "default": false }
+    ],
+    "provides": [
+      { "key": "pc.cpu.load", "label": "CPU load", "unit": "%", "kind": "number" },
+      { "key": "pc.cpu.temp", "label": "CPU temperature (needs HWiNFO)", "unit": "°C", "kind": "number" },
+      { "key": "pc.ram.used_gb", "label": "RAM used", "unit": "GB", "kind": "number" },
+      { "key": "pc.ram.total_gb", "label": "RAM total", "unit": "GB", "kind": "number" },
+      { "key": "pc.ram.used_pct", "label": "RAM used", "unit": "%", "kind": "number" },
+      { "key": "pc.gpu.temp", "label": "GPU temperature", "unit": "°C", "kind": "number" },
+      { "key": "pc.gpu.load", "label": "GPU load", "unit": "%", "kind": "number" },
+      { "key": "pc.gpu.power", "label": "GPU power", "unit": "W", "kind": "number" },
+      { "key": "pc.gpu.vram_used_gb", "label": "VRAM used", "unit": "GB", "kind": "number" },
+      { "key": "pc.gpu.vram_total_gb", "label": "VRAM total", "unit": "GB", "kind": "number" },
+      { "key": "hwinfo.*", "label": "HWiNFO readings, as hwinfo.<sensor>.<label>", "kind": "number", "pattern": true }
+    ]
+  },
+  {
+    "id": "homeassistant",
+    "name": "Home Assistant",
+    "description": "The state, unit and attributes of the Home Assistant entities you list, read with a long-lived access token (Profile > Security in Home Assistant).",
+    "interval": { "default": 60, "min": 5 },
+    "settings": [
+      { "key": "url", "label": "URL", "type": "text", "default": "http://homeassistant.local:8123" },
+      { "key": "token", "label": "Long-lived access token", "type": "password" },
+      { "key": "entities", "label": "Entities (one per line)", "type": "list", "default": [] }
+    ],
+    "provides": [
+      { "key": "ha.*", "label": "Entity states: ha.<entity_id>, with ha.<entity_id>.unit and one key per attribute", "pattern": true }
+    ]
+  },
+  {
+    "id": "time",
+    "name": "Time",
+    "description": "The current local time. Always on.",
+    "interval": { "default": 60, "min": 1 },
+    "settings": [],
+    "provides": [
+      { "key": "time", "label": "Time now", "kind": "time" }
+    ]
+  }
+]
