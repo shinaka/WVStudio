@@ -137,3 +137,7 @@ durations are kept.
 - On an OLED, black pixels are switched off, so black backgrounds are free and help against burn-in. A
   static, bright image shown 24/7 is the main burn-in risk. A playlist that moves between pieces helps.
 - If Windows Photos has a file open, it can't be overwritten. The studio says so if that happens.
+
+## License
+
+MIT, see [LICENSE](LICENSE). That covers this code only, not any art or video you play with it.

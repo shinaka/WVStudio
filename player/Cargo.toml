@@ -2,6 +2,7 @@
 name = "wvplay"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
 
 [dependencies]
 image = { version = "0.25", default-features = false, features = ["png", "gif", "webp"] }
