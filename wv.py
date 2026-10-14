@@ -30,11 +30,12 @@ SCREEN_W, SCREEN_H = 1600, 720
 GLASS_MM = 154.5  # approx. width of the 6.67" 20:9 glass, for physical pixel sizes
 CORSAIR_MM_PER_PX = 53.3 / 480  # 2.1" 480x480 iCUE LCD, for comparing with old art
 
-# Panel pixels bent by the curved edges or hidden by rounded corners. Measured from a photo of a test chart
-# on the cooler (2026-10-13). Top and bottom are flat. The left edge curls away within its first ~68 px, and
-# the right ~360 px wrap around the side of the pump block, so the flat front is x 68..1240. All four corners
-# sit on those bends with nothing visibly cut off, so no corner mask.
-SAFE = {"left": 68, "right": 360, "top": 0, "bottom": 0, "corner_radius": 0}
+# Panel pixels bent by the curved edges or hidden by rounded corners, measured from photos of test charts on
+# the cooler. Top, bottom and left are flat to the edge; the right ~360 px wrap around the side of the pump
+# block, so the flat front is x 0..1240. Nothing visibly cut off at the corners, so no corner mask.
+SAFE = {"left": 0, "right": 360, "top": 0, "bottom": 0, "corner_radius": 0}
+# The camera punch-hole (no pixels there): centre and radius in panel pixels, measured 2026-10-14.
+CAMERA_HOLE = {"x": 32, "y": 360, "r": 23}
 
 ROOT = Path(__file__).resolve().parent
 ART, OUT = ROOT / "art", ROOT / "out"

@@ -113,10 +113,11 @@ Everything works in the panel's 1600x720. Art laid out at a whole-number fractio
 
 Measured from a photo of a test chart on the cooler:
 - Top and bottom are flat to the edge.
-- The left edge curls away within about 68 px.
+- The left edge is flat right to the edge, but has the camera's punch-hole: a dot about 45 px across,
+  centred at (32, 360), halfway down. The studio draws it on the preview.
 - The right ~360 px wrap around the side of the pump block.
 
-So the flat front is x 68..1240, about 1172x720. Art in the right-hand wrap is seen from the side, so it
+So the flat front is x 0..1240, 1240x720. Art in the right-hand wrap is seen from the side, so it
 suits scenery that carries on round the corner, not anything you need to read from the front.
 
 ## Drawing your own (Aseprite)

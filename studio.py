@@ -573,7 +573,8 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == "/":
             self.send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
         elif url.path == "/api/config":
-            self.json({"screen": [wv.SCREEN_W, wv.SCREEN_H], "safe": wv.SAFE, "initial": initial})
+            self.json({"screen": [wv.SCREEN_W, wv.SCREEN_H], "safe": wv.SAFE, "camera": wv.CAMERA_HOLE,
+                       "initial": initial})
         elif (m := re.fullmatch(r"/api/frame/(\w+)/(\d+)\.png", url.path)) and m[1] in sources:
             src, i = sources[m[1]], int(m[2])
             if i < len(src.frames):

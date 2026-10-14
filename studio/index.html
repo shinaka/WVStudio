@@ -237,6 +237,7 @@ const $ = (id) => document.getElementById(id);
 const api = (path, opts = {}) => fetch(path, { ...opts, headers: { "X-Studio": "1", ...opts.headers } });
 
 let W = 2400, H = 1080, SAFE = { left: 0, right: 0, top: 0, bottom: 0 };  // replaced from the server
+let CAMERA = null;  // the camera punch-hole, {x, y, r}: no pixels there
 const M = 140;   // off-screen margin shown around the screen, in screen px
 const GROW = 4;  // placed art can be up to this many screens wide or tall
 const DEFAULTS = { factor: 1, scale: 1, fractional: false, smooth: false, x: 0, y: 0, rotate: 0, flip: false,
@@ -386,7 +387,9 @@ function drawOverlay() {
     g.strokeStyle = "rgba(255,176,32,.85)";
     g.setLineDash([6 * css, 5 * css]);
     g.beginPath();
-    for (const x of [SAFE.left, W - SAFE.right]) { g.moveTo(x, -22 * css); g.lineTo(x, H + 22 * css); }
+    for (const x of [SAFE.left, W - SAFE.right]) {
+      if (x > 0 && x < W) { g.moveTo(x, -22 * css); g.lineTo(x, H + 22 * css); }  // none where there's no curve
+    }
     g.stroke();
     g.setLineDash([]);
     g.font = `${12 * css}px system-ui, "Segoe UI", sans-serif`;
@@ -397,6 +400,17 @@ function drawOverlay() {
     g.fillText(`flat front, ${f.w} px`, f.x + f.w / 2, -8 * css);
     if (SAFE.right) g.fillText("wraps around the side", W - SAFE.right / 2, -8 * css);
     if (SAFE.left) { g.textAlign = "right"; g.fillText("curls away", SAFE.left, -8 * css); }
+    if (CAMERA) {  // the punch-hole: drawn as it looks on the cooler, a black dot, outlined so it shows on black
+      g.beginPath();
+      g.arc(CAMERA.x, CAMERA.y, CAMERA.r, 0, 2 * Math.PI);
+      g.fillStyle = "#000";
+      g.fill();
+      g.strokeStyle = g.fillStyle = "rgba(255,176,32,.95)";
+      g.stroke();
+      g.textAlign = "left";
+      g.textBaseline = "middle";
+      g.fillText("camera", -8 * css - g.measureText("camera").width, CAMERA.y);
+    }
   }
   if (src) {
     const [dw, dh] = placedSize();
@@ -567,6 +581,10 @@ function showStatus() {
   const curved = [["left", Math.min(S.x + dw, f.x) - Math.max(S.x, 0)],
                   ["right", Math.min(S.x + dw, W) - Math.max(S.x, f.x + f.w)]].filter(([, v]) => v > 0);
   if (curved.length) add(`on the curve: ${curved.map(([side, v]) => `${side} ${v} px`).join(", ")}`, "info");
+  if (CAMERA && S.fill === "solid") {  // does the art reach the camera hole?
+    const nx = Math.min(Math.max(CAMERA.x, S.x), S.x + dw), ny = Math.min(Math.max(CAMERA.y, S.y), S.y + dh);
+    if ((nx - CAMERA.x) ** 2 + (ny - CAMERA.y) ** 2 < CAMERA.r ** 2) add("the camera hole covers part of the art", "info");
+  }
   if (!Number.isInteger(S.scale) && !S.smooth)
     add(`in-between size: art pixels come out uneven (${Math.floor(S.scale)} or ${Math.ceil(S.scale)} px)`, "warn");
   if (!src.video && (src.colors > 256 || S.smooth))
@@ -1132,6 +1150,7 @@ requestAnimationFrame(function tick(now) {
     const cfg = await (await api("/api/config")).json();
     [W, H] = cfg.screen;
     SAFE = cfg.safe;
+    CAMERA = cfg.camera;
     screenCv.width = W;
     screenCv.height = H;
     layout();
