@@ -17,7 +17,7 @@ use image::{AnimationDecoder, ImageFormat, RgbImage, RgbaImage};
 use jpeg_encoder::{ColorType, Encoder, SamplingFactor};
 
 use crate::cache;
-use crate::playlist::Item;
+use crate::playlist::{Item, Widget};
 use crate::text::Layer;
 
 /// What the panel takes. It shows this upscaled 1.5x on its 2400x1080 glass; a native 2400x1080
@@ -33,6 +33,7 @@ const VIDEO_MAX_SECONDS: u32 = 60;
 /// light on memory (a 1600x720 frame is 3.5 MB raw).
 const BATCH: usize = 64;
 
+#[derive(Clone)]
 pub struct Frame {
     pub jpeg: Vec<u8>,
     pub duration: Duration,
@@ -67,8 +68,7 @@ pub fn load(item: &Item, opts: &Options, save: bool) -> Result<Vec<Frame>, Box<d
     if let Some(frames) = cache::read(item, opts) {
         return Ok(frames);
     }
-    // full-resolution colour keeps coloured pixel-art edges sharp; video doesn't need it
-    let sampling = if is_video(&item.path) { SamplingFactor::R_4_2_0 } else { SamplingFactor::R_4_4_4 };
+    let sampling = sampling(item);
     // the text is the same on every frame, so it's drawn once and laid over each
     let text = Layer::render(item.text());
     let mut frames = Vec::new();
@@ -95,9 +95,37 @@ pub fn load(item: &Item, opts: &Options, save: bool) -> Result<Vec<Frame>, Box<d
     Ok(frames)
 }
 
+/// Full-resolution colour keeps coloured pixel-art edges sharp; video doesn't need it.
+fn sampling(item: &Item) -> SamplingFactor {
+    if is_video(&item.path) { SamplingFactor::R_4_2_0 } else { SamplingFactor::R_4_4_4 }
+}
+
+/// Lays live text (docs/data.md) over a piece's prepared frames: each is decoded, the text blended on
+/// (where it belongs on a turned frame) and encoded again, on every core. A frame that won't decode or
+/// encode goes out as it was.
+pub fn overlay(item: &Item, frames: &[Frame], text: &Layer, opts: &Options) -> Vec<Frame> {
+    let sampling = sampling(item);
+    let redraw = |frame: &Frame| {
+        let jpeg = image::load_from_memory_with_format(&frame.jpeg, ImageFormat::Jpeg).ok().and_then(|im| {
+            let mut rgb = im.into_rgb8();
+            text.draw_onto_turned(&mut rgb, opts.rotate180);
+            encode(&rgb, opts.quality, sampling).ok()
+        });
+        Frame { jpeg: jpeg.unwrap_or_else(|| frame.jpeg.clone()), duration: frame.duration }
+    };
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+    let chunk = frames.len().div_ceil(threads).max(1);
+    std::thread::scope(|s| {
+        let redraw = &redraw;
+        let workers: Vec<_> =
+            frames.chunks(chunk).map(|part| (part, s.spawn(move || part.iter().map(redraw).collect::<Vec<_>>()))).collect();
+        workers.into_iter().flat_map(|(part, w)| w.join().unwrap_or_else(|_| part.to_vec())).collect()
+    })
+}
+
 /// One frame of a piece (counting from 0), fitted and with its text on, upright: what the cooler would
-/// show, for checking without it.
-pub fn render(item: &Item, opts: &Options, index: usize) -> Result<RgbImage, Box<dyn Error>> {
+/// show, for checking without it. `live` is the piece's live widgets with their text filled in.
+pub fn render(item: &Item, opts: &Options, index: usize, live: &[Widget]) -> Result<RgbImage, Box<dyn Error>> {
     let (mut count, mut found) = (0, None);
     decode(&item.path, opts, &mut |raw| {
         if count == index {
@@ -108,6 +136,7 @@ pub fn render(item: &Item, opts: &Options, index: usize) -> Result<RgbImage, Box
     })?;
     let (mut rgb, _) = found.ok_or_else(|| format!("there's no frame {index}: it has {count}"))?.into_fitted();
     Layer::render(item.text()).draw_onto(&mut rgb);
+    Layer::render(live).draw_onto(&mut rgb); // over the rest, as when playing
     Ok(rgb)
 }
 

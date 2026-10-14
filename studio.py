@@ -17,8 +17,11 @@ import shutil
 import subprocess
 import threading
 import time
+import urllib.error
+import urllib.request
 import webbrowser
 import winreg
+from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
@@ -594,6 +597,157 @@ def font_file(path):
     return fonts_seen[2].get(os.path.normcase(path))
 
 
+# --- Live data in text (docs/data.md) -----------------------------------------------------
+#
+# The sources the player polls are set up in playlist/data.json. Their values come from the player's own API,
+# which only answers on this PC: the page reaches it through the proxies here. data.json can hold a Home
+# Assistant token, which never goes back to the page.
+
+DATA_API_PORT = 8139
+DATA_TIMEOUT = 2   # seconds: the player answers straight away, or isn't running
+TEST_TIMEOUT = 20  # a test polls the source once (a web request), so it can take a while
+MIN_INTERVAL = {"claude": 30}  # seconds; 5 for the rest
+no_proxy = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # straight to 127.0.0.1, never a proxy
+
+
+def data_path():
+    return PLAYLIST_DIR / "data.json"
+
+
+def read_data():
+    """data.json as it is (token included: for this file only), or {} before there is one."""
+    with playlist_lock:
+        try:
+            data = json.loads(data_path().read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {}
+        except ValueError as e:
+            raise ValueError(f"{data_path().name} isn't valid JSON ({e}): fix it or delete it") from None
+    if not isinstance(data, dict):
+        raise ValueError(f"{data_path().name} should hold an object: fix it or delete it")
+    return data
+
+
+def data_config():
+    """data.json for the page: each source's token left out, with `token_set` saying whether there is one."""
+    data = read_data()
+    shown = []
+    for s in data.get("sources", []):
+        if isinstance(s, dict):
+            token = s.get("token")
+            s = {k: v for k, v in s.items() if k != "token"}
+            if s.get("type") == "homeassistant" or token is not None:
+                s["token_set"] = isinstance(token, str) and bool(token)
+        shown.append(s)
+    return {**data, "api_port": data_port(data), "sources": shown}
+
+
+def same_url(a, b):
+    """Whether two source addresses are the same server: None when either is missing (nothing to compare)."""
+    if not (isinstance(a, str) and isinstance(b, str)):
+        return None
+    norm = lambda u: u.strip().rstrip("/").lower()
+    return norm(a) == norm(b)
+
+
+def save_data_config(req):
+    """The page's data sources, saved. Keys it doesn't send are kept, at the top and in each source (matched
+    with the saved ones by type, in order), and so is each saved token unless a new one is given."""
+    if not isinstance(req, dict) or not isinstance(req.get("sources", []), list):
+        raise ValueError("expected {sources: [...]}")
+    with playlist_lock:
+        old = read_data()
+        saved = {}  # type -> that type's saved sources, in order
+        for s in old.get("sources", []):
+            if isinstance(s, dict):
+                saved.setdefault(s.get("type"), []).append(s)
+        data = {**old, **{k: v for k, v in req.items() if k != "sources"}}
+        if "sources" in req:
+            seen = {}
+            data["sources"] = []
+            for s in req["sources"]:
+                if not isinstance(s, dict):
+                    raise ValueError("each source must be an object")
+                kind = s.get("type")
+                n = seen[kind] = seen.get(kind, -1) + 1
+                was = saved.get(kind, [])[n] if n < len(saved.get(kind, [])) else {}
+                token = s.get("token")
+                s = {**was, **{k: v for k, v in s.items() if k not in ("token", "token_set")}}
+                if isinstance(token, str) and token.strip():
+                    s["token"] = token.strip()
+                elif same_url(s.get("url"), was.get("url")) is False:
+                    # a saved token only ever goes back to the server it was given for: anyone who can reach
+                    # the studio could otherwise point the address at their own and have it sent there
+                    s.pop("token", None)
+                if "interval" in s:
+                    try:
+                        s["interval"] = max(MIN_INTERVAL.get(kind, 5), int(s["interval"]))
+                    except (TypeError, ValueError):
+                        raise ValueError(f"{kind}: interval must be a number of seconds") from None
+                if "entities" in s and not (isinstance(s["entities"], list)
+                                            and all(isinstance(e, str) for e in s["entities"])):
+                    raise ValueError(f"{kind}: entities must be a list of entity ids")
+                data["sources"].append(s)
+        if "api_port" in data and not (isinstance(data["api_port"], int) and 0 < data["api_port"] < 65536):
+            raise ValueError("api_port must be a port number")
+        PLAYLIST_DIR.mkdir(exist_ok=True)
+        tmp = data_path().with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        os.replace(tmp, data_path())  # all at once, so the player never reads half a file
+    return data_config()
+
+
+def data_port(data=None):
+    """The port the player's API listens on, from data.json."""
+    try:
+        port = (read_data() if data is None else data).get("api_port", DATA_API_PORT)
+    except ValueError:
+        return DATA_API_PORT
+    return port if isinstance(port, int) and 0 < port < 65536 else DATA_API_PORT
+
+
+def player_api(path, body=None, timeout=DATA_TIMEOUT):
+    """Asks the player's local API: its answer, or {"player": False} when it isn't running."""
+    req = urllib.request.Request(f"http://127.0.0.1:{data_port()}{path}",
+                                 data=None if body is None else json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with no_proxy.open(req, timeout=timeout) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:  # it's running, but turned the request down
+        try:
+            out = json.loads(e.read())
+        except ValueError:
+            out = None
+        return out if isinstance(out, dict) and "error" in out else {"error": f"the player answered {e.code} {e.reason}"}
+    except (OSError, ValueError, HTTPException):  # nothing listening, no answer in time, or not the player
+        return {"player": False}
+
+
+def data_resolve(req):
+    """The texts with their placeholders filled in by the player, which does all the formatting."""
+    texts = req.get("texts") if isinstance(req, dict) else None
+    if not isinstance(texts, list) or not all(isinstance(t, str) for t in texts):
+        raise ValueError("expected {texts: [string, ...]}")
+    return player_api("/resolve", {"texts": texts})
+
+
+def data_test(req):
+    """Runs one source as set up on the page, once, in the player. Without a new token, the saved one is used."""
+    source = req.get("source") if isinstance(req, dict) else None
+    if not isinstance(source, dict):
+        raise ValueError("expected {source: {...}}")
+    source = {k: v for k, v in source.items() if k != "token_set"}
+    if not (isinstance(source.get("token"), str) and source["token"].strip()):
+        source.pop("token", None)
+        saved = next((s for s in read_data().get("sources", []) if isinstance(s, dict)
+                      and s.get("type") == source.get("type") and s.get("token")
+                      and same_url(s.get("url"), source.get("url")) is not False), None)  # only to its own server
+        if saved:
+            source["token"] = saved["token"]
+    return player_api("/test", {"source": source}, TEST_TIMEOUT)
+
+
 # --- Server ----------------------------------------------------------------------
 
 class Handler(BaseHTTPRequestHandler):
@@ -677,6 +831,13 @@ class Handler(BaseHTTPRequestHandler):
             self.json(font_list())
         elif url.path == "/api/font" and (path := font_file(parse_qs(url.query).get("path", [""])[0])):
             self.send_file(path, "font/otf" if path.suffix.lower() == ".otf" else "font/ttf")
+        elif url.path == "/api/data/config":
+            try:
+                self.json(data_config())
+            except ValueError as e:
+                self.json({"error": str(e)}, 500)
+        elif url.path == "/api/data/values":
+            self.json(player_api("/values"))
         else:
             self.send(404, b"not found", "text/plain")
 
@@ -713,6 +874,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.json(stop_player())
             elif url.path == "/api/autostart":
                 self.json(set_autostart(bool(json.loads(body)["on"])))
+            elif url.path == "/api/data/config":
+                self.json(save_data_config(json.loads(body)))
+            elif url.path == "/api/data/resolve":
+                self.json(data_resolve(json.loads(body)))
+            elif url.path == "/api/data/test":
+                self.json(data_test(json.loads(body)))
             else:
                 self.send(404, b"not found", "text/plain")
         except SystemExit as e:  # wv's helpers exit with a message on failure

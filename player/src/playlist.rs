@@ -34,9 +34,15 @@ impl Item {
         Item { path, seconds, widgets: Vec::new(), overlay: Vec::new() }
     }
 
-    /// Everything drawn over the piece, in drawing order: its own widgets, then the global layer.
+    /// The text drawn into the prepared frames, in drawing order: its own widgets, then the global
+    /// layer, leaving out live ones.
     pub fn text(&self) -> impl Iterator<Item = &Widget> + Clone {
-        self.widgets.iter().chain(&self.overlay)
+        self.widgets.iter().chain(&self.overlay).filter(|w| !w.live)
+    }
+
+    /// Widgets with placeholders (docs/data.md), drawn over the rest while playing, in the same order.
+    pub fn live(&self) -> impl Iterator<Item = &Widget> + Clone {
+        self.widgets.iter().chain(&self.overlay).filter(|w| w.live)
     }
 }
 
@@ -68,6 +74,9 @@ pub struct Widget {
     pub outline: Outline,
     /// No anti-aliasing (alpha thresholded at 50%), for pixel fonts.
     pub crisp: bool,
+    /// Its text has placeholders, filled in while playing. Not part of the file (or the cache keys).
+    #[serde(skip)]
+    pub live: bool,
 }
 
 impl Default for Widget {
@@ -87,6 +96,7 @@ impl Default for Widget {
             line_height: 1.2,
             outline: Outline::default(),
             crisp: false,
+            live: false,
         }
     }
 }
@@ -185,6 +195,10 @@ fn widgets(list: Option<Vec<serde_json::Value>>, base: &Path) -> Vec<Widget> {
         .map(|mut w| {
             // a relative font is next to the playlist, like the pieces; no font at all means the default
             w.font = if w.font.as_os_str().is_empty() { PathBuf::from(DEFAULT_FONT) } else { base.join(&w.font) };
+            w.live = crate::data::is_live(&w.text);
+            if !w.live {
+                w.text = crate::data::fill(&w.text, |_| None, chrono::Utc::now()); // `{{` and `}}` as plain braces
+            }
             w
         })
         .collect()
@@ -220,7 +234,7 @@ pub fn fingerprint(target: &Path, items: &[Item]) -> Vec<(PathBuf, Option<(Syste
         }
     }
     paths.extend(items.iter().map(|i| i.path.clone()));
-    paths.extend(items.iter().flat_map(|i| i.text()).map(|w| w.font.clone()));
+    paths.extend(items.iter().flat_map(|i| i.text().chain(i.live())).map(|w| w.font.clone()));
     paths.sort();
     paths.dedup();
     paths
@@ -303,6 +317,23 @@ mod tests {
         let order: Vec<&str> = items[0].text().map(|w| w.id.as_str()).collect();
         assert_eq!(order, ["w1", "w3", "w4", "w5", "clock"]);
         assert_eq!((items[0].seconds, items[1].seconds), (10.0, 3.0));
+    }
+
+    #[test]
+    fn live_widgets() {
+        let json = br#"{ "overlay": [ { "id": "o", "type": "text", "text": "{time}" } ],
+            "items": [ { "file": "a.png", "widgets": [ { "id": "l", "type": "text", "text": "CPU {pc.cpu.load:d}%" },
+                                                       { "id": "s", "type": "text", "text": "{{not live}}" } ] } ] }"#;
+        let items = parse(json, Path::new("."), 30.0).unwrap();
+        let ids = |w: Vec<&Widget>| w.iter().map(|w| w.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(items[0].text().collect()), ["s"]);
+        assert_eq!(ids(items[0].live().collect()), ["l", "o"]); // live goes over static, in list order
+        assert_eq!(items[0].widgets[0].text, "CPU {pc.cpu.load:d}%");
+        assert_eq!(items[0].widgets[1].text, "{not live}"); // static text has its escapes made plain
+        // live widgets don't change the prepared frames' keys
+        let plain = br#"{ "items": [ { "file": "a.png", "widgets": [ { "id": "s", "type": "text", "text": "{{not live}}" } ] } ] }"#;
+        let plain = parse(plain, Path::new("."), 30.0).unwrap();
+        assert_eq!(crate::text::key(items[0].text()), crate::text::key(plain[0].text()));
     }
 
     #[test]

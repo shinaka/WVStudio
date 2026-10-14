@@ -11,8 +11,9 @@ use std::thread::{sleep, JoinHandle};
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::panel::Panel;
-use crate::playlist::{self, Item};
-use crate::{art, cache, text};
+use crate::playlist::{self, Item, Widget};
+use crate::text::Layer;
+use crate::{art, cache, data, text};
 
 /// A still picture is re-sent this often, so the screen comes back by itself after the panel resets.
 const STILL_REFRESH: Duration = Duration::from_secs(2);
@@ -43,6 +44,24 @@ struct Loaded {
     frames: Arc<Vec<art::Frame>>,
     /// The file's modified time and size when it was prepared.
     stamp: Option<(SystemTime, u64)>,
+    /// The frames with the live text on, when the piece has any.
+    live: Option<Live>,
+}
+
+/// A piece's frames with its live text drawn over them (docs/data.md), kept until the text changes, so
+/// an animation is encoded again once per change rather than every loop.
+#[derive(Clone)]
+struct Live {
+    /// The live widgets with their text filled in, as drawn.
+    widgets: Vec<Widget>,
+    frames: Arc<Vec<art::Frame>>,
+}
+
+/// New live frames being drawn in the background, over `base`, while the old ones carry on.
+struct Composing {
+    base: Arc<Vec<art::Frame>>,
+    widgets: Vec<Widget>,
+    job: JoinHandle<Arc<Vec<art::Frame>>>,
 }
 
 /// Prepared frames of recently played pieces, so switching back to one costs nothing. Pixel art is small
@@ -89,6 +108,7 @@ struct Player {
     quiet: Duration,
     /// The newest re-prepared version that isn't in the disk cache yet.
     unsaved: Option<(Item, Loaded)>,
+    composing: Option<Composing>,
 }
 
 impl Player {
@@ -98,7 +118,8 @@ impl Player {
         let current = load_from(&items, 0, &opts, &cache, true).ok_or("none of the pieces could be loaded")?;
         let mut player = Player { target: target.to_path_buf(), opts, seconds, fingerprint: Vec::new(),
                                   changing: None, settle: SETTLE, items, current, cache, next: None,
-                                  want_next: false, reload: None, edited: None, quiet: QUIET, unsaved: None };
+                                  want_next: false, reload: None, edited: None, quiet: QUIET, unsaved: None,
+                                  composing: None };
         player.fingerprint = playlist::fingerprint(target, &player.items);
         player.prepare_next();
         Ok(player)
@@ -106,6 +127,45 @@ impl Player {
 
     fn item(&self) -> &Item {
         &self.items[self.current.index]
+    }
+
+    /// The frames to send: with the live text on, when there is some.
+    fn showing(&self) -> &Arc<Vec<art::Frame>> {
+        self.current.live.as_ref().map_or(&self.current.frames, |live| &live.frames)
+    }
+
+    /// Keeps the live text current: takes in finished redraws, and with `look`, starts one if the text
+    /// (filled in from the values as they are now) has changed. Cheap, and free for pieces without live
+    /// text. Returns whether the frames showing changed.
+    fn update_live(&mut self, look: bool) -> bool {
+        let mut changed = false;
+        if self.composing.as_ref().is_some_and(|c| c.job.is_finished()) {
+            let Composing { base, widgets, job } = self.composing.take().unwrap();
+            // dropped if the piece has moved on meanwhile
+            if let Ok(frames) = job.join() {
+                if Arc::ptr_eq(&base, &self.current.frames) {
+                    self.current.live = Some(Live { widgets, frames });
+                    changed = true;
+                }
+            }
+        }
+        if !look {
+            return changed;
+        }
+        if self.item().live().next().is_none() {
+            self.composing = None;
+            return self.current.live.take().is_some() || changed;
+        }
+        let widgets = filled(self.item());
+        let base = &self.current.frames;
+        let showing = self.current.live.as_ref().is_some_and(|l| l.widgets == widgets);
+        let coming = self.composing.as_ref().is_some_and(|c| c.widgets == widgets && Arc::ptr_eq(&c.base, base));
+        if !showing && !coming {
+            let (item, base, opts, drawn) = (self.item().clone(), base.clone(), self.opts.clone(), widgets.clone());
+            let job = std::thread::spawn(move || overlay(&item, &base, &drawn, &opts));
+            self.composing = Some(Composing { base: self.current.frames.clone(), widgets, job });
+        }
+        changed
     }
 
     fn editing(&self) -> bool {
@@ -166,9 +226,12 @@ impl Player {
                 self.want_next = true;
                 match cached(&self.cache, &self.items, at) {
                     // unchanged, or back to a version still in memory: nothing to wait for
-                    Some(loaded) => {
+                    Some(mut loaded) => {
                         self.reload = None;
                         changed = !Arc::ptr_eq(&loaded.frames, &self.current.frames);
+                        if !changed {
+                            loaded.live = self.current.live.take(); // only the live text changed, if anything
+                        }
                         self.current = loaded;
                     }
                     None => {
@@ -225,7 +288,7 @@ impl Player {
         let mut next_check = due + CHECK_EVERY;
         loop {
             if Instant::now() >= due {
-                let frames = &self.current.frames;
+                let frames = self.showing();
                 send(&frames[i].jpeg)?;
                 due += if frames.len() == 1 { STILL_REFRESH } else { frames[i].duration };
                 i = (i + 1) % frames.len();
@@ -245,11 +308,15 @@ impl Player {
                     ends = now + CHECK_EVERY;
                 }
             }
-            if now >= next_check {
+            let look = now >= next_check;
+            if look {
                 next_check = now + CHECK_EVERY;
                 restart |= self.refresh(now);
             }
             restart |= self.tick();
+            if self.update_live(look) && !restart && self.showing().len() == 1 {
+                due = Instant::now(); // a still shows its new text at once, an animation with its next frame
+            }
             if restart {
                 i = 0;
                 due = Instant::now();
@@ -271,16 +338,37 @@ fn cached(cache: &Cache, items: &[Item], index: usize) -> Option<Loaded> {
     let item = &items[index];
     let stamp = playlist::stamp(&item.path);
     let frames = cache.lock().unwrap().get(&cache_key(item)).filter(|entry| entry.0 == stamp)?.1.clone();
-    Some(Loaded { index, frames, stamp })
+    Some(Loaded { index, frames, stamp, live: None })
 }
 
-/// Loads the first piece that works, starting at `from` and wrapping around. `save` keeps newly prepared
-/// pieces in the disk cache too.
+/// A piece's live widgets, with their text filled in from the values as they are now.
+fn filled(item: &Item) -> Vec<Widget> {
+    item.live().map(|w| Widget { text: data::resolve(&w.text), ..w.clone() }).collect()
+}
+
+/// The frames with `widgets` drawn over them; the same frames when that draws nothing.
+fn overlay(item: &Item, frames: &Arc<Vec<art::Frame>>, widgets: &[Widget], opts: &art::Options) -> Arc<Vec<art::Frame>> {
+    let layer = Layer::render(widgets);
+    if layer.is_empty() { frames.clone() } else { Arc::new(art::overlay(item, frames, &layer, opts)) }
+}
+
+/// Loads the first piece that works, starting at `from` and wrapping around, with its live text drawn on
+/// as the values are now. `save` keeps newly prepared pieces in the disk cache too.
 fn load_from(items: &[Item], from: usize, opts: &art::Options, cache: &Cache, save: bool) -> Option<Loaded> {
     (0..items.len()).map(|k| (from + k) % items.len()).find_map(|index| {
-        if let Some(loaded) = cached(cache, items, index) {
-            return Some(loaded);
+        let mut loaded = cached(cache, items, index).or_else(|| prepare(items, index, opts, cache, save))?;
+        let widgets = filled(&items[index]);
+        if !widgets.is_empty() {
+            let frames = overlay(&items[index], &loaded.frames, &widgets, opts);
+            loaded.live = Some(Live { widgets, frames });
         }
+        Some(loaded)
+    })
+}
+
+/// Prepares a piece and keeps it in the in-memory cache.
+fn prepare(items: &[Item], index: usize, opts: &art::Options, cache: &Cache, save: bool) -> Option<Loaded> {
+    {
         let item = &items[index];
         let stamp = playlist::stamp(&item.path);
         let start = Instant::now();
@@ -300,18 +388,22 @@ fn load_from(items: &[Item], from: usize, opts: &art::Options, cache: &Cache, sa
                     let victim = cache.keys().find(|k| **k != key).cloned().unwrap();
                     cache.remove(&victim);
                 }
-                Some(Loaded { index, frames, stamp })
+                Some(Loaded { index, frames, stamp, live: None })
             }
             Err(e) => {
                 log(format_args!("skipping {}: {e}", item.path.display()));
                 None
             }
         }
-    })
+    }
 }
 
 pub fn play(target: &Path, opts: art::Options, seconds: f64) -> Result<(), Box<dyn Error>> {
     cache::prune();
+    // live values for text, and the API the studio uses, from the data.json beside a playlist
+    if target.extension().is_some_and(|e| e.eq_ignore_ascii_case("json")) {
+        data::start(target, true);
+    }
     // Started with Windows, the playlist (or the drive it's on) may not be there yet: wait for it.
     let mut player = loop {
         match Player::new(target, opts.clone(), seconds) {
@@ -483,6 +575,53 @@ mod tests {
         assert!(read(&mut p));
         assert!(p.reload.is_none());
         assert!(Arc::ptr_eq(&plain, &p.current.frames));
+    }
+
+    /// Live text goes over the prepared frames, which stay exactly as they are without it, and is drawn
+    /// and encoded again only when its text changes.
+    #[test]
+    fn live_text_redraws_on_change() {
+        if !Path::new(text::DEFAULT_FONT).exists() {
+            return;
+        }
+        let s = Scratch::new("live");
+        let plain: Vec<Vec<u8>> = s.player().current.frames.iter().map(|f| f.jpeg.clone()).collect();
+        let set = |n: f64| data::store().put("wvtest", Duration::from_secs(60), vec![("wvtest.n".into(), data::Value::Number(n))]);
+        set(1.0);
+        s.write("n={wvtest.n}");
+        let mut p = s.player();
+        let base: Vec<Vec<u8>> = p.current.frames.iter().map(|f| f.jpeg.clone()).collect();
+        assert_eq!(base, plain);
+        let first = p.current.live.clone().expect("no live frames");
+        assert_eq!(first.widgets[0].text, "n=1");
+        assert_eq!(first.frames.len(), base.len());
+        assert!(first.frames.iter().zip(&base).all(|(live, base)| live.jpeg != *base));
+        assert!(Arc::ptr_eq(p.showing(), &first.frames));
+
+        // the same text: nothing to draw, however often it looks
+        for _ in 0..5 {
+            assert!(!p.update_live(true));
+            assert!(p.composing.is_none());
+        }
+        // a new value: drawn once, in the background, with the old frames showing meanwhile
+        set(2.0);
+        assert!(!p.update_live(true));
+        assert!(p.composing.is_some());
+        assert!(!p.update_live(true)); // already on its way
+        assert!(Arc::ptr_eq(p.showing(), &first.frames));
+        assert!(eventually(|| p.update_live(false)));
+        let second = p.current.live.clone().unwrap();
+        assert_eq!(second.widgets[0].text, "n=2");
+        assert!(!Arc::ptr_eq(&second.frames, &first.frames));
+        assert!(!p.update_live(true));
+        assert!(p.composing.is_none());
+
+        // the live widget gone: back to the prepared frames as they are
+        s.write("");
+        read(&mut p);
+        p.update_live(true);
+        assert!(p.current.live.is_none());
+        assert!(Arc::ptr_eq(p.showing(), &p.current.frames));
     }
 
     /// While frames stream on their schedule, an edit shows without a gap, and a playlist of one piece

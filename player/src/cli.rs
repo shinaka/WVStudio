@@ -9,7 +9,8 @@ use image::ImageFormat;
 
 use crate::panel::Panel;
 use crate::player::{log_to, play};
-use crate::{art, playlist};
+use crate::playlist::Widget;
+use crate::{art, data, playlist};
 
 const USAGE: &str = "\
 wvplay: drives the Thermalright Wonder Vision 360 screen directly, without TRCC.
@@ -26,7 +27,11 @@ wvplay: drives the Thermalright Wonder Vision 360 screen directly, without TRCC.
   wvplay prepare <what>       get everything ready as `play` would, without sending it anywhere
   wvplay render <playlist.json> <item> <out.png> [--frame N]
                               write frame N (default 0) of item number <item> (counting from 0), with
-                              its text drawn on, upright, as a PNG: for checking text without the screen
+                              its text drawn on, upright, as a PNG: for checking text without the screen.
+                              Live text is filled in by the running player, else only the time is
+  wvplay data <playlist.json> [--serve]
+                              poll each source in the data.json beside the playlist once, and print the
+                              values. --serve: carry on polling, and serve the local API, as `play` does
   wvplay info                 handshake and print what the panel reports
   wvplay send <file.jpg> <width> <height> [--repeat N] [--seconds S] [--fps F]
                               send a ready-made JPEG (for testing the panel)
@@ -77,9 +82,32 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
             let item = items.get(index).ok_or(format!("there's no item {index}: the playlist has {}", items.len()))?;
             let frame = option(args, "--frame")?.unwrap_or(0.0).max(0.0) as usize;
             let start = Instant::now();
-            art::render(item, &art_options(args)?, frame)?.save_with_format(&args[3], ImageFormat::Png)?;
-            println!("{}: frame {frame} with {} widget(s) -> {} ({} ms)", item.path.display(), item.text().count(),
-                     args[3], start.elapsed().as_millis());
+            // live text with the values the player has now; without a player, only the time
+            let texts: Vec<String> = item.live().map(|w| w.text.clone()).collect();
+            let filled = match texts.is_empty() {
+                true => Vec::new(),
+                false => data::ask_player(Path::new(&args[1]), &texts).unwrap_or_else(|| {
+                    println!("no player answering: only the time is filled in");
+                    texts.iter().map(|t| data::resolve(t)).collect()
+                }),
+            };
+            let live: Vec<Widget> = item.live().zip(filled).map(|(w, text)| Widget { text, ..w.clone() }).collect();
+            for w in &live {
+                println!("live: {:?}", w.text);
+            }
+            art::render(item, &art_options(args)?, frame, &live)?.save_with_format(&args[3], ImageFormat::Png)?;
+            println!("{}: frame {frame} with {} widget(s), {} live -> {} ({} ms)", item.path.display(), item.text().count(),
+                     live.len(), args[3], start.elapsed().as_millis());
+            Ok(())
+        }
+        Some("data") if args.len() >= 2 => {
+            let serve = args.iter().any(|a| a == "--serve");
+            let hub = data::start(Path::new(&args[1]), serve);
+            hub.wait(Duration::from_secs(30));
+            print!("{}", hub.report());
+            while serve {
+                sleep(Duration::from_secs(3600));
+            }
             Ok(())
         }
         Some("info") => {

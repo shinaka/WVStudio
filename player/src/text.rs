@@ -86,15 +86,23 @@ impl Layer {
 
     /// Lays the text over a 1600x720 frame, touching only the part where there is some.
     pub fn draw_onto(&self, frame: &mut RgbImage) {
+        self.draw_onto_turned(frame, false);
+    }
+
+    /// draw_onto, for a frame that's already been turned 180 degrees (`turned`): the text lands where it
+    /// would have before the turn, which saves turning the frame back and forth.
+    pub fn draw_onto_turned(&self, frame: &mut RgbImage, turned: bool) {
         let Some(b) = self.bounds else { return };
         if frame.dimensions() != (WIDTH, HEIGHT) {
             return;
         }
+        let last = (WIDTH * HEIGHT) as usize - 1;
         let (text, frame): (&[u8], &mut [u8]) = (&self.image, frame);
         for y in b.top as usize..b.bottom as usize {
             for x in b.left as usize..b.right as usize {
                 let i = y * WIDTH as usize + x;
-                let (src, dst) = (&text[i * 4..i * 4 + 4], &mut frame[i * 3..i * 3 + 3]);
+                let j = if turned { last - i } else { i };
+                let (src, dst) = (&text[i * 4..i * 4 + 4], &mut frame[j * 3..j * 3 + 3]);
                 let a = src[3] as u32;
                 if a == 0 {
                     continue;

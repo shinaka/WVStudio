@@ -92,6 +92,26 @@
   kbd { font: 11px ui-monospace, monospace; background: var(--raised); border: 1px solid var(--line);
         border-radius: 4px; padding: 0 4px; }
   .keys { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; }
+  .row[hidden] { display: none; }
+  code { font: 12px ui-monospace, monospace; }
+  .card { background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 1px 8px; margin: 8px 0; }
+  .card .row { margin: 6px 0; }
+  .card .title { font-weight: 650; }
+  .card input[type=number] { width: 62px; }
+  .card input[type=text], .card input[type=password] { width: 100%; }
+  .card textarea { margin: 6px 0; }
+  .test-out:empty { display: none; }
+  .test-out { margin: 6px 0; }
+  .values { max-height: 270px; overflow-y: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
+  .test-out .values { max-height: 150px; margin-top: 4px; }
+  .values .empty { padding: 4px 8px; color: var(--muted); }
+  .dv { display: flex; gap: 10px; justify-content: space-between; width: 100%; border: 0; border-radius: 0;
+        background: none; padding: 2px 8px; text-align: left; }
+  .dv:hover { background: var(--raised); }
+  .dv .k { font: 12px ui-monospace, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .dv .v { color: var(--info); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 50%;
+           font-variant-numeric: tabular-nums; }
+  .dv.stale { opacity: .45; }
 </style>
 </head>
 <body>
@@ -196,6 +216,7 @@
       <button data-layer="piece" title="Text on this piece only">This piece</button><button data-layer="global" title="The global layer: text drawn over every piece in the playlist">On top of everything</button>
     </div>
     <div id="textNote" class="row small muted"></div>
+    <div id="liveNote" class="row small warn" hidden>The player isn't running, so live values show as their placeholders.</div>
     <ul id="widgets"></ul>
     <div class="row">
       <button id="addText">Add text</button>
@@ -229,6 +250,49 @@
       <div class="row"><label title="No smoothed edges: every pixel all or nothing. For pixel fonts.">
         <input id="wCrisp" type="checkbox"> Crisp edges (pixel fonts)</label></div>
     </div>
+  </section>
+
+  <section id="dataSection">
+    <h2>Data</h2>
+    <div class="small muted">Live values for text: write <code>{key}</code> in a text, or click a value below to put it
+      in the selected text. The player reads these, and saves them to the playlist folder's data.json.</div>
+    <div id="dataNote" class="row small warn" hidden>The player isn't running, so there are no live values, and Test
+      needs it too. Start it with Play on cooler.</div>
+    <div class="card" data-source="claude">
+      <div class="row"><label class="title"><input data-k="enabled" type="checkbox"> Claude usage</label>
+        <span class="spacer"></span><label title="How often it's read (30 s at least)">every
+        <input data-k="interval" type="number" min="30" step="5"> s</label></div>
+      <div class="small muted">Your plan's session and weekly use, read with Claude Code's login on this PC.</div>
+      <div class="row"><button data-test>Test</button></div>
+      <div class="test-out small"></div>
+    </div>
+    <div class="card" data-source="pc">
+      <div class="row"><label class="title"><input data-k="enabled" type="checkbox"> PC sensors</label>
+        <span class="spacer"></span><label title="How often it's read">every
+        <input data-k="interval" type="number" min="5" step="5"> s</label></div>
+      <div class="row"><label><input data-k="hwinfo" type="checkbox"> Read HWiNFO too</label></div>
+      <div class="small muted">CPU, memory and NVIDIA GPU. CPU temperature needs HWiNFO running with Shared Memory
+        Support on.</div>
+      <div class="row"><button data-test>Test</button></div>
+      <div class="test-out small"></div>
+    </div>
+    <div class="card" data-source="homeassistant">
+      <div class="row"><label class="title"><input data-k="enabled" type="checkbox"> Home Assistant</label>
+        <span class="spacer"></span><label title="How often it's read">every
+        <input data-k="interval" type="number" min="5" step="5"> s</label></div>
+      <div class="row"><input data-k="url" type="text" spellcheck="false" placeholder="http://homeassistant.local:8123"
+        title="Home Assistant's address"></div>
+      <div class="row"><input data-k="token" type="password" autocomplete="off" spellcheck="false"
+        title="A long-lived access token (your profile in Home Assistant, Security). It's never shown again."></div>
+      <textarea data-k="entities" rows="3" spellcheck="false" title="The entities to read, one per line"
+        placeholder="Entities, one per line:&#10;sensor.living_room_temperature&#10;weather.home"></textarea>
+      <div class="row"><button data-test>Test</button></div>
+      <div class="test-out small"></div>
+    </div>
+    <div class="row"><input id="dataFilter" type="search" spellcheck="false" placeholder="Filter values"></div>
+    <div id="dataValues" class="values"></div>
+    <div class="row"><label title="Draw text as written, {key} and all, rather than with the values filled in">
+      <input id="showRaw" type="checkbox"> Show placeholders in the preview</label></div>
   </section>
 
   <section>
@@ -1022,7 +1086,7 @@ function textLayout(w) {
   g.font = font;
   g.fontKerning = "normal";
   const m = g.measureText("x"), ascent = m.fontBoundingBoxAscent, descent = m.fontBoundingBoxDescent;
-  const texts = String(w.text ?? "").split("\n"), height = ascent + descent + (texts.length - 1) * step;
+  const texts = shownText(w).split("\n"), height = ascent + descent + (texts.length - 1) * step;
   const x = num(w.x, 0), y = num(w.y, 0);
   const top = w.valign === "middle" ? y - height / 2 : w.valign === "bottom" ? y - height : y;
   const lines = texts.map((t, i) => {
@@ -1084,9 +1148,10 @@ function drawWidget(out, w) {
 
 /** All the text, this piece's then the global layer's, drawn again only when something about it changes. */
 function textLayer() {
-  const key = JSON.stringify([S.widgets, overlay, fontsArrived, W, H]);
+  const key = JSON.stringify([S.widgets, overlay, fontsArrived, W, H, live.version, live.raw]);
   if (key !== textKey) {
     textKey = key;
+    if (JSON.stringify(liveTexts()) !== live.asked) resolveSoon();  // new placeholders to fill in
     textCv.width = W; textCv.height = H;  // which clears it
     for (const w of [...(S.widgets || []), ...overlay]) drawWidget(textCtx, w);
   }
@@ -1285,6 +1350,218 @@ for (const [group, key] of [["wAlign", "align"], ["wValign", "valign"]]) {
     b.addEventListener("click", () => { const w = selectedWidget(); if (w) { w[key] = b.dataset.value; textChanged(); } });
   }
 }
+
+// --- Live data -----------------------------------------------------------------------
+//
+// Text can show live values, written as placeholders like {pc.cpu.load:d} (docs/data.md). Their sources are set up
+// here and saved to the playlist's data.json; the values, and the formatting, come from the player through the
+// studio. Widgets keep their placeholders: only the preview shows them filled in, and as written when the player
+// isn't running.
+
+const DATA_TYPES = { claude: { interval: 60 }, pc: { interval: 60, hwinfo: false },
+                     homeassistant: { interval: 60, url: "", entities: [] } };  // a new source of each type
+const live = {
+  config: null,         // data.json as the studio gives it: no token, `token_set` instead
+  player: null,         // whether the player answered last time (null: not asked yet)
+  values: {},           // key -> {value, at, stale, source}
+  resolved: new Map(),  // a widget's text -> as the player would draw it now
+  asked: "",            // the texts last sent to be filled in
+  version: 0,           // changes whenever the preview's text does
+  raw: false,           // show placeholders as written
+  timer: 0, seq: 0, saveTimer: 0, saving: Promise.resolve(),
+};
+
+/** Whether a text has a placeholder: `{key}` and the rest, not counting {{ and }}. */
+const isLive = (t) => /\{[^{}]+\}/.test(String(t ?? "").replace(/\{\{|\}\}/g, ""));
+function liveTexts() {
+  const all = [...(S.widgets || []), ...overlay].filter((w) => w.type === "text" && isLive(w.text));
+  return [...new Set(all.map((w) => String(w.text)))];
+}
+
+/** The text a widget shows in the preview: filled in with the current values, when the player could. */
+function shownText(w) {
+  const raw = String(w.text ?? "");
+  return !live.raw && live.resolved.has(raw) ? live.resolved.get(raw) : raw;
+}
+
+/** Asks the player to fill in every live text at once: soon after they change, and every 10 s. */
+function resolveSoon(ms = 300) { clearTimeout(live.timer); live.timer = setTimeout(resolveTexts, ms); }
+async function resolveTexts() {
+  clearTimeout(live.timer);
+  const texts = liveTexts(), seq = ++live.seq;
+  live.asked = JSON.stringify(texts);
+  if (!texts.length) return showLiveNote();
+  let out;
+  try { out = await postJson("/api/data/resolve", { texts }); } catch { out = {}; }
+  if (seq !== live.seq) return;  // a newer ask went out meanwhile
+  if (out.player === false) live.player = false;
+  else if (Array.isArray(out.texts)) live.player = true;
+  const resolved = new Map(Array.isArray(out.texts) ? texts.map((t, i) => [t, String(out.texts[i] ?? t)]) : []);
+  if (JSON.stringify([...resolved]) !== JSON.stringify([...live.resolved])) {
+    live.resolved = resolved;
+    live.version++;
+    draw();
+  }
+  showLiveNote();
+}
+
+function showLiveNote() {
+  const down = live.player === false;
+  $("dataNote").hidden = !down;
+  $("liveNote").hidden = !(down && liveTexts().length);
+}
+
+/** A value as the table shows it: near the player's default form. */
+function formatValue(v) {
+  if (typeof v === "number") return String(Math.round(v * 10) / 10);
+  if (typeof v === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d/.test(v) && !isNaN(Date.parse(v))) {
+    const d = new Date(v), time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+    return d.toDateString() === new Date().toDateString() ? time : `${d.toLocaleDateString([], { weekday: "short" })} ${time}`;
+  }
+  return v === null || v === undefined ? "--" : typeof v === "object" ? JSON.stringify(v) : String(v);
+}
+
+/** One value: its key and value, clicked to put {key} in the selected text. */
+function valueRow(key, entry) {
+  const full = entry !== null && typeof entry === "object" && "value" in entry, v = full ? entry.value : entry;
+  const b = make("button", `dv${full && entry.stale ? " stale" : ""}`);
+  b.append(make("span", "k", key), make("span", "v", formatValue(v)));
+  b.title = `Click to put {${key}} in the selected text` + (full ? `\nFrom ${entry.source || "?"}, read ${
+    entry.at ? new Date(entry.at).toLocaleString() : "?"}${entry.stale ? ": stale, no update for a while" : ""}` : "");
+  b.addEventListener("click", () => insertKey(key));
+  return b;
+}
+
+function showValues() {
+  const words = $("dataFilter").value.toLowerCase().split(/\s+/).filter(Boolean), all = Object.keys(live.values);
+  const rows = all.sort().filter((k) => words.every((word) => k.includes(word))).map((k) => valueRow(k, live.values[k]));
+  if (!rows.length) {
+    rows.push(make("div", "empty small", live.player === false ? "None: the player isn't running."
+      : all.length ? "Nothing matches." : live.player ? "No values yet." : "Asking the player…"));
+  }
+  $("dataValues").replaceChildren(...rows);
+}
+
+async function refreshValues() {
+  let out;
+  try { out = await (await api("/api/data/values")).json(); } catch { out = { player: false }; }
+  live.player = out.player !== false;
+  live.values = live.player && !out.error ? out : {};
+  showValues();
+  showLiveNote();
+}
+
+/** Puts {key} into the selected text where its cursor is: at the end when it hasn't been in it. */
+function insertKey(key) {
+  const w = selectedWidget(), el = $("wText");
+  if (!w) return message("Select a text first (in Text, above): the value goes into it.", "warn");
+  const text = String(w.text ?? ""), put = `{${key}}`;
+  if (el.value !== text) el.value = text;
+  const at = el.selectionStart, end = el.selectionEnd;
+  w.text = text.slice(0, at) + put + text.slice(end);
+  textChanged();
+  if (el.value !== w.text) el.value = w.text;
+  el.setSelectionRange(at + put.length, at + put.length);  // the next one goes after it
+}
+
+/** This type's source in data.json: the first of that type, added when `add` and there isn't one. */
+function sourceFor(type, add = true) {
+  const list = live.config.sources;
+  let s = list.find((x) => x && x.type === type);
+  if (!s && add) list.push(s = { type, enabled: false, ...structuredClone(DATA_TYPES[type]) });
+  return s;
+}
+
+function showDataConfig() {
+  for (const card of document.querySelectorAll("#dataSection .card")) {
+    const type = card.dataset.source, s = { enabled: false, ...DATA_TYPES[type], ...(live.config && sourceFor(type, false)) };
+    for (const el of card.querySelectorAll("[data-k]")) {
+      const k = el.dataset.k;
+      el.disabled = !live.config;
+      if (el === document.activeElement) continue;  // being typed in
+      if (el.type === "checkbox") el.checked = !!s[k];
+      else if (k === "entities") el.value = (Array.isArray(s.entities) ? s.entities : []).join("\n");
+      else if (k === "token") {  // never shown: only whether there is one
+        el.value = "";
+        el.placeholder = s.token_set ? "Token set: type a new one to replace it" : "Long-lived access token";
+      } else el.value = s[k] ?? "";
+    }
+  }
+}
+
+/** Saves the sources a moment after the last change. A token typed in goes once; the studio keeps it. */
+function saveDataSoon() { clearTimeout(live.saveTimer); live.saveTimer = setTimeout(saveData, 500); }
+function saveData() {
+  clearTimeout(live.saveTimer);
+  live.saveTimer = 0;
+  const body = { sources: structuredClone(live.config.sources) };  // the rest of data.json stays as it is
+  for (const s of live.config.sources) if (s && s.token) { delete s.token; s.token_set = true; }
+  live.saving = live.saving.then(() => postJson("/api/data/config", body, { keepalive: true }))
+    .then(() => showDataConfig(), (err) => message(`Couldn't save the data sources: ${err.message}`, "warn"));
+  return live.saving;
+}
+window.addEventListener("pagehide", () => { if (live.saveTimer) saveData(); });
+
+async function loadDataConfig() {
+  try {
+    const res = await api("/api/data/config"), out = await res.json();
+    if (!res.ok) throw new Error(out.error || res.statusText);
+    live.config = { ...out, sources: Array.isArray(out.sources) ? out.sources : [] };
+  } catch (err) {
+    message(`Couldn't read the data sources: ${err.message}`, "warn");
+  }
+  showDataConfig();
+}
+
+/** Runs one source as it's set up on its card, once, and shows what it gives. */
+async function testSource(card) {
+  const type = card.dataset.source, out = card.querySelector(".test-out"), button = card.querySelector("[data-test]");
+  const show = (cls, ...content) => { out.className = `test-out small ${cls}`; out.replaceChildren(...content); };
+  button.disabled = true;
+  show("muted", "Testing…");
+  try {
+    const res = await postJson("/api/data/test", { source: { ...DATA_TYPES[type], ...(live.config && sourceFor(type, false)), type, enabled: true } });
+    const values = res.values && typeof res.values === "object" ? res.values : {}, keys = Object.keys(values).sort();
+    if (res.player === false) show("warn", "The player isn't running: start it with Play on cooler to test.");
+    else if (res.error) show("warn", String(res.error));
+    else if (!keys.length) show("muted", "It worked, but gave no values.");
+    else {
+      const list = make("div", "values");
+      list.append(...keys.map((k) => valueRow(k, values[k])));
+      show("", make("span", "info", `${keys.length} value${keys.length > 1 ? "s" : ""}, now:`), list);
+    }
+  } catch (err) {
+    show("warn", err.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+for (const card of document.querySelectorAll("#dataSection .card")) {
+  const type = card.dataset.source;
+  for (const el of card.querySelectorAll("[data-k]")) {
+    const k = el.dataset.k, onInput = k === "url" || k === "entities";  // the rest when done: a whole token, say
+    el.addEventListener(onInput ? "input" : "change", () => {
+      if (!live.config) return;
+      const s = sourceFor(type);
+      if (el.type === "checkbox") s[k] = el.checked;
+      else if (k === "interval") {
+        const v = parseInt(el.value, 10);
+        if (!(v > 0)) return;
+        s.interval = Math.max(+el.min, v);
+      } else if (k === "entities") s.entities = el.value.split("\n").map((e) => e.trim()).filter(Boolean);
+      else if (k === "token") {
+        if (!el.value.trim()) return;
+        s.token = el.value.trim();
+      } else s[k] = el.value.trim();
+      saveDataSoon();
+    });
+  }
+  card.querySelector("[data-test]").addEventListener("click", () => testSource(card));
+}
+$("dataFilter").addEventListener("input", showValues);
+$("showRaw").addEventListener("change", () => { live.raw = $("showRaw").checked; live.version++; draw(); });
+setInterval(() => { if (!document.hidden) { refreshValues(); resolveTexts(); } }, 10000);
 
 // --- Wiring --------------------------------------------------------------------------
 
@@ -1568,6 +1845,8 @@ requestAnimationFrame(function tick(now) {
     SAFE = cfg.safe;
     CAMERA = cfg.camera;
     if (cfg.font) DEFAULT_FONT = cfg.font;
+    loadDataConfig();
+    refreshValues();
     screenCv.width = W;
     screenCv.height = H;
     layout();

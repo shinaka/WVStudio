@@ -59,6 +59,24 @@ about as long as the clip.
 **Export files** writes the same layout to `out/` as PNG (animated if the art is), GIF or MP4, for use
 elsewhere.
 
+## Text and live data
+
+The **Text** section adds text to the current piece, or to the layer drawn **on top of everything**. Text
+can show live values: write `{claude.week:d}%` or `GPU {pc.gpu.temp:d}°C`. The **Data** section sets up
+where values come from, and lists the current ones (click one to insert it):
+
+- **Claude usage:** the session (5-hour) and weekly percentages and when they reset, from the endpoint
+  Claude Code's `/usage` uses. It reads Claude Code's own login each time and never refreshes or stores
+  it, so the values go stale if Claude Code hasn't run for a while.
+- **PC sensors:** CPU load, RAM, and NVIDIA GPU temperature, load, power and memory. CPU temperature and
+  every other HWiNFO sensor need HWiNFO running with **Shared Memory Support** on.
+- **Home Assistant:** any entities, via your HA address and a long-lived token. The token only ever goes
+  to the address it was entered with.
+
+Each source has its own interval (default 60 s). Write a placeholder as `{key}`, `{key:d}`, `{key:.1f}`,
+`{time:%H:%M}` or `{key|fallback}`. The full spec is in `docs/data.md` and `docs/widgets.md`. Settings are
+in `playlist/data.json`.
+
 ## Using the studio from other devices
 
 Make a `studio.json` next to `wv.py`:
