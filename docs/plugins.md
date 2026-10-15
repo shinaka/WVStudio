@@ -393,7 +393,8 @@ A setting of type `password` is for API keys and tokens:
   text settings are as saved.
 - **Changing any `text` setting drops the saved password**, so it has to be typed again. The studio assumes a
   text setting might be the server the secret is sent to, and a secret only ever goes back to the server it
-  was entered for. That holds even when your text setting isn't an address.
+  was entered for. That holds even when your text setting isn't an address. The password box goes back to
+  "Not set" at once, and the window says the password was cleared.
 - **Your plugin must not print the secret.** Error messages, and the end of stderr when the plugin crashes,
   are logged and shown in the studio. See [Security](#security).
 

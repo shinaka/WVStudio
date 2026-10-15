@@ -570,7 +570,8 @@ BUILTIN_CATALOG = [
                   {"key": "lhm_user", "label": "Libre Hardware Monitor user name", "type": "text", "default": "",
                    "help": "Only if its Options > Remote Web Server > Authentication is on: the user name set there."},
                   {"key": "lhm_password", "label": "Libre Hardware Monitor password", "type": "password",
-                   "help": "The password set in its Options > Remote Web Server > Authentication."}],
+                   "help": "The password set in its Options > Remote Web Server > Authentication. Changing the address "
+                           "or user name clears it, so type it last."}],
      "provides": [{"key": "pc.cpu.load", "label": "CPU load", "unit": "%", "kind": "number"},
                   {"key": "pc.cpu.temp", "label": "CPU temperature", "unit": "°C", "kind": "number"},
                   {"key": "pc.ram.used_gb", "label": "RAM used", "unit": "GB", "kind": "number"},
@@ -595,6 +596,9 @@ BUILTIN_CATALOG = [
      "settings": [], "provides": [{"key": "time", "label": "Now", "kind": "time"}]},
 ]
 SECRET_KEY = re.compile(r"(^|_)(token|password|secret|api_?key)$", re.I)  # a setting that must be a password
+# Settings saved as typed, spaces at the ends included: LHM compares its user name and password exactly. Every other
+# text setting and password (an address, a pasted token) is trimmed.
+AS_TYPED = {"pc": {"lhm_user", "lhm_password"}}
 catalog_cache = []  # the player's catalog as last seen, so password settings stay known when it's down
 plugins_folder_seen = ""  # where the player said its plugins are, when it has
 
@@ -744,7 +748,8 @@ def check_setting(kind, spec, v):
         return [e.strip() for e in v if e.strip()]
     if t == "choice" and isinstance(spec.get("choices"), list) and spec["choices"] and v not in spec["choices"]:
         raise ValueError(f"{kind}: {k} must be one of {', '.join(map(str, spec['choices']))}")
-    return v.strip() if isinstance(v, str) and t in ("text", "choice") else v
+    trim = t in ("text", "choice") and k not in AS_TYPED.get(kind, ())
+    return v.strip() if isinstance(v, str) and trim else v
 
 
 def save_data_config(req):
@@ -773,8 +778,8 @@ def save_data_config(req):
                 merged = {**was, **{k: v for k, v in s.items() if k not in secrets and k not in flags}}
                 for k in secrets:
                     new = s.get(k)
-                    if isinstance(new, str) and new.strip():
-                        merged[k] = new.strip()
+                    if isinstance(new, str) and new.strip():  # one that's all spaces is blank, as in LHM
+                        merged[k] = new if k in AS_TYPED.get(kind, ()) else new.strip()
                     elif not same_server(kind, merged, was):
                         # a saved secret only ever goes back to the server it was given for: anyone who can reach
                         # the studio could otherwise point the address at their own and have it sent there

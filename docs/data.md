@@ -83,8 +83,11 @@ player polls them and draws the text.
       and `http://` is assumed when no scheme is given. A trailing `/data.json` (the address a browser
       shows for the data) is dropped, and so is a user name and password written into it
       (`http://user:password@...`): the address shows in notes and in the studio, so use the next two.
+      LHM's address has no `@` of its own, so that's everything up to the last `@` after the scheme, even
+      when the password holds a `/`, `?` or `#`.
     - `lhm_user` (default blank) and `lhm_password` (a secret, like the HA token): the user name and
       password set in LHM's Options > Remote Web Server > Authentication. When either is set, they're sent.
+      Both are kept and sent as typed, spaces at either end included, since LHM compares them exactly.
       Changing `lhm_url` or `lhm_user` in the studio drops the saved password, so it has to be typed again
       (see [The studio](#the-studio)).
   - **From Windows:**
@@ -106,8 +109,9 @@ player polls them and draws the text.
         user:password>`, HTTP Basic, the only kind LHM takes. That goes to `lhm_url` alone:
         - never through a proxy, wherever the address is;
         - and no redirect is followed, with or without a login (LHM never redirects, so one is a note).
-      - **How LHM checks it** (its `HttpServer.cs`, on .NET's `HttpListener`, the same in 0.9.6 and its
-        current code):
+      - **How LHM checks it** (its `HttpServer.cs`, on .NET's `HttpListener`; 0.9.6 and its current code
+        check the same way, but 0.9.6 and earlier lose the password each time LHM starts: see step 4 of the
+        setup below):
         - Every path, `data.json` and `/Sensor` included, is behind the check.
         - A request with no login gets 401 and `WWW-Authenticate: Basic realm="Libre Hardware Monitor"`.
         - The base64 is read as Latin-1, then split at the first `:`. The user name must match exactly,
@@ -162,11 +166,13 @@ player polls them and draws the text.
     - **If LHM wants a login** (HTTP 401), the note says which case it is. `<url>` never holds a user name
       or password, and no note, log line, error or `/test` answer ever holds the password.
       - **None was set:** "Libre Hardware Monitor at `<url>` asks for a user name and password (its
-        Options > Remote Web Server > Authentication is on): set them on This PC in the studio's Data
-        sources window".
+        Options > Remote Web Server > Authentication is on, or was only just turned off: then turn Remote
+        Web Server > Run off and on): set them on This PC in the studio's Data sources window". A running
+        server keeps asking for a login after Authentication is unticked, until Run is turned off and on.
       - **The one set was refused:** "Libre Hardware Monitor at `<url>` refused the user name or password:
         check them against its Options > Remote Web Server > Authentication (if Authentication was only
-        just turned on, turn Remote Web Server > Run off and on)".
+        just turned on, turn Remote Web Server > Run off and on). LHM 0.9.6 and earlier lose that password
+        whenever LHM restarts: type it there again".
       - **One LHM could never accept** (see above) is refused with why: "... it can't check a user name
         with a ':' in it, or any character outside Latin-1 (like €), so choose others ...".
   - **`pc.cpu.temp`** is the CPU die temperature:
@@ -201,9 +207,9 @@ hours.
    - Under Options > Remote Web Server > Interface / Port, set the port to 8085, the player's default.
    - Then click Options > Remote Web Server > Run. LHM remembers this.
 4. **Turn on Authentication.** This is the step to get right.
-   - **Why:** LHM's web server can't be kept to this PC. It listens on the PC's network addresses, and this
-     PC's firewall is off for Private networks. With no password, anyone who reaches port 8085 can read
-     every sensor. They can also change fan and pump control values
+   - **Why:** LHM 0.9.6's web server can't be kept to this PC (see step 5). It listens on the PC's network
+     addresses, and this PC's firewall is off for Private networks. With no password, anyone who reaches
+     port 8085 can read every sensor. They can also change fan and pump control values
      (`GET /Sensor?action=Set&id=...&value=...`) and reset min/max, and so can any web page open in a
      browser on this PC.
    - **How:** click Options > Remote Web Server > Authentication. In the "Set HTTP Credentials" dialog:
@@ -214,12 +220,24 @@ hours.
      dialog says, a running server only takes the change once restarted. Until then it refuses every
      request, even one with the right password. (A new user name or password alone takes at once.)
    - **Choosing them:**
-     - The user name is matched exactly, case included, and can't contain `:`.
+     - Both are matched exactly, case and spaces at either end included. The user name can't contain `:`.
      - Use only Latin-1 characters (no €, say): LHM can't match anything else, whatever sends it.
      - LHM keeps only the password's SHA-256, unsalted, in `LibreHardwareMonitor.config` beside its exe.
        If you forget it, set a new one. So pick a long random one you use nowhere else.
-     - Leave the password blank to keep the one already set. A blank password the first time leaves no
-       password at all, and every login is refused.
+   - **Clicking OK in that dialog again later** depends on the version. The password box always opens
+     empty.
+     - **0.9.6 and earlier:** OK always sets the password to what's in the box. So type the password each
+       time you click OK there, or click Cancel. OK with the box blank sets an empty password: LHM then
+       lets in the user name with no password, and refuses the one the player sends.
+     - **Builds with LHM's fix 95e97cf** (May 2026, in no release yet): a blank box keeps the password
+       already set. A blank one the first time leaves no password at all, and every login is refused.
+   - **0.9.6 and earlier lose the password each time LHM starts.** They store the password's hash, then
+     hash that again when they start, so once LHM restarts (closed and opened again, or at a reboot), the
+     password set there no longer matches. The player's note then says LHM refused it.
+     - **Each time,** open Options > Remote Web Server > Authentication, type the password again (the
+       user name is still there) and click OK. That takes at once, with no restart of the web server.
+     - **Or use a build that has the fix** (95e97cf, May 2026; 0.9.6, February 2026, is the latest
+       release): a nightly build, linked under "Nightly builds" in LHM's README, or the next release.
    - **Check it:** open <http://127.0.0.1:8085/> (or the address you chose) in a browser. It should ask
      for the user name and password. A browser that has logged in can send the login with other pages' requests to LHM, so
      close it afterwards.
@@ -227,10 +245,13 @@ hours.
    password unencrypted, so it's safe to read only on this PC (`lhm_url` at 127.0.0.1, the default).
    - **The aim** would be to listen on 127.0.0.1 only, never on 0.0.0.0. 0.0.0.0 publishes the server to
      every network the PC is on.
-   - **LHM can't do it by itself (0.9.6, and its current code).** Its Interface list offers only the PC's
-     own network addresses and 0.0.0.0. When the address it's set to isn't one of those, including
-     127.0.0.1 typed into its `.config`, it listens on every interface instead.
-   - **What helps:**
+   - **LHM 0.9.6 can't do it by itself.** Its Interface list offers only the PC's own network addresses
+     and 0.0.0.0. When the address it's set to isn't one of those, including 127.0.0.1 typed into its
+     `.config`, it listens on every interface instead.
+   - **LHM's code can since 47287b6** (October 2026, in no release yet). Its Options > Remote Web Server >
+     Interface / Port list also offers 127.0.0.1. With a build that has it, choose 127.0.0.1 there: that
+     is the aim above, other machines can't even connect, and `lhm_url` stays at the default.
+   - **What helps with 0.9.6:**
      - **Windows Firewall on for the Private profile**, with no allow rule for port 8085, keeps other
        machines out. This PC's own requests always get through.
      - **Choosing the PC's LAN address** limits the server to that one network. `lhm_url` must then be
@@ -241,12 +262,16 @@ hours.
    - Ticked without elevation, LHM uses the registry Run key instead, and CPU temperatures go missing after
      a restart.
    - Start Minimized and Minimize To Tray keep it out of the way.
+   - With 0.9.6 or earlier, every start of LHM loses the Authentication password (step 4), so the
+     `lhm.*` values stop after every reboot until it's typed again in LHM; a build with the fix keeps it.
+     Authentication is still worth that: without it, step 4's risks stay open.
 7. **Turn it on in the studio:**
    - In the Data sources window, on This PC, tick **Read Libre Hardware Monitor sensors**.
-   - Change **Libre Hardware Monitor address** only if the port or interface changed. Do that before the
-     password: changing the address (or the user name) drops the saved password.
-   - Type the user name from step 4 in **Libre Hardware Monitor user name**, and the password in
-     **Libre Hardware Monitor password**. The password box then shows "Set"; it never shows the password.
+   - Change **Libre Hardware Monitor address** only if the port or interface changed.
+   - Type the user name from step 4 in **Libre Hardware Monitor user name**, then the password in
+     **Libre Hardware Monitor password**, last: changing the address or the user name clears a saved
+     password. The password box then shows "Set"; it never shows the password. When a change clears it,
+     the box goes back to "Not set" and the window says so.
    - **Test** lists the `lhm.*` keys, or, under the other values, why LHM didn't answer, or that it asks for
      a login, or refused this one.
 
@@ -284,8 +309,11 @@ hours.
     Monitor and its address, user name and password; HA: URL, token, entities).
   - The HA token and LHM password boxes are write-only: they show "set" and let you replace it.
   - A saved password only ever goes back to where it was typed for. Changing any text setting of its
-    source (HA's URL; LHM's address or user name) drops it, so it has to be typed again. The Test button
-    uses the saved one only while those are unchanged, and the player checks that again.
+    source (HA's URL; LHM's address or user name) drops it, so it has to be typed again. The box then
+    shows "Not set" again, and the window says the password was cleared. The Test button uses the saved
+    one only while those are unchanged, and the player checks that again.
+  - Text settings and passwords are saved trimmed, except LHM's user name and password, which are saved
+    as typed because LHM compares them exactly. A password that's all spaces counts as blank.
   - A **Test** button shows the values that source returns now, or its error, and its notes on parts it
     skipped (LHM not answering, say).
   - Changes save to data.json.

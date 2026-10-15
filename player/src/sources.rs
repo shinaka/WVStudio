@@ -317,17 +317,22 @@ fn lhm(url: &str, login: Option<(&str, &str)>) -> Result<(Vec<(String, Value)>, 
     let auth = login.map(|(user, password)| basic_auth(user, password));
     let headers: Vec<(&str, &str)> = auth.iter().map(|a| ("Authorization", a.as_str())).collect();
     let reply = get(&format!("{base}/data.json"), &headers, &lhm_fetch(&base, login.is_some())).map_err(|e| match (e.status, login) {
+        // a running server keeps asking for a login, even with Authentication unticked, until Run is
+        // turned off and on
         (Some(401), None) => format!(
             "Libre Hardware Monitor at {base} asks for a user name and password (its Options > Remote Web Server > \
-             Authentication is on): set them on This PC in the studio's Data sources window"),
+             Authentication is on, or was only just turned off: then turn Remote Web Server > Run off and on): set \
+             them on This PC in the studio's Data sources window"),
         (Some(401), Some((user, password))) if !lhm_can_check(user, password) => format!(
             "Libre Hardware Monitor at {base} refused the user name or password: it can't check a user name with a ':' \
              in it, or any character outside Latin-1 (like €), so choose others in its Options > Remote Web Server > \
              Authentication, and on This PC"),
+        // LHM up to 0.9.6 hashes the stored hash again at each start, so the password set there stops
+        // working whenever LHM restarts (fixed in its code by 95e97cf, in no release yet)
         (Some(401), Some(_)) => format!(
             "Libre Hardware Monitor at {base} refused the user name or password: check them against its Options > \
              Remote Web Server > Authentication (if Authentication was only just turned on, turn Remote Web Server > \
-             Run off and on)"),
+             Run off and on). LHM 0.9.6 and earlier lose that password whenever LHM restarts: type it there again"),
         _ => not_answering(&lhm_why(&e)),
     })?;
     let tree = serde_json::from_str::<Json>(&reply).ok().filter(|tree| tree["Children"].is_array());
@@ -401,22 +406,24 @@ fn lhm_why(e: &Failure) -> String {
 /// The address as set: the default when blank, `http://` when it names no scheme, without a trailing `/`
 /// or `/data.json` (the address a browser shows for the data, which LHM's server would take as a file).
 /// A user name and password written into it (`http://user:password@host`) are dropped: the address shows
-/// in notes and in the studio, so the login only ever comes from its own settings.
+/// in notes and in the studio, so the login only ever comes from its own settings. LHM's address never
+/// has an `@` of its own, so that's everything up to the last `@` after the scheme, however it's written
+/// (a `/`, `?` or `#` in the password, or `http:/` for `http://`, would otherwise hide where it ends).
 fn lhm_base(url: &str) -> String {
     let url = url.trim().trim_end_matches('/');
     // ASCII lowercasing keeps every byte where it was, so the end that matched is the same length
     let url = if url.to_ascii_lowercase().ends_with("/data.json") { url[..url.len() - 10].trim_end_matches('/') } else { url };
-    let url = match url {
-        "" => LHM_URL.to_string(),
-        url if url.contains("://") => url.to_string(),
-        url => format!("http://{url}"),
-    };
-    let Some((scheme, rest)) = url.split_once("://") else { return url };
-    let authority = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
-    match authority.rfind('@') {
-        Some(at) => format!("{scheme}://{}", &rest[at + 1..]),
-        None => url,
+    if url.is_empty() {
+        return LHM_URL.to_string();
     }
+    // a scheme is a letter, then letters, digits, `+`, `-` and `.`: a `://` after anything else is in the login
+    let scheme = |s: &str| s.starts_with(|c: char| c.is_ascii_alphabetic()) && s.chars().all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c));
+    let (scheme, rest) = match url.split_once("://") {
+        Some((name, rest)) if scheme(name) => (name, rest),
+        _ => ("http", url),
+    };
+    let rest = rest.rsplit_once('@').map_or(rest, |(_, host)| host);
+    format!("{scheme}://{rest}")
 }
 
 /// Adds Libre Hardware Monitor's values to the pc poll's. HWiNFO's `pc.cpu.temp`, when it gave one, wins.
@@ -1315,7 +1322,13 @@ mod tests {
         assert_eq!(lhm_base("http://admin:hunter2@127.0.0.1:8085"), "http://127.0.0.1:8085");
         assert_eq!(lhm_base("admin:hunter2@192.168.1.5:8086/data.json"), "http://192.168.1.5:8086");
         assert_eq!(lhm_base("http://a@b:p@ss@host/lhm"), "http://host/lhm");
-        assert_eq!(lhm_base("http://host/path@x"), "http://host/path@x");
+        // up to the last '@', even where a '/', '?' or '#' in the password, or a mistyped scheme, would end it
+        for (url, base) in [("http://cooler:a/b@127.0.0.1:8085", "http://127.0.0.1:8085"), ("http://cooler:a?b@host", "http://host"),
+                            ("http://cooler:a#b@host/data.json", "http://host"), ("http:/cooler:pw@host:8086", "http://host:8086"),
+                            ("cooler:a://b@host", "http://host"), ("https://u:p\\@host", "https://host"),
+                            ("http://host/path@x", "http://x"), ("http://cooler:pw@", "http://")] {
+            assert_eq!(lhm_base(url), base, "{url}");
+        }
     }
 
     /// A tree with one CPU (`id`, `icon`: how it's marked) holding these temperatures, after a GPU's.
@@ -1508,12 +1521,15 @@ mod tests {
         let note = lhm(&url, None).unwrap_err();
         assert_eq!(seen(&requests).1, None);
         assert_eq!(note, format!("Libre Hardware Monitor at {url} asks for a user name and password (its Options > Remote Web \
-                                  Server > Authentication is on): set them on This PC in the studio's Data sources window"));
-        // a wrong password or user name (LHM compares both exactly), or only one of them
+                                  Server > Authentication is on, or was only just turned off: then turn Remote Web Server > Run \
+                                  off and on): set them on This PC in the studio's Data sources window"));
+        // a wrong password or user name (LHM compares both exactly, spaces too), or only one of them
         let refused = format!("Libre Hardware Monitor at {url} refused the user name or password: check them against its Options > \
                                Remote Web Server > Authentication (if Authentication was only just turned on, turn Remote Web \
-                               Server > Run off and on)");
-        for (u, p) in [(user, "pässwörd 8"), (user, "PÄSSWÖRD 7"), ("Cooler", password), ("", password), (user, "")] {
+                               Server > Run off and on). LHM 0.9.6 and earlier lose that password whenever LHM restarts: type \
+                               it there again");
+        for (u, p) in [(user, "pässwörd 8"), (user, "PÄSSWÖRD 7"), ("Cooler", password), ("", password), (user, ""),
+                       (user, "pässwörd 7 "), (" cooler", password)] {
             assert_eq!(lhm(&url, Some((u, p))), Err(refused.clone()), "{u:?}");
             assert_eq!(seen(&requests).1, Some(basic_auth(u, p)));
         }
@@ -1558,11 +1574,15 @@ mod tests {
         check(&lhm(&url, Some(("cooler", password))).unwrap_err());
         seen(&requests);
         // a password written into the address is dropped, from the request and from the note
-        let at = url.replace("http://", &format!("http://cooler:{password}@"));
-        let note = lhm(&at, None).unwrap_err();
-        check(&note);
-        assert!(note.starts_with(&format!("Libre Hardware Monitor at {url} asks")), "{note}");
-        assert_eq!(seen(&requests).1, None);
+        let host = url.trim_start_matches("http://");
+        for at in [format!("http://cooler:{password}@{host}"), format!("http://cooler:{password}/x@{host}"),
+                   format!("http://cooler:{password}?x@{host}"), format!("http://cooler:{password}#x@{host}"),
+                   format!("http:/cooler:{password}@{host}"), format!("cooler:{password}/x@{host}/data.json")] {
+            let note = lhm(&at, None).unwrap_err();
+            check(&note);
+            assert!(note.starts_with(&format!("Libre Hardware Monitor at {url} asks")), "{note}");
+            assert_eq!(seen(&requests).1, None);
+        }
         let (url, _requests) = serve(vec![http("404 Not Found", ""), http("200 OK", "<html>"), http("500 Internal Server Error", password),
                                           http("302 Found", "").replace("\r\n\r\n", &format!("\r\nLocation: http://x/{password}\r\n\r\n"))]);
         for _ in 0..4 {
