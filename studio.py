@@ -566,7 +566,11 @@ BUILTIN_CATALOG = [
      "settings": [{"key": "hwinfo", "label": "Read HWiNFO too", "type": "bool", "default": False},
                   {"key": "lhm", "label": "Read Libre Hardware Monitor sensors", "type": "bool", "default": False},
                   {"key": "lhm_url", "label": "Libre Hardware Monitor address", "type": "text",
-                   "default": "http://127.0.0.1:8085"}],
+                   "default": "http://127.0.0.1:8085"},
+                  {"key": "lhm_user", "label": "Libre Hardware Monitor user name", "type": "text", "default": "",
+                   "help": "Only if its Options > Remote Web Server > Authentication is on: the user name set there."},
+                  {"key": "lhm_password", "label": "Libre Hardware Monitor password", "type": "password",
+                   "help": "The password set in its Options > Remote Web Server > Authentication."}],
      "provides": [{"key": "pc.cpu.load", "label": "CPU load", "unit": "%", "kind": "number"},
                   {"key": "pc.cpu.temp", "label": "CPU temperature", "unit": "°C", "kind": "number"},
                   {"key": "pc.ram.used_gb", "label": "RAM used", "unit": "GB", "kind": "number"},
@@ -668,14 +672,19 @@ def settings_of(kind):
     return {s["key"]: s for s in manifest(kind).get("settings", []) if isinstance(s, dict) and isinstance(s.get("key"), str)}
 
 
+def keys_of_type(kind, t):
+    """The keys of a source's settings of one type: in its manifest, and for a built-in, in BUILTIN_CATALOG too, so
+    a player from before a setting was added (still running, say) can't make the studio forget what it is."""
+    builtin = [s for m in BUILTIN_CATALOG if m["id"] == kind for s in m["settings"]]
+    return {k for k, s in settings_of(kind).items() if s.get("type") == t} | {s["key"] for s in builtin if s.get("type") == t}
+
+
 def password_keys(kind, source=()):
     """The settings of a source that are secrets: never returned, never logged. Besides the manifest's `password`
-    settings, any key that looks like one (`token`, `api_key`), so a plugin's secret is kept back even before the
-    player has told us its manifest."""
-    keys = {k for k, s in settings_of(kind).items() if s.get("type") == "password"}
+    settings (Home Assistant's token, Libre Hardware Monitor's password, a plugin's), any key that looks like one
+    (`token`, `api_key`), so a plugin's secret is kept back even before the player has told us its manifest."""
+    keys = keys_of_type(kind, "password")
     keys |= {k for k in source if isinstance(k, str) and SECRET_KEY.search(k)}
-    if kind == "homeassistant":
-        keys.add("token")
     return keys
 
 
@@ -698,9 +707,10 @@ def data_config():
 def same_server(kind, a, b):
     """Whether two settings of a source point at the same place: every `text` setting in its manifest (and `url`,
     whatever the manifest says) the same, compared trimmed, without a trailing /, and ignoring case. A plugin can
-    call its server setting anything, so all of them count; lists, numbers, bools and choices may differ freely."""
+    call its server setting anything, so all of them count; lists, numbers, bools and choices may differ freely.
+    A user name counts too (This PC's lhm_user, beside lhm_url): a password goes with the login it was typed for."""
     norm = lambda v: v.strip().rstrip("/").lower() if isinstance(v, str) else ""
-    keys = {k for k, s in settings_of(kind).items() if s.get("type") == "text"} | {"url"}
+    keys = keys_of_type(kind, "text") | {"url"}
     return all(norm(a.get(k)) == norm(b.get(k)) for k in keys)
 
 

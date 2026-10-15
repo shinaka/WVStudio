@@ -36,7 +36,8 @@ player polls them and draws the text.
   "sources": [
     { "type": "claude", "enabled": true, "interval": 300 },
     { "type": "pc", "enabled": true, "interval": 60, "hwinfo": false,
-      "lhm": true, "lhm_url": "http://127.0.0.1:8085" },
+      "lhm": true, "lhm_url": "http://127.0.0.1:8085",
+      "lhm_user": "cooler", "lhm_password": "<LHM password>" },
     { "type": "homeassistant", "enabled": true, "interval": 60,
       "url": "http://homeassistant.local:8123", "token": "<long-lived token>",
       "entities": ["sensor.living_room_temperature", "weather.home"] }
@@ -52,8 +53,8 @@ player polls them and draws the text.
   last success is younger than its interval isn't polled again at start. A source that is told to wait
   (429 or 503, honouring `Retry-After`), or Claude on any error, backs off: 2, 4, 8 minutes, up to 30.
 - `time` is built in and always there.
-- The file lives in `playlist/`, which is gitignored, because it holds the HA token. The token is never
-  logged, and never sent back to the browser.
+- The file lives in `playlist/`, which is gitignored, because it holds the HA token and LHM's password.
+  Neither is ever logged, shown in a note or an error, or sent back to the browser.
 
 ### Keys each source provides
 
@@ -80,7 +81,12 @@ player polls them and draws the text.
     - `lhm` (default `false`): read Libre Hardware Monitor (LHM) too.
     - `lhm_url` (default `http://127.0.0.1:8085`): where LHM's web server answers. Blank means the default,
       and `http://` is assumed when no scheme is given. A trailing `/data.json` (the address a browser
-      shows for the data) is dropped.
+      shows for the data) is dropped, and so is a user name and password written into it
+      (`http://user:password@...`): the address shows in notes and in the studio, so use the next two.
+    - `lhm_user` (default blank) and `lhm_password` (a secret, like the HA token): the user name and
+      password set in LHM's Options > Remote Web Server > Authentication. When either is set, they're sent.
+      Changing `lhm_url` or `lhm_user` in the studio drops the saved password, so it has to be typed again
+      (see [The studio](#the-studio)).
   - **From Windows:**
     - `pc.cpu.load` in percent, from GetSystemTimes deltas.
     - From GlobalMemoryStatusEx: `pc.ram.used_gb`, `pc.ram.total_gb` and `pc.ram.used_pct`.
@@ -96,6 +102,18 @@ player polls them and draws the text.
       - On this PC (127.0.0.1, ::1, localhost) it never goes through a proxy that `HTTP_PROXY` or
         `ALL_PROXY` names. `localhost` is asked at 127.0.0.1 only: LHM answers there whenever it answers at
         ::1, and Windows takes about 2 s to give up on each address.
+      - **With `lhm_user` or `lhm_password` set**, it carries `Authorization: Basic <base64 of
+        user:password>`, HTTP Basic, the only kind LHM takes. That goes to `lhm_url` alone:
+        - never through a proxy, wherever the address is;
+        - and no redirect is followed, with or without a login (LHM never redirects, so one is a note).
+      - **How LHM checks it** (its `HttpServer.cs`, on .NET's `HttpListener`, the same in 0.9.6 and its
+        current code):
+        - Every path, `data.json` and `/Sensor` included, is behind the check.
+        - A request with no login gets 401 and `WWW-Authenticate: Basic realm="Libre Hardware Monitor"`.
+        - The base64 is read as Latin-1, then split at the first `:`. The user name must match exactly,
+          case included. The password's SHA-256 (of its UTF-8) must match the stored hash.
+        - So the player sends the login as Latin-1 bytes. One with a character outside Latin-1 (like €),
+          or a user name with a `:`, can never match there, and the note says so.
       - A reply over 4 MB isn't read (a real one is well under 1 MB). At most 4096 sensors are read, with a
         note when there are more.
     - **The reply** is LHM's sensor tree. It goes: a root ("Sensor"), the computer, its hardware (which can
@@ -141,6 +159,16 @@ player polls them and draws the text.
       "Libre Hardware Monitor isn't answering at `<url>` (why): check that it's running, with Options >
       Remote Web Server on". The rest of the pc values come through as usual: the pc source doesn't fail
       or back off.
+    - **If LHM wants a login** (HTTP 401), the note says which case it is. `<url>` never holds a user name
+      or password, and no note, log line, error or `/test` answer ever holds the password.
+      - **None was set:** "Libre Hardware Monitor at `<url>` asks for a user name and password (its
+        Options > Remote Web Server > Authentication is on): set them on This PC in the studio's Data
+        sources window".
+      - **The one set was refused:** "Libre Hardware Monitor at `<url>` refused the user name or password:
+        check them against its Options > Remote Web Server > Authentication (if Authentication was only
+        just turned on, turn Remote Web Server > Run off and on)".
+      - **One LHM could never accept** (see above) is refused with why: "... it can't check a user name
+        with a ':' in it, or any character outside Latin-1 (like €), so choose others ...".
   - **`pc.cpu.temp`** is the CPU die temperature:
     - **HWiNFO's**, when HWiNFO is on and gave one: the reading labelled like "CPU (Tctl/Tdie)", else the
       first CPU temperature.
@@ -172,39 +200,62 @@ hours.
 3. **Turn on the web server:**
    - Under Options > Remote Web Server > Interface / Port, set the port to 8085, the player's default.
    - Then click Options > Remote Web Server > Run. LHM remembers this.
-4. **Keep the web server to this PC.** This is the step to get right.
-   - **The aim:** listen on 127.0.0.1 only, never on 0.0.0.0. 0.0.0.0 publishes the server to every network
-     the PC is on, and this PC's firewall is off for Private networks.
+4. **Turn on Authentication.** This is the step to get right.
+   - **Why:** LHM's web server can't be kept to this PC. It listens on the PC's network addresses, and this
+     PC's firewall is off for Private networks. With no password, anyone who reaches port 8085 can read
+     every sensor. They can also change fan and pump control values
+     (`GET /Sensor?action=Set&id=...&value=...`) and reset min/max, and so can any web page open in a
+     browser on this PC.
+   - **How:** click Options > Remote Web Server > Authentication. In the "Set HTTP Credentials" dialog:
+     - tick **Enable HTTP Basic Authentication**;
+     - under Credentials, fill in **HTTP UserName** and **HTTP Password**;
+     - click OK.
+   - **Then restart the web server:** click Options > Remote Web Server > Run twice (off, then on). As the
+     dialog says, a running server only takes the change once restarted. Until then it refuses every
+     request, even one with the right password. (A new user name or password alone takes at once.)
+   - **Choosing them:**
+     - The user name is matched exactly, case included, and can't contain `:`.
+     - Use only Latin-1 characters (no €, say): LHM can't match anything else, whatever sends it.
+     - LHM keeps only the password's SHA-256, unsalted, in `LibreHardwareMonitor.config` beside its exe.
+       If you forget it, set a new one. So pick a long random one you use nowhere else.
+     - Leave the password blank to keep the one already set. A blank password the first time leaves no
+       password at all, and every login is refused.
+   - **Check it:** open <http://127.0.0.1:8085/> (or the address you chose) in a browser. It should ask
+     for the user name and password. A browser that has logged in can send the login with other pages' requests to LHM, so
+     close it afterwards.
+5. **Extra: keep other machines out.** Authentication is enough on its own, but HTTP Basic sends the
+   password unencrypted, so it's safe to read only on this PC (`lhm_url` at 127.0.0.1, the default).
+   - **The aim** would be to listen on 127.0.0.1 only, never on 0.0.0.0. 0.0.0.0 publishes the server to
+     every network the PC is on.
    - **LHM can't do it by itself (0.9.6, and its current code).** Its Interface list offers only the PC's
      own network addresses and 0.0.0.0. When the address it's set to isn't one of those, including
      127.0.0.1 typed into its `.config`, it listens on every interface instead.
-   - **Why it matters:** with no password, anyone who reaches the server can read every sensor. They can
-     also change fan and pump control values (`GET /Sensor?action=Set&id=...&value=...`) and reset
-     min/max. Any web page open in a browser on this PC can send those requests too.
    - **What helps:**
      - **Windows Firewall on for the Private profile**, with no allow rule for port 8085, keeps other
        machines out. This PC's own requests always get through.
      - **Choosing the PC's LAN address** limits the server to that one network. `lhm_url` must then be
        that address, and it breaks if the address changes.
-     - **Options > Remote Web Server > Authentication** (a user name and password) keeps everyone out,
-       including web pages. But the player doesn't send a password yet.
-5. **Tick Options > Run On Windows Startup while LHM is running as administrator.**
+6. **Tick Options > Run On Windows Startup while LHM is running as administrator.**
    - Ticked like that, LHM makes a logon task that runs with highest privileges. The driver then loads
      after a restart with no prompt.
    - Ticked without elevation, LHM uses the registry Run key instead, and CPU temperatures go missing after
      a restart.
    - Start Minimized and Minimize To Tray keep it out of the way.
-6. **Turn it on in the studio:**
+7. **Turn it on in the studio:**
    - In the Data sources window, on This PC, tick **Read Libre Hardware Monitor sensors**.
-   - Change **Libre Hardware Monitor address** only if the port or interface changed.
-   - **Test** lists the `lhm.*` keys, or, under the other values, why LHM didn't answer.
+   - Change **Libre Hardware Monitor address** only if the port or interface changed. Do that before the
+     password: changing the address (or the user name) drops the saved password.
+   - Type the user name from step 4 in **Libre Hardware Monitor user name**, and the password in
+     **Libre Hardware Monitor password**. The password box then shows "Set"; it never shows the password.
+   - **Test** lists the `lhm.*` keys, or, under the other values, why LHM didn't answer, or that it asks for
+     a login, or refused this one.
 
 ## The player
 
 - **Polling:**
   - Each enabled source is polled on its own thread, at its own interval.
   - data.json is watched like the playlist: changes are picked up once they settle for about 1.5 s.
-  - Failures are logged briefly (never with tokens), and the values just go stale.
+  - Failures are logged briefly (never with tokens or passwords), and the values just go stale.
 - **Local API**, on `127.0.0.1:<api_port>`:
   - It only answers when the Host header is `127.0.0.1` or `localhost`. It's for the studio, which
     proxies it to the browser.
@@ -230,8 +281,11 @@ hours.
 
 - **A "Data" section:**
   - A card per source type, with enable, interval and the type's fields (pc: HWiNFO, Libre Hardware
-    Monitor and its address; HA: URL, token, entities).
-  - The HA token box is write-only: it shows "set" and lets you replace it.
+    Monitor and its address, user name and password; HA: URL, token, entities).
+  - The HA token and LHM password boxes are write-only: they show "set" and let you replace it.
+  - A saved password only ever goes back to where it was typed for. Changing any text setting of its
+    source (HA's URL; LHM's address or user name) drops it, so it has to be typed again. The Test button
+    uses the saved one only while those are unchanged, and the player checks that again.
   - A **Test** button shows the values that source returns now, or its error, and its notes on parts it
     skipped (LHM not answering, say).
   - Changes save to data.json.
@@ -240,7 +294,8 @@ hours.
 - **Preview:** widgets show their resolved text, via the player's `/resolve`. It refreshes when the text
   changes and about every 10 s. If the player isn't running, the raw placeholders show, and a note says so.
 - **Endpoints:**
-  - `GET/POST /api/data/config`: the GET leaves the token out and gives `token_set` instead; the POST keeps
-    the existing token unless a new one is given.
+  - `GET/POST /api/data/config`: the GET leaves each password out (`token`, `lhm_password`) and gives
+    `token_set`, `lhm_password_set` instead; the POST keeps the saved one unless a new one is given, as
+    long as the source's text settings are unchanged.
   - `GET /api/data/values`, `POST /api/data/resolve` and `POST /api/data/test`: proxies to the player API.
     They answer `{"player": false}` when it's down.

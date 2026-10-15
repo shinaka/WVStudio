@@ -254,6 +254,16 @@ mod tests {
         let url = pc.setting("lhm_url").unwrap();
         assert_eq!((url.kind.as_str(), &url.default), ("text", &Some(json!(crate::sources::LHM_URL))));
         assert_eq!(crate::data::Source::default().lhm_url, crate::sources::LHM_URL);
+        // its Authentication's user name, a text setting (so changing it, like the address, drops a saved
+        // password), and its password, a secret like Home Assistant's token, right after
+        let keys: Vec<&str> = pc.settings.iter().map(|s| s.key.as_str()).collect();
+        assert_eq!(keys, ["hwinfo", "lhm", "lhm_url", "lhm_user", "lhm_password"]);
+        let user = pc.setting("lhm_user").unwrap();
+        assert_eq!((user.kind.as_str(), &user.default, user.label.as_str()), ("text", &Some(json!("")), "Libre Hardware Monitor user name"));
+        let password = pc.setting("lhm_password").unwrap();
+        assert_eq!((password.kind.as_str(), &password.default, password.label.as_str()), ("password", &None, "Libre Hardware Monitor password"));
+        let secrets: Vec<&str> = all.iter().flat_map(|m| &m.settings).filter(|s| s.kind == "password").map(|s| s.key.as_str()).collect();
+        assert_eq!(secrets, ["lhm_password", "token"]);
         assert!(pc.provides.iter().any(|p| p.key == "lhm.*" && p.pattern));
         let temp = pc.provides.iter().find(|p| p.key == "pc.cpu.temp").unwrap();
         assert!(temp.label.contains("HWiNFO") && temp.label.contains("Libre Hardware Monitor"));

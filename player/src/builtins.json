@@ -25,7 +25,9 @@
     "settings": [
       { "key": "hwinfo", "label": "Read HWiNFO sensors", "type": "bool", "default": false },
       { "key": "lhm", "label": "Read Libre Hardware Monitor sensors", "type": "bool", "default": false },
-      { "key": "lhm_url", "label": "Libre Hardware Monitor address", "type": "text", "default": "http://127.0.0.1:8085" }
+      { "key": "lhm_url", "label": "Libre Hardware Monitor address", "type": "text", "default": "http://127.0.0.1:8085" },
+      { "key": "lhm_user", "label": "Libre Hardware Monitor user name", "type": "text", "default": "" },
+      { "key": "lhm_password", "label": "Libre Hardware Monitor password", "type": "password" }
     ],
     "provides": [
       { "key": "pc.cpu.load", "label": "CPU load", "unit": "%", "kind": "number" },
