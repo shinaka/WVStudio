@@ -59,15 +59,21 @@ studio builds its UI entirely from these manifests:
     takes longer than the interval, or 30 s at most, and so is anything it leaves running when it exits. It
     may print 1 MiB in all.
   - **`stream` mode:** the program keeps running and prints one such JSON object per line whenever it has
-    news, each line 1 MiB at most, with no limit over its life. If it exits, it's restarted with a back-off.
+    news, each line 1 MiB at most, with no limit over its life. One that prints faster than the player takes
+    its lines is held back: only a few lines wait, and then its prints wait. If it exits, it's restarted with a
+    back-off.
     It isn't polled, so a 429 or 503 in its error doesn't make the player back off.
 - **Rules:**
   - A plugin may only set keys that start with its own `id.`, so a plugin can't overwrite `claude.week`.
   - A plugin's id can't be a built-in's (`claude`, `pc`, `homeassistant`, `time`), the first part of keys a
     built-in sets (`ha`, `hwinfo`, `lhm`), or another plugin's: such a plugin is refused, with the reason.
-  - A setting can't be called `type`, `enabled` or `interval`. Any other key is the plugin's own, even one a
-    built-in uses (`url`, `token`...).
-  - Values are numbers, text, or ISO time strings.
+  - A setting can't be called `type`, `enabled` or `interval`, end in `_set` (the studio's flag for a saved
+    password), or have another setting's key. Any other key is the plugin's own, even one a built-in uses
+    (`url`, `token`...).
+  - An interval's `min` and `default` are 1 s to a day, and the player never waits longer than a day,
+    whatever data.json says.
+  - Values are numbers, text, or ISO time strings. A plugin can set 1000 keys at most: new keys past that are
+    ignored, and noted.
   - `"error": null` is no error: an object with a `values` object and `"error": null` succeeds.
   - Output is read as UTF-8, a line at a time, and any byte that isn't UTF-8 becomes `�`, so it costs one
     character, never the line. stderr is decoded the same way, and its end shown when the program fails.

@@ -6,7 +6,7 @@
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
@@ -27,6 +27,11 @@ const LONGEST_BACKOFF: Duration = Duration::from_secs(60);
 /// any sensible set of values.
 const MOST_OUTPUT: usize = 1 << 20;
 const MOST_OUTPUT_TEXT: &str = "1 MiB";
+/// How many of a stream's lines may wait to be taken. Past that its pipe fills and the plugin waits, so
+/// one that prints faster than its lines are used can't fill the player's memory.
+const WAITING_LINES: usize = 16;
+/// A note shows this many characters of a key, at most.
+const KEY_SHOWN: usize = 80;
 /// How much of the end of stderr is kept (it's read to its end, so a plugin never blocks on it), and how
 /// many characters of that an error message shows.
 const STDERR_KEPT: usize = 64 << 10;
@@ -185,13 +190,24 @@ enum Out {
 }
 
 /// Reads the child's stdout line by line and the end of its stderr, each on a thread, so neither pipe
-/// fills up while the other is waited on. Both are read to their end, so a plugin never blocks on a
-/// full pipe or fails on a closed one. `per_run`: a poll run's output, whose whole is capped, rather
-/// than a stream's, whose lines each are.
+/// fills up while the other is waited on. Both are read to their end, so a plugin never fails on a
+/// closed pipe. `per_run`: a poll run's output, whose whole is capped, rather than a stream's, whose
+/// lines each are.
+///
+/// A poll run's lines are only taken once it has exited, so all of them wait (1 MiB at most). A
+/// stream's are taken as they come, and only WAITING_LINES may wait: past that the reader waits too,
+/// and the full pipe holds the plugin back until the player catches up.
 fn readers(child: &mut Child, per_run: bool) -> (Receiver<Out>, Receiver<String>) {
-    let (lines, out) = mpsc::channel();
+    type PassOn = Box<dyn Fn(Out) -> bool + Send>;
+    let (send, out): (PassOn, _) = if per_run {
+        let (lines, out) = mpsc::channel();
+        (Box::new(move |o| lines.send(o).is_ok()), out)
+    } else {
+        let (lines, out) = mpsc::sync_channel(WAITING_LINES);
+        (Box::new(move |o| lines.send(o).is_ok()), out)
+    };
     if let Some(stdout) = child.stdout.take() {
-        std::thread::spawn(move || read_lines(stdout, per_run, &lines));
+        std::thread::spawn(move || read_lines(stdout, per_run, send));
     }
     let (errors, err) = mpsc::channel();
     if let Some(stderr) = child.stderr.take() {
@@ -202,7 +218,8 @@ fn readers(child: &mut Child, per_run: bool) -> (Receiver<Out>, Receiver<String>
     (out, err)
 }
 
-fn read_lines(stdout: impl Read, per_run: bool, lines: &Sender<Out>) {
+/// Passes each line on through `send`, which is false once nothing takes them any more.
+fn read_lines(stdout: impl Read, per_run: bool, send: impl Fn(Out) -> bool) {
     let mut reader = BufReader::new(stdout);
     let (mut line, mut too_long, mut total) = (Vec::new(), false, 0usize);
     loop {
@@ -225,12 +242,12 @@ fn read_lines(stdout: impl Read, per_run: bool, lines: &Sender<Out>) {
         reader.consume(used);
         total += used;
         if per_run && total > MOST_OUTPUT {
-            let _ = lines.send(Out::TooMuch);
+            send(Out::TooMuch);
             break;
         }
         if ended {
             let out = if too_long { Out::TooMuch } else { Out::Line(decode(&line)) };
-            if lines.send(out).is_err() {
+            if !send(out) {
                 break;
             }
             (line, too_long) = (Vec::new(), false);
@@ -239,9 +256,9 @@ fn read_lines(stdout: impl Read, per_run: bool, lines: &Sender<Out>) {
     if total <= MOST_OUTPUT || !per_run {
         // the last line, if it had no line break
         if too_long {
-            let _ = lines.send(Out::TooMuch);
+            send(Out::TooMuch);
         } else if !line.is_empty() {
-            let _ = lines.send(Out::Line(decode(&line)));
+            send(Out::Line(decode(&line)));
         }
     }
     // whatever's left drains to nowhere
@@ -298,12 +315,17 @@ fn wait(child: &mut Child, timeout: Duration) -> Option<std::process::ExitStatus
 /// The JSON object a poll run printed, pretty-printed or not. Stray prints before it are forgiven: the
 /// last object that starts a line is the one.
 fn last_json(output: &str) -> Option<Json> {
-    let starts: Vec<usize> = output
-        .match_indices('{')
-        .map(|(i, _)| i)
-        .filter(|&i| output[..i].rsplit('\n').next().unwrap_or("").trim().is_empty())
-        .collect();
-    starts.into_iter().rev().find_map(|i| serde_json::from_str(output[i..].trim()).ok())
+    // the lines whose first character that isn't a space is a `{`, found in one pass
+    let output = output.trim_end();
+    let (mut starts, mut at) = (Vec::new(), 0);
+    for line in output.split('\n') {
+        let indent = line.len() - line.trim_start().len();
+        if line[indent..].starts_with('{') {
+            starts.push(at + indent);
+        }
+        at += line.len() + 1;
+    }
+    starts.into_iter().rev().find_map(|i| serde_json::from_str(&output[i..]).ok())
 }
 
 /// Sleeps for `how_long` unless stopped first; false once stopped.
@@ -352,7 +374,7 @@ fn parse_json(id: &str, j: &Json) -> Result<Polled, String> {
     let (mut values, mut rejected) = (Vec::new(), Vec::new());
     for (key, v) in given {
         if !key.starts_with(&prefix) || key.len() == prefix.len() {
-            rejected.push(format!("{key} isn't under {prefix}"));
+            rejected.push(format!("{} isn't under {prefix}", shown_key(key)));
             continue;
         }
         let value = match v {
@@ -365,18 +387,26 @@ fn parse_json(id: &str, j: &Json) -> Result<Polled, String> {
         };
         match value {
             Some(value) => values.push((key.clone(), value)),
-            None => rejected.push(format!("{key} isn't a number, text or ISO time")),
+            None => rejected.push(format!("{} isn't a number, text or ISO time", shown_key(key))),
         }
     }
     let mut notes: Vec<String> = rejected.iter().take(5).map(|r| format!("ignored {r}")).collect();
     if rejected.len() > 5 {
         notes.push(format!("and {} more ignored", rejected.len() - 5));
     }
+    // logged by the caller, once each time it changes, like any failure
     if values.is_empty() && !rejected.is_empty() {
-        log(format_args!("data: {id}: {}", notes.join("; ")));
         return Err(format!("nothing usable: {}", notes.join("; ")));
     }
     Ok(Polled { values, notes })
+}
+
+/// A key as a note shows it: its first KEY_SHOWN characters, then `...` if there's more.
+fn shown_key(key: &str) -> String {
+    match key.char_indices().nth(KEY_SHOWN) {
+        Some((cut, _)) => format!("{}...", &key[..cut]),
+        None => key.to_string(),
+    }
 }
 
 /// The Windows calls: a job that takes a process and everything it starts, and resuming a process
@@ -757,6 +787,29 @@ mod tests {
         assert!(start.elapsed() < Duration::from_secs(30), "{:?}", start.elapsed());
     }
 
+    /// A stream that prints faster than its lines are taken is held back: the player keeps only a few
+    /// of its lines waiting, and the full pipe makes the program wait for the rest.
+    #[test]
+    fn streams_are_held_back() {
+        let f = Folder::new("held");
+        let m = f.plugin("h", "stream", "s.cmd", "@type big.txt\r\n@echo done> done.txt\r\n@ping -n 30 127.0.0.1 > nul\r\n");
+        f.file("h", "big.txt", "{\"values\": {\"h.n\": 1}}\r\n".repeat(100_000).as_bytes());
+        let done = f.0.join("h").join("done.txt");
+        let mut plugin = spawn(m.run.as_ref().unwrap(), "{}").unwrap();
+        let (lines, _errors) = readers(&mut plugin.child, false);
+        sleep(Duration::from_secs(2));
+        assert!(!done.exists(), "it printed 2.4 MB while nothing was taken");
+        for _ in 0..100_000 {
+            assert!(matches!(lines.recv_timeout(Duration::from_secs(10)), Ok(Out::Line(_))));
+        }
+        // once its lines are taken, it goes on
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !done.exists() {
+            assert!(Instant::now() < deadline, "it never finished printing");
+            sleep(Duration::from_millis(50));
+        }
+    }
+
     /// A stream that never pauses is still stopped at once, and reports nothing after.
     #[test]
     fn stopping_a_busy_stream() {
@@ -783,6 +836,28 @@ mod tests {
         assert_eq!(p.values, [("w.a".into(), Value::Number(1.0))]);
         assert_eq!(parse("w", "{\"error\": null}").unwrap_err(), "the output has neither \"values\" nor \"error\"");
         assert!(Path::new(".").exists());
+        // a note shows the start of a long key
+        let long = format!("{{\"values\": {{\"{}\": 1, \"w.{}\": [1]}}}}", "k".repeat(200), "é".repeat(200));
+        assert_eq!(parse("w", &long).unwrap_err(), format!("nothing usable: ignored {}... isn't under w.; ignored w.{}... isn't a number, text or ISO time",
+                                                         "k".repeat(80), "é".repeat(78)));
+    }
+
+    /// The JSON in a poll run's output is the last object that starts a line, found quickly whatever
+    /// the output looks like.
+    #[test]
+    fn finding_the_json() {
+        assert_eq!(last_json("starting\n  {\"a\": 1}\n\n"), Some(json!({ "a": 1 })));
+        assert_eq!(last_json("{\"a\": 1}\r\n{\"b\":\r\n 2}\r\n  "), Some(json!({ "b": 2 })));
+        assert_eq!(last_json("caf\u{e9} {\n\t{\"c\": 3}"), Some(json!({ "c": 3 })));
+        // a brace that doesn't start a line isn't a start, and anything after the JSON breaks it
+        assert_eq!(last_json("x {\"a\": 1}"), None);
+        assert_eq!(last_json("{\"a\": 1}\nx {\"b\": 2}"), None);
+        // a long line of braces, or many short ones, is given up on at once
+        let start = Instant::now();
+        assert_eq!(last_json(&"{".repeat(MOST_OUTPUT)), None);
+        assert_eq!(last_json(&"{\n".repeat(MOST_OUTPUT / 2)), None);
+        assert_eq!(last_json(&format!("{}{}", "{\n".repeat(1000), " ".repeat(MOST_OUTPUT))), None);
+        assert!(start.elapsed() < Duration::from_secs(2), "{:?}", start.elapsed());
     }
 
     #[test]

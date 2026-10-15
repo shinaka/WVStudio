@@ -34,8 +34,10 @@ The manifest: what the studio shows, and how the player runs the program.
 - Only keys starting with `<id>.` are accepted; others are ignored and noted in the source's status.
 - Values go stale after three intervals without a successful run, and the text shows its fallback.
 
-Test a plugin without the screen: `wvplay data path\to\playlist.json` runs every enabled source once
-and prints the values, and the studio's **Test** button does the same for one source.
+Test a plugin without the screen with `wvplay data` on a test `data.json` that switches on only your plugin,
+with `LOCALAPPDATA` pointed at a scratch folder: see step 5 of
+[docs/plugins.md](../../docs/plugins.md#5-run-it-through-the-player). The studio's **Test** button runs one
+source once.
 
 ## Writing your own
 

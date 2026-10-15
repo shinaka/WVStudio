@@ -545,6 +545,7 @@ DATA_TIMEOUT = 2   # seconds: the player answers straight away, or isn't running
 PLAYER_POLL_LIMIT = 30  # the player gives up on a poll after this (a plugin's run, a web request's 20 s)
 TEST_TIMEOUT = PLAYER_POLL_LIMIT + 15  # a test polls once: wait out the player's own limit, so its error is shown
 RESCAN_TIMEOUT = 10
+LONGEST_INTERVAL = 86400  # seconds: the player never waits longer between polls (catalog::LONGEST_INTERVAL)
 no_proxy = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # straight to 127.0.0.1, never a proxy
 
 # The built-in sources, as the player describes them (docs/sources.md), for when it isn't running: the window
@@ -773,8 +774,8 @@ def save_data_config(req):
                 s = merged
                 if "interval" in s:
                     try:
-                        s["interval"] = max(min_interval(kind), int(s["interval"]))
-                    except (TypeError, ValueError):
+                        s["interval"] = min(LONGEST_INTERVAL, max(min_interval(kind), int(s["interval"])))
+                    except (TypeError, ValueError, OverflowError):
                         raise ValueError(f"{kind}: interval must be a number of seconds") from None
                 if "enabled" in s:
                     s["enabled"] = bool(s["enabled"])

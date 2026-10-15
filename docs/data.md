@@ -44,8 +44,9 @@ player polls them and draws the text.
 }
 ```
 
-- Every source has `enabled` and `interval`, in seconds, defaulting to 60 with a minimum of 5. Claude's
-  default is 300 and its minimum 60: its endpoint rate-limits a login that polls too often (HTTP 429).
+- Every source has `enabled` and `interval`, in seconds, defaulting to 60 with a minimum of 5 and a maximum
+  of 86400 (a day). Claude's default is 300 and its minimum 60: its endpoint rate-limits a login that polls
+  too often (HTTP 429).
 - Values go stale after 3 x interval without a successful update, except Claude's, which last 60 minutes.
   The last good values are kept in `%LOCALAPPDATA%\wvplay\last-values.json` (values and their time
   only, never a token), so they are back right after a restart, with their real age, and a source whose

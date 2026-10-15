@@ -216,5 +216,6 @@ mod tests {
         let tested = post("/test", json!({ "source": { "type": "nope" } }));
         assert_eq!(tested["error"], json!("unknown source type \"nope\""));
         let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_file(data::last_values_file());
     }
 }

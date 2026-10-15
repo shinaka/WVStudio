@@ -173,6 +173,7 @@ disk: ok
 ```
 
 `disk: ok` and its four values mean the player loaded and ran it. `time` is a built-in that's always listed.
+(In the CoolerVideo folder, the first line says `2 in plugins`, counting example-weather.)
 [Testing from the command line](#testing-from-the-command-line) explains each line, and how to test
 settings. Git ignores the `plugin-test` folder, so you can keep it for the next test.
 
@@ -242,7 +243,7 @@ That's a working plugin. The rest of this guide explains each part in detail.
 | `["tool.exe"]`, `["run.cmd"]` (files in your plugin's folder) | **no**: `couldn't run "tool.exe": program not found`. Your plugin's folder isn't searched |
 | `[".\\tool.exe"]`, `[".\\run.cmd"]` | **no**: a relative path is taken from the *player's* working folder, not your plugin's |
 | `["C:\\Tools\\tool.exe"]` | yes: a full path |
-| `["cmd", "/c", ".\\tool.exe"]`, `["cmd", "/c", ".\\run.cmd"]` | yes: `cmd` starts in your plugin's folder and finds the file there. This works in both modes: the player stops `cmd` and what it started together |
+| `["cmd", "/c", ".\\tool.exe"]`, `["cmd", "/c", ".\\run.cmd"]` | yes: `cmd` starts in your plugin's folder and finds the file there |
 
 - **Arguments:** relative paths in the arguments are fine, because the program starts in the plugin's
   folder. That's why `["python", "disk.py"]` works.
@@ -290,8 +291,6 @@ read stdin at all.
 - **Time limit:** the run is stopped if it takes longer than its interval, or 30 s, whichever is shorter. The
   source then shows `took longer than 30 s`, or whatever the limit was. Give your own network calls a timeout
   well under the limit: the example-weather plugin uses 15 s.
-- **A run ends when the program exits.** Anything it started that's still running then is stopped, so a poll
-  run can't leave a program behind.
 
 ### Stopping a plugin
 
@@ -300,7 +299,8 @@ the program behind a `cmd /c` wrapper, a venv's Python, a helper it launches. St
 them at once:
 
 - a poll run, when it passes its time limit or ends;
-- a streaming plugin, when its settings or interval change, on **Rescan**, and before each restart;
+- a streaming plugin, when it's switched off, when its settings or interval change, on **Rescan**, and before
+  each restart;
 - the program **Test** started, once it has its answer;
 - every plugin, when the player exits, however it exits: closing it, a crash, or Task Manager's **End task**.
 
@@ -338,9 +338,11 @@ byte-order mark.
 
 `{"default": 600, "min": 60}`, in seconds:
 
-- If you give `interval`, give both fields. Each is a number (fractions are allowed), and `min` is at least 1.
+- If you give `interval`, give both fields. Each is a number of seconds from 1 to 86400 (a day), and
+  fractions are allowed.
 - **The source's interval** is the one set in the studio (saved in `data.json`), or else `default`. It's never
-  less than `min`: the studio won't save less, and the player won't run more often.
+  less than `min`, or more than a day: the studio won't save a number outside that, and the player keeps to it
+  whatever `data.json` says.
 - **What it does:**
   - **poll mode:** the time between runs, and the time limit of each run (30 s at most);
   - **both modes:** values go stale after 3 × the interval without a success.
@@ -350,9 +352,10 @@ byte-order mark.
 
 A setting is `{"key", "label", "type"}`, with optional fields:
 
-- **`key`** (required): the name in `data.json` and on stdin. It can't be empty, `type`, `enabled` or
-  `interval`, which sit beside the settings in `data.json`. Any other key is your plugin's own, even one a
-  built-in source uses, such as `url` or `token`.
+- **`key`** (required): the name in `data.json` and on stdin, a different one for each setting. A key is your
+  plugin's own, even one a built-in source uses, such as `url` or `token`, but it can't be:
+  - empty, `type`, `enabled` or `interval`, which sit beside the settings in `data.json`;
+  - anything ending in `_set`, which the studio uses to tell the page whether a password is saved.
 - **`label`** (required): the text by the control.
 - **`type`** (required): one of the types in the table below.
 - **`default`**: any JSON value. It isn't checked against the type, so make it fit.
@@ -469,7 +472,9 @@ or, when you couldn't get the values:
 - **Times:**
   - In Python, `datetime.now(timezone.utc).isoformat()` gives a time, while a naive `datetime.now().isoformat()`
     gives text. So does `strftime("%Y-%m-%dT%H:%M:%S%z")`, because `%z` writes `+0200`.
-  - In PowerShell, `.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")` gives a time.
+  - In PowerShell, `.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ", [cultureinfo]::InvariantCulture)`
+    gives a time. Without `InvariantCulture`, the PC's language settings choose the separator: one set to
+    Finnish writes `2026-10-15T08.05.09Z`, which stays text.
   - Times are shown in the PC's local time.
 - **Not a number:** `NaN` and `Infinity` aren't JSON. Python's `json.dumps` writes them anyway, and then the
   *whole* output is rejected with `didn't print JSON`. Leave such values out, or use
@@ -545,6 +550,9 @@ The settings come in as UTF-8, and stdout and stderr should be UTF-8:
 
 - Each success updates the keys it gives. A key you stop sending keeps its last value until it goes stale.
   Nothing removes a key.
+- A plugin can set 1000 keys at most, old ones it no longer sends included. Past that, new keys are ignored
+  and noted, as in `ignored 3 new keys: a plugin can set 1000 keys at most`, so don't put ids or times in key
+  names.
 - Values go stale 3 × the interval after their last success. Then `{key}` shows `--`, or its fallback.
 - The values are saved for the next start: see [last values](#last-values-are-kept-across-restarts).
 
@@ -603,8 +611,7 @@ while True:
 The rules:
 
 - **Settings arrive once,** when the program starts. Changing a setting or the interval in the studio
-  restarts it with the new ones, and so does **Rescan**. Each restart stops the old program, and anything it
-  started.
+  restarts it with the new ones, and so does **Rescan**.
 - **Flush after every line** (`print(..., flush=True)`). Python holds back output sent to a pipe, and without
   the flush the player sees nothing, possibly for minutes.
 - **One object per line:** `{"values": ...}` or `{"error": ...}`. A line that isn't JSON, or an error, marks
@@ -618,7 +625,8 @@ The rules:
   at least that often, even when nothing has changed. The example prints at least once a minute, with an
   interval of 60 s.
 - **Print when something changes, not nonstop.** Nonstop printing costs CPU in your program and the player,
-  for values the screen can't show any faster.
+  for values the screen can't show any faster. A program that prints faster than the player takes its lines
+  is held back: once a few lines are waiting, its next print waits until the player catches up.
 - **Restarts:** if the program exits, the source shows `exited with code 1: <end of stderr>; restarting in 1 s`
   and the player starts it again.
   - The wait doubles after each exit in a row: 1, 2, 4, 8, 16, 32 and 60 s.
@@ -731,7 +739,7 @@ each did and every value, and exits:
   beside `plugins`. Any folder works, not just the CoolerVideo folder: `<yours>\plugins\disk\` and
   `<yours>\plugin-test\data.json`, with `wvplay.exe` called by its full path;
 - the usage text says `<playlist.json>`, but either file works, because only its folder counts;
-- when it exits, it stops every plugin it started, streaming ones included.
+- when it exits, it stops every plugin it started.
 
 The commands, and what they print, are in [step 5 of the quick start](#5-run-it-through-the-player).
 
@@ -758,8 +766,9 @@ What else to know:
 - **What the output shows:**
   - Each source shows `ok`, `ok (<notes>)` or `failed: <error>`.
   - A source that hasn't answered within the 30 s isn't listed at all: a streaming plugin that doesn't flush,
-    or a poll plugin that runs into a 30 s time limit. To see that one's `took longer than` error, give it an
-    interval under 30 s in the test `data.json`.
+    or a poll plugin that runs into a 30 s time limit. To see that one's `took longer than` error, press
+    **Test** in the studio, which waits 45 s, or give it an interval under 30 s in the test `data.json` if its
+    `min` allows.
   - Values are in their default form, with `(stale)` after stale ones. `time` is a built-in that's always
     listed.
   - Log lines, such as plugins that were skipped and why, come first.
@@ -841,12 +850,16 @@ their full path, as in [Starting the program](#starting-the-program).
 
 ```bat
 @echo off
+chcp 65001 >nul
 rem The settings arrive on stdin as one line of JSON. This plugin has none, so it doesn't read them.
 echo {"values": {"host.name": "%COMPUTERNAME%", "host.user": "%USERNAME%"}}
 ```
 
-`echo` prints the JSON as written. A value holding `&`, `|`, `<`, `>`, `^` or `%` needs batch escaping, so for
-anything beyond simple text use another language. To read the settings line, use `set /p settings=`.
+- `echo` prints the JSON as written. A value holding `&`, `|`, `<`, `>`, `^` or `%` needs batch escaping, so
+  for anything beyond simple text use another language.
+- `cmd` writes `echo`'s output in the console's OEM code page, so a name such as `Jürgen` would arrive as
+  `J�rgen`. `chcp 65001 >nul` makes it UTF-8. Save the `.cmd` as UTF-8 if it holds such text itself.
+- To read the settings line, use `set /p settings=`.
 
 ### PowerShell
 
@@ -878,7 +891,7 @@ try {
     $boot = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime
     $values = @{
         "uptime.hours" = [math]::Round(((Get-Date) - $boot).TotalHours, 1)
-        "uptime.since" = $boot.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+        "uptime.since" = $boot.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ", [cultureinfo]::InvariantCulture)
     }
     @{ values = $values } | ConvertTo-Json -Compress
 } catch {
@@ -894,7 +907,7 @@ try {
 
 ### A compiled program
 
-Put the `.exe` in the plugin's folder, and start it through `cmd`, in either mode:
+Put the `.exe` in the plugin's folder, and start it through `cmd`:
 
 ```json
 "run": { "command": ["cmd", "/c", ".\\myplugin.exe", "--some-option"], "mode": "stream" }
@@ -907,13 +920,11 @@ or by its full path: `["C:\\Git\\CoolerVideo\\plugins\\myplugin\\myplugin.exe", 
 
 To use packages without installing them for everyone, give the plugin its own virtual environment
 (`python -m venv .venv` in its folder, then `.venv\Scripts\pip install ...`), and start that Python through
-`cmd`, in either mode:
+`cmd`:
 
 ```json
 "run": { "command": ["cmd", "/c", ".\\.venv\\Scripts\\python.exe", "myplugin.py"] }
 ```
-
-A venv's `python.exe` starts the real Python as a program of its own, and stopping the plugin stops both.
 
 ## Security
 
@@ -940,7 +951,7 @@ A venv's `python.exe` starts the real Python as a program of its own, and stoppi
   - not a built-in's (`claude`, `pc`, `homeassistant`, `time`, `ha`, `hwinfo`, `lhm`) or another plugin's;
   - the start of every `provides` key and every key you print.
 - [ ] `name` is set, every setting has `key`, `label` and `type`, and every `choice` has `choices`.
-- [ ] No setting called `type`, `enabled` or `interval`.
+- [ ] No setting called `type`, `enabled` or `interval`, or ending in `_set`, and no key used twice.
 - [ ] `command` names the interpreter, and refers to files in the plugin's folder only in arguments, through
       `cmd /c .\...`, or by their full path.
 - [ ] Reads stdin as UTF-8 (`sys.stdin.buffer` in Python), and copes with `null`, `""` and `0`.
@@ -972,7 +983,7 @@ These go to the player's log and the **Rescan** note, as `<folder>: <problem>`.
 | ``plugin.json isn't valid: missing field `label` at line ...`` | a required field is missing. Every setting and `provides` entry needs a `label`, and the manifest needs an `id` and a `name` |
 | ``plugin.json isn't valid: missing field `min` at line ...`` | `interval` needs both `default` and `min` |
 | ``plugin.json isn't valid: invalid type: integer `5`, expected a string at line ...`` | a field of the wrong type, such as a `help` or `placeholder` that isn't text |
-| `plugin.json isn't valid: key must be a string at ...` (or another JSON error) | a JSON syntax error at that position, such as a trailing comma or a missing quote |
+| `plugin.json isn't valid: trailing comma at line 5 column 3`, `key must be a string at ...`, or another JSON error | a JSON syntax error at that position, such as a trailing comma or a missing quote |
 | `the id "My Plugin" should be lowercase letters, digits, _ or -` | fix the `id` |
 | `the id "pc" is the built-in This PC source's: choose another` | the id is a built-in's: choose another |
 | `the id "ha" is taken: the built-in Home Assistant source sets keys starting with "ha."` | the id is the start of a built-in's keys (`ha`, `hwinfo`, `lhm`): choose another |
@@ -984,8 +995,10 @@ These go to the player's log and the **Rescan** note, as `<folder>: <problem>`.
 | `setting "units" is a choice with no choices` | add `choices` |
 | `setting "s" has an unknown type "slider"` | use `text`, `number`, `bool`, `choice`, `list` or `password` |
 | `setting "interval" can't have that key: type, enabled and interval are the source's own` | rename the setting |
+| `setting "token_set" can't have that key: the studio uses keys ending in _set to say a password is set` | rename the setting, so its key doesn't end in `_set` |
+| `setting "city" is there twice: each setting needs a key of its own` | two settings have the same `key`: rename one |
 | `setting "n" has a min above its max` | fix `min` or `max` |
-| `the interval's min and default should be numbers, at least 1` | fix `interval` |
+| `the interval's min and default should be numbers from 1 to 86400 (a day)` | fix `interval` |
 
 A plugin that doesn't appear at all, with no message, has no `plugin.json` directly in its folder, or hasn't been
 rescanned.
@@ -1014,7 +1027,7 @@ These show as the source's error in the studio, in `wvplay data` and in the log.
 | `exited with code N: ...; restarting in N s` | (stream mode) the program exited, and the player restarts it, waiting up to 60 s |
 | `exited with code 0; restarting in N s`, and your own error only in the log | (stream mode) it printed `{"error": ...}` and exited: keep running instead, and print the error again now and then (see [Stream mode](#stream-mode)) |
 | `unknown source type "myplugin"` | `data.json` names an id that the player didn't load: a typo, a skipped plugin, or no rescan yet |
-| `data: ...\data.json isn't valid (Data at line 1, column 60)` (log) | a value in `data.json` has the wrong type, such as `"enabled": "yes"` or a built-in's setting. Nothing is polled until it's fixed |
+| `data: ...\data.json isn't valid (Data at line 1, column 60)` (log) | a value in `data.json` has the wrong type, such as `"enabled": "yes"` or a built-in's setting. At start, and in `wvplay data`, nothing is polled until it's fixed. A running player logs `data: ... isn't valid (...), carrying on` and keeps the sources it had |
 
 ### Other symptoms
 
@@ -1024,7 +1037,7 @@ These show as the source's error in the studio, in `wvplay data` and in the log.
 | A setting shows up as `ZÃ¼rich` | the plugin decoded stdin with the ANSI code page: read it as UTF-8 (`sys.stdin.buffer`) |
 | Text from the plugin shows `�`, as in `Z�rich` | it wrote that text in the ANSI code page, not UTF-8: in Python, use `json.dumps` without `ensure_ascii=False`, or start it with `-X utf8` (see [Encoding](#encoding)) |
 | A number won't take `:d` or `.1f` | it was sent as text (`"21.5"`): send a JSON number |
-| A time shows as text | it has no time zone, no seconds, or a zone with no colon (`+0200`): write `2026-10-14T10:00:00Z` or `...+02:00` |
+| A time shows as text | it has no time zone, no seconds, or a zone with no colon (`+0200`): write `2026-10-14T10:00:00Z` or `...+02:00`. In PowerShell, format it with `[cultureinfo]::InvariantCulture` (see [Value types](#value-types)) |
 | `wvplay data` shows old values, and the plugin didn't run | its saved values are younger than its interval: use a fresh `LOCALAPPDATA`, as [above](#testing-from-the-command-line) |
 | `wvplay data` doesn't list a source at all | it gave no answer within 30 s: a streaming plugin that doesn't flush, or a poll plugin that ran into a 30 s time limit |
 | A streaming plugin's values arrive late or never | it isn't flushing stdout after each line |

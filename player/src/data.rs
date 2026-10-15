@@ -23,6 +23,9 @@ use crate::{api, catalog, playlist, plugin};
 const MISSING: &str = "--";
 /// Values go stale after this many intervals without a successful update.
 const STALE_AFTER: u32 = 3;
+/// The most keys a plugin's source can have: nothing removes a key, so one that made up a new key for
+/// each event would otherwise grow the player, and last-values.json, without end.
+const MOST_KEYS: usize = 1000;
 /// Claude's usage changes slowly, and its endpoint rate-limits: its values last this long instead.
 const CLAUDE_STALE_AFTER: Duration = Duration::from_secs(60 * 60);
 /// A source that fails (Claude), or is told to wait (any source's 429 or 503), is tried again after
@@ -230,15 +233,31 @@ pub fn store() -> &'static Store {
 
 impl Store {
     /// A successful poll's values, which stay fresh for `stale_after` (see `Source::stale_after`).
-    pub fn put(&self, source: &str, stale_after: Duration, values: Vec<(String, Value)>) {
-        self.put_at(source, stale_after, values, Utc::now());
+    /// Returns how many new keys were refused because a plugin's source has MOST_KEYS already.
+    pub fn put(&self, source: &str, stale_after: Duration, values: Vec<(String, Value)>) -> usize {
+        self.put_at(source, stale_after, values, Utc::now())
     }
 
-    fn put_at(&self, source: &str, stale_after: Duration, values: Vec<(String, Value)>, at: DateTime<Utc>) {
+    fn put_at(&self, source: &str, stale_after: Duration, values: Vec<(String, Value)>, at: DateTime<Utc>) -> usize {
+        // a built-in's keys are bounded by what it reads; a plugin could make up a new one every time
+        let most = if catalog::is_builtin(source) { usize::MAX } else { MOST_KEYS };
         let mut entries = self.entries.write().unwrap();
+        let (mut held, mut refused) = (None, 0);
         for (key, value) in values {
+            if let Some(e) = entries.get_mut(&key).filter(|e| e.source == source) {
+                (e.value, e.at, e.stale_after) = (value, at, stale_after);
+                continue;
+            }
+            // a new key: counted against the source's keys, which are counted once, at its first
+            let held = held.get_or_insert_with(|| entries.values().filter(|e| e.source == source).count());
+            if *held >= most {
+                refused += 1;
+                continue;
+            }
+            *held += 1;
             entries.insert(key, Entry { value, at, source: source.to_string(), stale_after });
         }
+        refused
     }
 
     /// Writes every source's latest values and their time to `file` (last-values.json), so they're
@@ -409,18 +428,18 @@ impl Default for Source {
 }
 
 impl Source {
-    /// Time between polls: the manifest's default unless set, and never under its minimum (60 s for
-    /// Claude, 5 s otherwise).
+    /// Time between polls: the manifest's default unless set, never under its minimum (60 s for
+    /// Claude, 5 s otherwise), and never over a day, however large a number data.json holds.
     pub fn every(&self) -> Duration {
         let spec = catalog::manifest(&self.kind).map(|m| m.interval).unwrap_or_default();
         let secs = self.interval.filter(|i| i.is_finite()).unwrap_or(spec.default);
-        Duration::from_secs_f64(secs.max(spec.min).max(1.0))
+        Duration::from_secs_f64(secs.max(spec.min).max(1.0).min(catalog::LONGEST_INTERVAL))
     }
 
     /// How long this source's values stay fresh without a successful poll: 3 x interval, except
     /// Claude's, which last an hour (usage changes slowly, and a back-off shouldn't blank the text).
     pub fn stale_after(&self) -> Duration {
-        if self.kind == "claude" { CLAUDE_STALE_AFTER } else { self.every() * STALE_AFTER }
+        if self.kind == "claude" { CLAUDE_STALE_AFTER } else { self.every().saturating_mul(STALE_AFTER) }
     }
 
     /// Whether a failure makes this source back off: Claude on any error (its endpoint rate-limits a
@@ -476,8 +495,15 @@ pub fn plugins_for(playlist: &Path) -> PathBuf {
 }
 
 /// The last good values live in %LOCALAPPDATA%\wvplay\last-values.json.
+#[cfg(not(test))]
 pub fn last_values_file() -> PathBuf {
     std::env::var_os("LOCALAPPDATA").map_or_else(std::env::temp_dir, PathBuf::from).join("wvplay").join("last-values.json")
+}
+
+/// Tests keep theirs in a file of their own, never the running player's.
+#[cfg(test)]
+pub fn last_values_file() -> PathBuf {
+    std::env::temp_dir().join(format!("wvplay-test-last-values-{}.json", std::process::id()))
 }
 
 /// How long to wait before a source's first poll: none, unless its last success (from the last run)
@@ -701,9 +727,13 @@ impl Hub {
         let mut status = self.status.lock().unwrap();
         let updated_at = status.get(&source.kind).and_then(|s| s.updated_at);
         match result {
-            Ok(Polled { values, notes }) => {
+            Ok(Polled { values, mut notes }) => {
                 let now = Utc::now();
-                store().put(source.kind.as_str(), source.stale_after(), values);
+                let refused = store().put(source.kind.as_str(), source.stale_after(), values);
+                if refused > 0 {
+                    notes.push(format!("ignored {refused} new key{}: a plugin can set {MOST_KEYS} keys at most",
+                                       if refused == 1 { "" } else { "s" }));
+                }
                 let mut saved_at = self.saved_at.lock().unwrap();
                 if !streaming || saved_at.is_none_or(|t| t.elapsed() >= Duration::from_secs(10)) {
                     let _ = store().save(&last_values_file());
@@ -952,6 +982,41 @@ mod tests {
 
     fn source(kind: &str, interval: Option<f64>) -> Source {
         Source { kind: kind.into(), interval, ..Source::default() }
+    }
+
+    /// However large an interval data.json holds, it's a day at most, so working out a wait or a
+    /// staleness never overflows.
+    #[test]
+    fn huge_intervals() {
+        for interval in [86_401.0, 1e19, 1e20, 1e300, f64::MAX] {
+            let s = source("weather", Some(interval));
+            assert_eq!(s.every(), Duration::from_secs(86_400), "{interval}");
+            assert_eq!(s.stale_after(), Duration::from_secs(3 * 86_400), "{interval}");
+        }
+        assert_eq!(source("weather", Some(f64::INFINITY)).every(), Duration::from_secs(60));
+        assert_eq!(source("weather", Some(-1e300)).every(), Duration::from_secs(5));
+    }
+
+    /// A plugin's source keeps MOST_KEYS keys at most: the ones it has still update, and new ones past
+    /// that are refused. Each source counts its own, and a built-in's aren't limited.
+    #[test]
+    fn keys_per_source() {
+        let store = Store::default();
+        let window = Duration::from_secs(60);
+        let keys = |from: usize, n: usize, v: f64| (from..from + n).map(|i| (format!("p.k{i}"), Value::Number(v))).collect::<Vec<_>>();
+        assert_eq!(store.put_at("p", window, keys(0, 990, 1.0), now()), 0);
+        // 10 known, 10 new, then 10 over the limit
+        assert_eq!(store.put_at("p", window, keys(980, 30, 2.0), now()), 10);
+        assert_eq!(store.get("p.k985", now()), Some(Value::Number(2.0)));
+        assert_eq!(store.get("p.k999", now()), Some(Value::Number(2.0)));
+        assert_eq!(store.get("p.k1000", now()), None);
+        assert_eq!(store.put_at("p", window, keys(0, MOST_KEYS, 3.0), now()), 0);
+        assert_eq!(store.get("p.k0", now()), Some(Value::Number(3.0)));
+        assert_eq!(store.put_at("p", window, keys(5000, 1, 1.0), now()), 1);
+        assert_eq!(store.put_at("q", window, vec![("q.x".into(), Value::Number(1.0))], now()), 0);
+        let sensors: Vec<_> = (0..1500).map(|i| (format!("hwinfo.s{i}"), Value::Number(1.0))).collect();
+        assert_eq!(store.put_at("pc", window, sensors, now()), 0);
+        assert_eq!(store.list(now()).len(), MOST_KEYS + 1 + 1500 + 1);
     }
 
     #[test]

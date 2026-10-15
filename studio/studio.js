@@ -1937,6 +1937,7 @@ const sourceName = (id) => manifestOf(id)?.name || id || "?";
 const settingsOf = (m) => (Array.isArray(m?.settings) ? m.settings : []).filter((s) => s && typeof s.key === "string");
 const providesOf = (m) => (Array.isArray(m?.provides) ? m.provides : []).filter((p) => p && typeof p.key === "string");
 const isSecret = (id, key) => settingsOf(manifestOf(id)).some((s) => s.key === key && s.type === "password") || SECRET_KEY.test(key);
+const LONGEST_INTERVAL = 86400; // seconds: the player never waits longer between polls
 const intervalOf = (m) => ({ default: Math.max(1, num(m?.interval?.default, 60)), min: Math.max(1, num(m?.interval?.min, 5)) });
 // What a setting starts as without a default: a choice's first choice (as the player falls back to), else empty.
 const blankOf = (s) => s.type === "choice" ? (Array.isArray(s.choices) && s.choices.length ? String(s.choices[0]) : "")
@@ -2038,7 +2039,7 @@ function buildSource(m) {
   const form = Object.assign(make("div"), { id: "srcForm" });
   for (const s of settingsOf(m)) form.append(settingRow(m, s));
   const iv = intervalOf(m), ivRow = make("div", "row setting"), ivIn = make("input");
-  ivIn.type = "number"; ivIn.min = iv.min; ivIn.step = 1; ivIn.dataset.k = "interval";
+  ivIn.type = "number"; ivIn.min = iv.min; ivIn.max = LONGEST_INTERVAL; ivIn.step = 1; ivIn.dataset.k = "interval";
   ivIn.title = `How often it's read: ${iv.default} s unless set, ${iv.min} s at least`;
   const ivBox = make("span");
   ivBox.append(ivIn, make("span", "small muted", ` s (default ${iv.default}, at least ${iv.min})`));
@@ -2047,7 +2048,7 @@ function buildSource(m) {
   ivIn.addEventListener("change", () => {
     const v = parseInt(ivIn.value, 10);
     if (!(v > 0) || !live.config) return;
-    sourceFor(m.id).interval = Math.max(iv.min, v);
+    sourceFor(m.id).interval = Math.min(LONGEST_INTERVAL, Math.max(iv.min, v));
     saveDataSoon();
   });
   const test = Object.assign(make("button", "", "Test"), { id: "srcTest", title: "Read it once now, as set up here, without saving" });

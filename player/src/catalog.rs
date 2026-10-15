@@ -27,6 +27,10 @@ pub struct Manifest {
     pub run: Option<Run>,
 }
 
+/// The longest interval, in seconds: a day. A manifest can't ask for more, and the player never waits
+/// longer, whatever data.json says.
+pub const LONGEST_INTERVAL: f64 = 86_400.0;
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Interval {
     pub default: f64,
@@ -252,9 +256,10 @@ pub fn check(m: &Manifest) -> Result<(), String> {
     if m.name.trim().is_empty() {
         return Err("the manifest has no name".into());
     }
-    if !(m.interval.min.is_finite() && m.interval.default.is_finite() && m.interval.min >= 1.0) {
-        return Err("the interval's min and default should be numbers, at least 1".into());
+    if ![m.interval.min, m.interval.default].iter().all(|i| (1.0..=LONGEST_INTERVAL).contains(i)) {
+        return Err(format!("the interval's min and default should be numbers from 1 to {LONGEST_INTERVAL} (a day)"));
     }
+    let mut keys = std::collections::HashSet::new();
     for s in &m.settings {
         match s.kind.as_str() {
             "text" | "number" | "bool" | "list" | "password" => {}
@@ -265,6 +270,13 @@ pub fn check(m: &Manifest) -> Result<(), String> {
         // these sit beside the settings in data.json; any other key is the plugin's own (see data::Source)
         if s.key.is_empty() || ["type", "enabled", "interval"].contains(&s.key.as_str()) {
             return Err(format!("setting {:?} can't have that key: type, enabled and interval are the source's own", s.key));
+        }
+        // the studio's own: `<key>_set` tells the page whether a password is saved, without the password
+        if s.key.ends_with("_set") {
+            return Err(format!("setting {:?} can't have that key: the studio uses keys ending in _set to say a password is set", s.key));
+        }
+        if !keys.insert(s.key.as_str()) {
+            return Err(format!("setting {:?} is there twice: each setting needs a key of its own", s.key));
         }
         if let (Some(min), Some(max)) = (s.min, s.max)
             && min > max
@@ -380,8 +392,30 @@ mod tests {
             let e = check(&serde_json::from_str(&manifest(key)).unwrap()).unwrap_err();
             assert!(e.contains("can't have that key"), "{key}: {e}");
         }
-        for key in ["hwinfo", "lhm", "lhm_url", "url", "token", "entities", "enabled_at"] {
+        for key in ["hwinfo", "lhm", "lhm_url", "url", "token", "entities", "enabled_at", "offset", "set"] {
             check(&serde_json::from_str(&manifest(key)).unwrap()).unwrap_or_else(|e| panic!("{key}: {e}"));
+        }
+        // the studio's password flags, and one key twice
+        for key in ["token_set", "city_set"] {
+            let e = check(&serde_json::from_str(&manifest(key)).unwrap()).unwrap_err();
+            assert!(e.contains("can't have that key") && e.contains("_set"), "{key}: {e}");
+        }
+        let twice: Manifest = serde_json::from_str(r#"{ "id": "w", "name": "W", "settings": [ { "key": "city", "label": "", "type": "text" },
+            { "key": "n", "label": "", "type": "number" }, { "key": "city", "label": "", "type": "number" } ] }"#).unwrap();
+        assert_eq!(check(&twice).unwrap_err(), "setting \"city\" is there twice: each setting needs a key of its own");
+    }
+
+    /// An interval is 1 s to a day: a larger one would overflow the player's waits.
+    #[test]
+    fn intervals() {
+        let manifest = |interval: &str| format!(r#"{{ "id": "w", "name": "W", "interval": {interval} }}"#);
+        for ok in [r#"{ "default": 86400, "min": 86400 }"#, r#"{ "default": 1, "min": 1 }"#, r#"{ "default": 2.5, "min": 1.5 }"#] {
+            check(&serde_json::from_str(&manifest(ok)).unwrap()).unwrap_or_else(|e| panic!("{ok}: {e}"));
+        }
+        for bad in [r#"{ "default": 1e19, "min": 5 }"#, r#"{ "default": 60, "min": 1e300 }"#, r#"{ "default": 86401, "min": 5 }"#,
+                    r#"{ "default": 60, "min": 0.5 }"#, r#"{ "default": 0, "min": 5 }"#] {
+            let e = check(&serde_json::from_str(&manifest(bad)).unwrap()).unwrap_err();
+            assert_eq!(e, "the interval's min and default should be numbers from 1 to 86400 (a day)", "{bad}");
         }
     }
 
