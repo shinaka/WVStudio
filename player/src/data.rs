@@ -324,10 +324,11 @@ impl Default for Config {
 }
 
 /// One source in data.json. No Debug, so its token can't end up in a log by accident.
-#[derive(Clone, PartialEq, Deserialize)]
-#[serde(default)]
+///
+/// Its settings sit beside `type`, `enabled` and `interval`. A built-in's are read into the typed fields
+/// below; a plugin's all go in `extra`, whatever their keys, so a plugin's `url` or `hwinfo` is its own.
+#[derive(Clone, PartialEq)]
 pub struct Source {
-    #[serde(rename = "type")]
     pub kind: String,
     pub enabled: bool,
     /// Seconds between polls; the manifest's default when left out.
@@ -342,8 +343,61 @@ pub struct Source {
     pub token: String,
     pub entities: Vec<String>,
     /// A plugin's settings, whatever its manifest names.
-    #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+/// What every source has, and the rest of its keys.
+#[derive(Deserialize)]
+#[serde(default)]
+struct Common {
+    #[serde(rename = "type")]
+    kind: String,
+    enabled: bool,
+    interval: Option<f64>,
+    #[serde(flatten)]
+    rest: serde_json::Map<String, serde_json::Value>,
+}
+
+impl Default for Common {
+    fn default() -> Common {
+        Common { kind: String::new(), enabled: true, interval: None, rest: serde_json::Map::new() }
+    }
+}
+
+/// The built-ins' own settings, with their types.
+#[derive(Deserialize)]
+#[serde(default)]
+struct Builtin {
+    hwinfo: bool,
+    lhm: bool,
+    lhm_url: String,
+    url: String,
+    token: String,
+    entities: Vec<String>,
+}
+
+impl Default for Builtin {
+    fn default() -> Builtin {
+        let s = Source::default();
+        Builtin { hwinfo: s.hwinfo, lhm: s.lhm, lhm_url: s.lhm_url, url: s.url, token: s.token, entities: s.entities }
+    }
+}
+
+const BUILTIN_KEYS: [&str; 6] = ["hwinfo", "lhm", "lhm_url", "url", "token", "entities"];
+
+impl<'de> Deserialize<'de> for Source {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Source, D::Error> {
+        let Common { kind, enabled, interval, mut rest } = Common::deserialize(d)?;
+        let mut source = Source { kind, enabled, interval, ..Source::default() };
+        if catalog::is_builtin(&source.kind) {
+            let own: serde_json::Map<_, _> = BUILTIN_KEYS.iter().filter_map(|k| rest.remove_entry(*k)).collect();
+            let b: Builtin = serde_json::from_value(serde_json::Value::Object(own)).map_err(serde::de::Error::custom)?;
+            (source.hwinfo, source.lhm, source.lhm_url) = (b.hwinfo, b.lhm, b.lhm_url);
+            (source.url, source.token, source.entities) = (b.url, b.token, b.entities);
+        }
+        source.extra = rest;
+        Ok(source)
+    }
 }
 
 impl Default for Source {
@@ -377,6 +431,9 @@ impl Source {
 
     /// A setting as it is in data.json, by its manifest key, or None when it isn't set.
     pub fn setting(&self, key: &str) -> Option<serde_json::Value> {
+        if !catalog::is_builtin(&self.kind) {
+            return self.extra.get(key).cloned();
+        }
         match key {
             "hwinfo" => Some(json!(self.hwinfo)),
             "lhm" => Some(json!(self.lhm)),
@@ -395,9 +452,9 @@ impl Source {
 
     fn copy_setting(&mut self, key: &str, from: &Source) {
         match key {
-            "token" => self.token = from.token.clone(),
-            "url" => self.url = from.url.clone(),
-            "hwinfo" | "lhm" | "lhm_url" | "entities" => {}
+            "token" if catalog::is_builtin(&self.kind) => self.token = from.token.clone(),
+            "url" if catalog::is_builtin(&self.kind) => self.url = from.url.clone(),
+            "hwinfo" | "lhm" | "lhm_url" | "entities" if catalog::is_builtin(&self.kind) => {}
             _ => {
                 if let Some(v) = from.extra.get(key) {
                     self.extra.insert(key.to_string(), v.clone());
@@ -636,8 +693,9 @@ impl Hub {
 
     /// Keeps a poll's values and status, and gives the wait before the next poll: the interval, or
     /// longer while backing off. `failing` is the error being logged, so each is logged once; while
-    /// backing off, only the start and the recovery are logged. A `streaming` source's values are saved
-    /// for the next run at most every 10 s.
+    /// backing off, only the start and the recovery are logged. A `streaming` source never backs off
+    /// (nothing polls it: it keeps running, and waiting is up to it), and its values are saved for the
+    /// next run at most every 10 s.
     fn record(&self, source: &Source, result: Result<Polled, sources::Failure>, failing: &mut Option<String>,
               backoff: &mut Backoff, streaming: bool) -> Duration {
         let mut status = self.status.lock().unwrap();
@@ -659,7 +717,7 @@ impl Hub {
                 source.every()
             }
             Err(e) => {
-                let wait = if source.backs_off(&e) {
+                let wait = if !streaming && source.backs_off(&e) {
                     let was_backing_off = backoff.active();
                     let wait = backoff.next(e.retry_after).max(source.every());
                     if !was_backing_off {
@@ -1016,5 +1074,49 @@ mod tests {
         assert!(pc.lhm && pc.extra.is_empty());
         assert_eq!(pc.setting("lhm_url"), Some(json!("http://192.168.1.5:8086")));
         assert_eq!(plugins_for(Path::new("C:/x/playlist/playlist.json")), Path::new("C:/x/plugins"));
+    }
+
+    /// A plugin's settings are its own, even under the keys the built-ins use: any type, an empty one
+    /// kept as it is, and an unset one left to the manifest's default.
+    #[test]
+    fn plugin_settings_named_like_builtins() {
+        let c: Config = serde_json::from_str(r#"{ "sources": [ { "type": "pc", "hwinfo": true },
+            { "type": "myplugin", "url": "", "token": "abc", "hwinfo": "yes", "entities": "one", "lhm_url": 5, "interval": 30 } ] }"#).unwrap();
+        let p = &c.sources[1];
+        assert_eq!(p.setting("url"), Some(json!("")));
+        assert_eq!(p.setting("token"), Some(json!("abc")));
+        assert_eq!(p.setting("hwinfo"), Some(json!("yes")));
+        assert_eq!(p.setting("entities"), Some(json!("one")));
+        assert_eq!(p.setting("lhm_url"), Some(json!(5)));
+        assert_eq!(p.setting("lhm"), None);
+        assert_eq!((p.enabled, p.interval), (true, Some(30.0)));
+        assert!(c.sources[0].hwinfo && c.sources[0].extra.is_empty());
+        // a built-in's are still typed, and still read the way they were
+        assert!(serde_json::from_str::<Source>(r#"{ "type": "pc", "hwinfo": "yes" }"#).is_err());
+        let ha: Source = serde_json::from_str(r#"{ "type": "homeassistant", "url": "", "token": "t", "entities": ["sensor.x"] }"#).unwrap();
+        assert_eq!((ha.setting("url"), ha.token.as_str(), ha.setting("entities")), (None, "t", Some(json!(["sensor.x"]))));
+        // and a saved password stands in for a plugin's token like any other
+        let mut test: Source = serde_json::from_str(r#"{ "type": "myplugin", "url": "" }"#).unwrap();
+        assert!(test.lacks_password("token"));
+        test.copy_setting("token", p);
+        assert_eq!(test.setting("token"), Some(json!("abc")));
+    }
+
+    /// A poll that's told to wait backs off; a stream isn't polled, so it doesn't, and says nothing of
+    /// a wait.
+    #[test]
+    fn streams_never_back_off() {
+        let hub = Hub { file: PathBuf::new(), config: Mutex::default(), running: Mutex::default(), status: Mutex::default(),
+                        server: Mutex::default(), plugins: PathBuf::new(), saved_at: Mutex::default() };
+        let s = source("throttled", Some(60.0));
+        let throttled = || Err(sources::Failure::from("HTTP 429 Too Many Requests"));
+        let (mut failing, mut backoff) = (None, Backoff::default());
+        assert_eq!(hub.record(&s, throttled(), &mut failing, &mut backoff, false), BACKOFF_FIRST);
+        assert!(backoff.active());
+        let (mut failing, mut backoff) = (None, Backoff::default());
+        assert_eq!(hub.record(&s, throttled(), &mut failing, &mut backoff, true), s.every());
+        assert!(!backoff.active());
+        assert_eq!(failing.as_deref(), Some("HTTP 429 Too Many Requests"));
+        assert_eq!(hub.status.lock().unwrap()["throttled"].result, Err("HTTP 429 Too Many Requests".to_string()));
     }
 }

@@ -10,6 +10,8 @@ art/
 playlist/
 calibration/
 studio.json
+# a plugin's test data.json, which can hold a key (docs/plugins.md)
+plugin-test/
 /*.gif
 /*.png
 /*.mp4

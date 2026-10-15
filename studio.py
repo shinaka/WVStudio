@@ -542,7 +542,8 @@ def font_file(path):
 
 DATA_API_PORT = 8139
 DATA_TIMEOUT = 2   # seconds: the player answers straight away, or isn't running
-TEST_TIMEOUT = 20  # a test polls the source once (a web request), so it can take a while
+PLAYER_POLL_LIMIT = 30  # the player gives up on a poll after this (a plugin's run, a web request's 20 s)
+TEST_TIMEOUT = PLAYER_POLL_LIMIT + 15  # a test polls once: wait out the player's own limit, so its error is shown
 RESCAN_TIMEOUT = 10
 no_proxy = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # straight to 127.0.0.1, never a proxy
 
@@ -801,14 +802,19 @@ def data_port(data=None):
     return port if isinstance(port, int) and 0 < port < 65536 else DATA_API_PORT
 
 
-def player_api(path, body=None, timeout=DATA_TIMEOUT):
-    """Asks the player's local API: its answer, or {"player": False} when it isn't running."""
+def player_api(path, body=None, timeout=DATA_TIMEOUT, slow_ok=False):
+    """Asks the player's local API: its answer, or {"player": False} when it isn't running. `slow_ok`: the
+    request may take a while (a test), so no answer in time is an error, not a player that isn't there."""
     req = urllib.request.Request(f"http://127.0.0.1:{data_port()}{path}",
                                  data=None if body is None else json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json"})
     try:
         with no_proxy.open(req, timeout=timeout) as r:
             return json.loads(r.read())
+    except TimeoutError:  # it took the request, but gave no answer in time
+        if slow_ok:
+            return {"error": f"The player gave no answer in {timeout} s"}
+        return {"player": False}
     except urllib.error.HTTPError as e:  # it's running, but turned the request down
         try:
             out = json.loads(e.read())
@@ -844,7 +850,7 @@ def data_test(req):
         for k in missing:
             if saved and isinstance(saved.get(k), str) and saved[k]:
                 source[k] = saved[k]
-    return player_api("/test", {"source": source}, TEST_TIMEOUT)
+    return player_api("/test", {"source": source}, TEST_TIMEOUT, slow_ok=True)
 
 
 # --- Server ----------------------------------------------------------------------

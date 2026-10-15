@@ -50,6 +50,29 @@ pub struct Setting {
     pub default: Option<Json>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub choices: Option<Vec<String>>,
+    /// A line of help under the control, for the studio.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub help: Option<String>,
+    /// Grey text in the empty control, for the studio.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placeholder: Option<String>,
+    /// A number box's least and greatest, for the studio's arrows: hints, not checked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<f64>,
+}
+
+impl Setting {
+    /// What a source that doesn't set this gets: the default, or for a choice without one, its first
+    /// choice (as the studio saves).
+    pub fn fallback(&self) -> Option<Json> {
+        match (&self.default, &self.choices) {
+            (Some(d), _) => Some(d.clone()),
+            (None, Some(choices)) if self.kind == "choice" => choices.first().map(|c| Json::from(c.as_str())),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -97,6 +120,28 @@ const BUILTINS: &str = include_str!("builtins.json");
 /// The compiled-in manifests: claude, pc, homeassistant and time.
 pub fn builtins() -> Vec<Manifest> {
     serde_json::from_str(BUILTINS).expect("builtins.json is checked by a test")
+}
+
+/// Whether `id` is a built-in source's.
+pub fn is_builtin(id: &str) -> bool {
+    static IDS: OnceLock<Vec<String>> = OnceLock::new();
+    IDS.get_or_init(|| builtins().into_iter().map(|m| m.id).collect()).iter().any(|b| b == id)
+}
+
+/// Why a plugin can't have `id`, if it can't: a built-in source's id, the first part of keys a
+/// built-in sets (`ha`, `hwinfo`, `lhm`...), whose values the two would overwrite, or another
+/// plugin's id in `found`.
+fn taken(id: &str, found: &Catalog) -> Option<String> {
+    let builtins = builtins();
+    if let Some(b) = builtins.iter().find(|b| b.id == id) {
+        return Some(format!("the id {id:?} is the built-in {} source's: choose another", b.name));
+    }
+    let root = |key: &str| key.split(['.', '*']).next().unwrap_or("").to_string();
+    if let Some(b) = builtins.iter().find(|b| b.provides.iter().any(|p| root(&p.key) == id)) {
+        return Some(format!("the id {id:?} is taken: the built-in {} source sets keys starting with \"{id}.\"", b.name));
+    }
+    let other = found.get(id)?.run.as_ref().map(|r| r.dir.display().to_string()).unwrap_or_default();
+    Some(format!("the plugin in {other} already has the id {id:?}"))
 }
 
 /// The manifests the player knows, built-ins first, then plugins in folder order.
@@ -166,10 +211,7 @@ fn scan(dir: &Path) -> Catalog {
     };
     folders.sort();
     for folder in folders {
-        match read_plugin(&folder) {
-            Ok(m) if found.get(&m.id).is_some() => {
-                found.problems.push(format!("{}: there's already a source called {:?}", folder.display(), m.id));
-            }
+        match read_plugin(&folder).and_then(|m| taken(&m.id, &found).map_or(Ok(m), Err)) {
             Ok(m) => found.manifests.push(m),
             Err(e) => found.problems.push(format!("{}: {e}", folder.display())),
         }
@@ -220,8 +262,14 @@ pub fn check(m: &Manifest) -> Result<(), String> {
             "choice" => return Err(format!("setting {:?} is a choice with no choices", s.key)),
             other => return Err(format!("setting {:?} has an unknown type {other:?}", s.key)),
         }
+        // these sit beside the settings in data.json; any other key is the plugin's own (see data::Source)
         if s.key.is_empty() || ["type", "enabled", "interval"].contains(&s.key.as_str()) {
-            return Err(format!("setting {:?} can't have that key", s.key));
+            return Err(format!("setting {:?} can't have that key: type, enabled and interval are the source's own", s.key));
+        }
+        if let (Some(min), Some(max)) = (s.min, s.max)
+            && min > max
+        {
+            return Err(format!("setting {:?} has a min above its max", s.key));
         }
     }
     Ok(())
@@ -295,6 +343,46 @@ mod tests {
         assert!(bad(r#"{ "id": "Bad Id", "name": "x" }"#).contains("id"));
         assert!(bad(r#"{ "id": "w", "name": "x", "settings": [ { "key": "k", "label": "", "type": "slider" } ] }"#).contains("unknown type"));
         assert!(bad(r#"{ "id": "w", "name": "x", "settings": [ { "key": "k", "label": "", "type": "choice" } ] }"#).contains("no choices"));
+        assert!(bad(r#"{ "id": "w", "name": "x", "settings": [ { "key": "n", "label": "", "type": "number", "min": 5, "max": 1 } ] }"#)
+            .contains("min above its max"));
+    }
+
+    /// A setting's help, placeholder, min and max reach the studio; a choice without a default falls
+    /// back to its first choice.
+    #[test]
+    fn setting_extras() {
+        let m: Manifest = serde_json::from_str(r#"{ "id": "w", "name": "W", "settings": [
+            { "key": "n", "label": "N", "type": "number", "default": 3, "min": 1, "max": 10.5, "help": "How many.", "placeholder": "3" },
+            { "key": "units", "label": "Units", "type": "choice", "choices": ["c", "f"] },
+            { "key": "city", "label": "City", "type": "text" } ] }"#).unwrap();
+        check(&m).unwrap();
+        let j = serde_json::to_value(&m).unwrap();
+        assert_eq!(j["settings"][0], json!({ "key": "n", "label": "N", "type": "number", "default": 3, "min": 1.0, "max": 10.5,
+                                              "help": "How many.", "placeholder": "3" }));
+        assert_eq!(j["settings"][2], json!({ "key": "city", "label": "City", "type": "text" }));
+        assert_eq!(m.settings[0].fallback(), Some(json!(3)));
+        assert_eq!(m.settings[1].fallback(), Some(json!("c")));
+        assert_eq!(m.settings[2].fallback(), None);
+        // the catalog the API serves carries them
+        let catalog = Catalog { manifests: vec![m], problems: Vec::new() };
+        assert_eq!(catalog.json(|_| json!({}))["sources"][0]["settings"][0]["help"], json!("How many."));
+        // a help that isn't text is a broken plugin.json, not a silent drop
+        assert!(serde_json::from_str::<Manifest>(r#"{ "id": "w", "name": "W", "settings": [
+            { "key": "k", "label": "", "type": "text", "help": 5 } ] }"#).is_err());
+    }
+
+    /// Plugin settings are stored beside `type`, `enabled` and `interval` in data.json, so only those
+    /// keys are refused: the built-ins' own setting keys are free for a plugin (see data::Source).
+    #[test]
+    fn setting_keys() {
+        let manifest = |key: &str| format!(r#"{{ "id": "w", "name": "W", "settings": [ {{ "key": "{key}", "label": "", "type": "text" }} ] }}"#);
+        for key in ["type", "enabled", "interval", ""] {
+            let e = check(&serde_json::from_str(&manifest(key)).unwrap()).unwrap_err();
+            assert!(e.contains("can't have that key"), "{key}: {e}");
+        }
+        for key in ["hwinfo", "lhm", "lhm_url", "url", "token", "entities", "enabled_at"] {
+            check(&serde_json::from_str(&manifest(key)).unwrap()).unwrap_or_else(|e| panic!("{key}: {e}"));
+        }
     }
 
     #[test]
@@ -311,19 +399,40 @@ mod tests {
         make("clash", r#"{ "id": "pc", "name": "PC again", "run": { "command": ["x"] } }"#);
         make("mode", r#"{ "id": "mode", "name": "Mode", "run": { "command": ["x"], "mode": "push" } }"#);
         make("keys", r#"{ "id": "keys", "name": "Keys", "provides": [ { "key": "claude.week", "label": "" } ], "run": { "command": ["x"] } }"#);
+        make("good2", r#"{ "id": "good", "name": "Good again", "run": { "command": ["x"] } }"#);
         std::fs::create_dir_all(dir.join("empty")).unwrap();
         let found = scan(&dir);
         let ids: Vec<&str> = found.manifests.iter().map(|m| m.id.as_str()).collect();
         assert_eq!(ids, ["claude", "pc", "homeassistant", "time", "good"]);
         assert_eq!(found.get("good").unwrap().run.as_ref().unwrap().dir, dir.join("good"));
-        assert_eq!(found.problems.len(), 5, "{:?}", found.problems);
+        assert_eq!(found.problems.len(), 6, "{:?}", found.problems);
         assert!(found.problems.iter().any(|p| p.contains("keys") && p.contains("isn't under")));
         assert!(found.problems.iter().any(|p| p.contains("broken") && p.contains("isn't valid")));
-        assert!(found.problems.iter().any(|p| p.contains("already a source")));
+        let problem = |folder: &str| found.problems.iter().find(|p| p.starts_with(&dir.join(folder).display().to_string())).cloned();
+        assert_eq!(problem("clash").unwrap(), format!("{}: the id \"pc\" is the built-in This PC source's: choose another", dir.join("clash").display()));
+        assert_eq!(problem("good2").unwrap(), format!("{}: the plugin in {} already has the id \"good\"", dir.join("good2").display(), dir.join("good").display()));
         // a missing folder is just no plugins
         let none = scan(&dir.join("nowhere"));
         assert_eq!(none.manifests.len(), 4);
         assert!(none.problems.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A plugin can't take a built-in's id, nor the first part of the keys a built-in sets, whose
+    /// values the two would overwrite.
+    #[test]
+    fn taken_ids() {
+        let empty = Catalog { manifests: builtins(), problems: Vec::new() };
+        for id in ["claude", "pc", "homeassistant", "time"] {
+            let why = taken(id, &empty).unwrap_or_else(|| panic!("{id} wasn't refused"));
+            assert!(why.contains("is the built-in") && why.ends_with("source's: choose another"), "{why}");
+        }
+        assert_eq!(taken("ha", &empty).unwrap(), "the id \"ha\" is taken: the built-in Home Assistant source sets keys starting with \"ha.\"");
+        assert_eq!(taken("hwinfo", &empty).unwrap(), "the id \"hwinfo\" is taken: the built-in This PC source sets keys starting with \"hwinfo.\"");
+        assert!(taken("lhm", &empty).unwrap().contains("This PC"));
+        for id in ["weather", "disk", "hw", "claudes", "pc2", "home"] {
+            assert_eq!(taken(id, &empty), None, "{id}");
+        }
+        assert!(is_builtin("pc") && is_builtin("time") && !is_builtin("ha") && !is_builtin("weather"));
     }
 }

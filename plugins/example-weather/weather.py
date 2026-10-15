@@ -26,12 +26,19 @@ DESCRIPTIONS = {
 }
 
 
+def setting(settings, key, default):
+    """A setting, or `default` when it's missing or null (the player sends null for a setting with no value
+    and no default). 0 and "" are values: check them yourself where they make no sense."""
+    value = settings.get(key)
+    return default if value is None else value
+
+
 def fetch(settings):
     """The current conditions at the settings' place, as values for the player."""
-    units = settings.get("units") or "celsius"
+    units = setting(settings, "units", "celsius")
     query = {
-        "latitude": settings.get("latitude", 40.7),
-        "longitude": settings.get("longitude", -74.0),
+        "latitude": setting(settings, "latitude", 40.7),
+        "longitude": setting(settings, "longitude", -74.0),
         "current": "temperature_2m,weather_code,wind_speed_10m,relative_humidity_2m",
         "temperature_unit": units,
         "wind_speed_unit": "mph" if units == "fahrenheit" else "kmh",
@@ -54,11 +61,16 @@ def fetch(settings):
 
 
 def main():
-    settings = json.load(sys.stdin).get("settings", {})
     try:
-        print(json.dumps({"values": fetch(settings)}))
+        # The settings arrive as UTF-8: read the bytes, since sys.stdin would decode them with Windows' ANSI
+        # code page and turn "Zürich" into "ZÃ¼rich".
+        settings = json.load(sys.stdin.buffer).get("settings") or {}
+        out = {"values": fetch(settings)}
     except Exception as e:  # anything at all: the player shows the message as the source's error
-        print(json.dumps({"error": f"{type(e).__name__}: {e}"}))
+        out = {"error": f"{type(e).__name__}: {e}"}
+    # json.dumps writes plain ASCII (its ensure_ascii default), so the output reads the same whatever the
+    # code page: print nothing else to stdout, and diagnostics to stderr.
+    print(json.dumps(out))
 
 
 if __name__ == "__main__":

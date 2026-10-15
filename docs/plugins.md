@@ -32,9 +32,10 @@ player. The specs are [sources.md](sources.md) and [data.md](data.md), and
 | When it's read | when the player starts, and when you press **Rescan** in the studio |
 | How it runs | `run.command`, with no window. Its working folder is the plugin's folder, but the program itself isn't looked for there, so name the interpreter: `["python", "disk.py"]` |
 | Input | one line on stdin, `{"settings": {...}}`, then end of input |
-| Output | `{"values": {"<id>.<name>": value, ...}}` or `{"error": "..."}` |
-| `poll` mode | runs once per interval, and is killed after the interval or 30 s, whichever is shorter |
+| Output | `{"values": {"<id>.<name>": value, ...}}` or `{"error": "..."}`, in UTF-8 |
+| `poll` mode | runs once per interval, and is stopped after the interval or 30 s, whichever is shorter |
 | `stream` mode | keeps running and prints one JSON object per line. Restarted 1 s after it exits, with the wait doubling each time up to 60 s |
+| Stopping | a plugin is always stopped together with every program it started |
 | Values | numbers, text, and RFC 3339 times, with seconds and a time zone: `2026-10-14T10:00:00Z` |
 | Stale | after 3 × the interval without a success |
 
@@ -173,7 +174,7 @@ disk: ok
 
 `disk: ok` and its four values mean the player loaded and ran it. `time` is a built-in that's always listed.
 [Testing from the command line](#testing-from-the-command-line) explains each line, and how to test
-settings.
+settings. Git ignores the `plugin-test` folder, so you can keep it for the next test.
 
 ### 6. Load it in the studio
 
@@ -204,8 +205,7 @@ Typing `{` in the text box also suggests every key, with its current value. Some
 The studio's preview fills in the text with the running player's values, so you can check it there before it
 reaches the screen. (`wvplay data` shows the values, not your text.)
 
-That's a working plugin. Delete the `plugin-test` folder when you're done with it. The rest of this guide
-explains each part in detail.
+That's a working plugin. The rest of this guide explains each part in detail.
 
 ## How the player runs a plugin
 
@@ -220,12 +220,11 @@ explains each part in detail.
   - A streaming plugin keeps running its old code until it restarts. **Rescan** restarts every plugin.
 - A plugin whose `plugin.json` has a problem is skipped. The reason goes to the player's log and to the
   **Rescan** note: see [troubleshooting](#when-the-plugin-isnt-loaded).
-- Ids must be unique:
-  - The built-in sources' ids are taken: `claude`, `pc`, `homeassistant` and `time`.
-  - If two folders have the same id, the folder whose name sorts first wins.
-  - Don't use `ha` or `hwinfo` either, or any other first part of a key in the built-ins' `provides` in
-    `player/src/builtins.json`. The player accepts them, but Home Assistant sets keys starting with `ha.` and
-    the PC source sets keys starting with `hwinfo.`, so the two would overwrite each other's values.
+- **Ids are unique.** The player refuses a plugin whose id is:
+  - a built-in source's: `claude`, `pc`, `homeassistant` or `time`;
+  - the first part of the keys a built-in sets, whose values the two would overwrite: `ha` (Home Assistant's
+    `ha.*`), and `hwinfo` and `lhm` (the PC source's sensors);
+  - another plugin's. The folder whose name sorts first keeps the id.
 
 ### Starting the program
 
@@ -243,7 +242,7 @@ explains each part in detail.
 | `["tool.exe"]`, `["run.cmd"]` (files in your plugin's folder) | **no**: `couldn't run "tool.exe": program not found`. Your plugin's folder isn't searched |
 | `[".\\tool.exe"]`, `[".\\run.cmd"]` | **no**: a relative path is taken from the *player's* working folder, not your plugin's |
 | `["C:\\Tools\\tool.exe"]` | yes: a full path |
-| `["cmd", "/c", ".\\tool.exe"]`, `["cmd", "/c", ".\\run.cmd"]` | yes: `cmd` starts in your plugin's folder and finds the file there. But in stream mode, `cmd` mustn't start another program, such as `tool.exe`: see [Stream mode](#stream-mode) |
+| `["cmd", "/c", ".\\tool.exe"]`, `["cmd", "/c", ".\\run.cmd"]` | yes: `cmd` starts in your plugin's folder and finds the file there. This works in both modes: the player stops `cmd` and what it started together |
 
 - **Arguments:** relative paths in the arguments are fine, because the program starts in the plugin's
   folder. That's why `["python", "disk.py"]` works.
@@ -271,8 +270,8 @@ One line of JSON, then a newline, then the end of input:
 
 - `settings` holds every setting in the manifest, and nothing else. The interval, `enabled` and `type` aren't
   included.
-- Each value is the one in `playlist\data.json`. When that's missing, the manifest's `default` is used, and
-  when there's no default either, `null`.
+- Each value is the one in `playlist\data.json`. When that's missing, the manifest's `default` is used. With
+  no default either, a `choice` gets its first choice, and any other type `null`.
 - Passwords are included, in plain text: see [Passwords and other secrets](#passwords-and-other-secrets).
 - Don't rely on the order of the keys.
 
@@ -288,17 +287,25 @@ read stdin at all.
 - **After that,** it runs again one interval after each run *ends*.
 - **After a settings change:** changing a setting or the interval in the studio restarts the source, and the
   plugin runs at once with the new settings.
-- **Time limit:** the run is killed if it takes longer than its interval, or 30 s, whichever is shorter. The
-  source then shows `took longer than 30 s`, or whatever the limit was.
-  - Only the process the player started is killed. If your command is a wrapper (`cmd /c ...`,
-    `powershell ...`) that starts another program, that program keeps running to its end.
-  - Give your own network calls a timeout well under the limit. The example-weather plugin uses 15 s.
+- **Time limit:** the run is stopped if it takes longer than its interval, or 30 s, whichever is shorter. The
+  source then shows `took longer than 30 s`, or whatever the limit was. Give your own network calls a timeout
+  well under the limit: the example-weather plugin uses 15 s.
+- **A run ends when the program exits.** Anything it started that's still running then is stopped, so a poll
+  run can't leave a program behind.
 
-### When the player stops
+### Stopping a plugin
 
-When the player exits, it doesn't kill a running plugin. A streaming plugin finds out at its next print,
-which fails because nobody is reading. Python then exits with a `BrokenPipeError`. In another language,
-exit when a write to stdout fails.
+The player runs each plugin in a Windows job, which holds the program and every program it starts in turn:
+the program behind a `cmd /c` wrapper, a venv's Python, a helper it launches. Stopping the plugin stops all of
+them at once:
+
+- a poll run, when it passes its time limit or ends;
+- a streaming plugin, when its settings or interval change, on **Rescan**, and before each restart;
+- the program **Test** started, once it has its answer;
+- every plugin, when the player exits, however it exits: closing it, a crash, or Task Manager's **End task**.
+
+Stopping is immediate, with no chance to clean up. If your plugin writes a file, write it whole to a
+temporary name and rename it, so a stop never leaves half a file.
 
 ## plugin.json reference
 
@@ -316,7 +323,7 @@ exit when a write to stdout fails.
 
 | field | type | required | default | rules |
 |---|---|---|---|---|
-| `id` | text | yes | | lowercase `a`–`z`, digits, `_` and `-`. Unique, and not `claude`, `pc`, `homeassistant` or `time`. Avoid `ha` and `hwinfo` too ([why](#finding-plugins)). It starts every key you set, and it's the `type` in `data.json` |
+| `id` | text | yes | | lowercase `a`–`z`, digits, `_` and `-`. Not `claude`, `pc`, `homeassistant`, `time`, `ha`, `hwinfo` or `lhm`, and not another plugin's ([why](#finding-plugins)). It starts every key you set, and it's the `type` in `data.json` |
 | `name` | text | yes | | not blank. Shown in the sources list |
 | `description` | text | no | `""` | shown above the settings |
 | `interval` | object | no | `{"default": 60, "min": 5}` | [below](#interval) |
@@ -341,38 +348,40 @@ byte-order mark.
 
 ### settings
 
-Each setting is `{"key", "label", "type", "default", "choices"}`:
+A setting is `{"key", "label", "type"}`, with optional fields:
 
 - **`key`** (required): the name in `data.json` and on stdin. It can't be empty, `type`, `enabled` or
-  `interval`.
-  - Avoid `hwinfo`, `url`, `token` and `entities`, and any other setting key of the built-in sources in
-    `player/src/builtins.json`: the player reads those with fixed types.
-  - `hwinfo` is always passed as `true` or `false`, whatever its default.
-  - `url` and `token` must be text, and `entities` a list of text. A value of another type in `data.json`
-    stops the player reading the file at all.
+  `interval`, which sit beside the settings in `data.json`. Any other key is your plugin's own, even one a
+  built-in source uses, such as `url` or `token`.
 - **`label`** (required): the text by the control.
 - **`type`** (required): one of the types in the table below.
-- **`default`** (optional): any JSON value. It isn't checked against the type, so make it fit.
+- **`default`**: any JSON value. It isn't checked against the type, so make it fit.
 - **`choices`** (for `choice`): a non-empty list of text.
-- Any other field (such as `help` or `placeholder`) is ignored.
+- **`help`**: text shown under the control, and as its tooltip.
+- **`placeholder`**: grey text in an empty text, number or list box. A password box shows it only while no
+  password is saved.
+- **`min`** and **`max`** (for `number`): the number box's arrows stay between them. They aren't enforced: a
+  value typed outside them is saved as it is, so check it in your plugin.
+- `help` and `placeholder` must be text and `min` and `max` numbers, or `plugin.json` is refused. Any other
+  field is ignored.
 
 | `type` | the studio shows | saved in `data.json` as | if there's no `default`, the studio saves |
 |---|---|---|---|
 | `text` | a text box | text | `""` |
 | `number` | a number box (any decimals) | a number | `0` |
 | `bool` | a checkbox, with the label beside it | `true` / `false` | `false` |
-| `choice` | a drop-down of `choices` | the chosen text | `""`, which it then refuses: **always give a choice a default** |
+| `choice` | a drop-down of `choices` | the chosen text | the first choice |
 | `list` | a multi-line box, one entry per line | a list of text, trimmed, with blank lines dropped | `[]` |
 | `password` | a password box | text | nothing |
 
 **How defaults reach your plugin:**
 
 - When the studio first adds a source to `data.json` (when you switch it on, or change one of its settings),
-  it writes all of its settings. It uses the manifest's defaults, or the empty values above.
+  it writes all of its settings. It uses the manifest's defaults, or the values in the last column above.
 - From then on, `data.json` wins: changing a default in `plugin.json` later doesn't change sources that are
   already set up.
-- The player falls back to the manifest's default only when `data.json` lacks the key, and passes `null`
-  when there's no default either.
+- The player falls back to the manifest's default only when `data.json` lacks the key, as described in
+  [What it reads on stdin](#what-it-reads-on-stdin).
 
 So treat `null`, `""` and `0` as "not set" where that makes sense, as `disk.py` does with
 `settings.get("drive") or "C:\\"`.
@@ -439,11 +448,11 @@ or, when you couldn't get the values:
 {"error": "can't reach the server: timed out"}
 ```
 
-- **When `error` is there,** it wins, whatever it holds: even `"error": null` fails, with the error `null`.
-  Leave the key out when you succeed, rather than setting it to `None` or `null`.
+- **An `error` that isn't `null` wins:** the run fails with it, whatever else the object holds. `"error": null`
+  means no error, so `{"values": {...}, "error": null}` succeeds.
 - **An error that isn't text** (such as `{"error": {"code": 7}}`) is shown as its JSON, `{"code":7}`.
-- **A JSON object with neither** gives `the output has neither "values" nor "error"`, and so does a
-  `values` that isn't an object.
+- **A JSON object with neither** gives `the output has neither "values" nor "error"`. So do a `values` that
+  isn't an object, and `{"error": null}` on its own.
 - **`{"values": {}}`** is a success with no values.
 - **The exit code** doesn't matter once the JSON is printed. Without any JSON it does: see
   [Errors](#errors-rate-limits-and-stale-values).
@@ -490,9 +499,7 @@ or, when you couldn't get the values:
 **In poll mode,** the player looks for the last `{` that begins a line from which the rest of the output reads
 as one JSON object. So:
 
-- lines printed *before* the JSON are ignored, even ones that start with `{`, as long as they're valid UTF-8.
-  The player stops reading at the first line that isn't, so the JSON after it is lost: `didn't print JSON`.
-  In Python, a plain `print("café starting")` writes such a line (see [Encoding](#encoding));
+- lines printed *before* the JSON are ignored, even ones that start with `{`;
 - the JSON can be pretty-printed over several lines (`json.dumps(..., indent=2)` is fine);
 - anything printed *after* the JSON breaks it: `didn't print JSON: {"values": {"after.n": 1}} | done`.
   Print the JSON last. Trailing spaces and newlines are fine.
@@ -500,50 +507,39 @@ as one JSON object. So:
 **In stream mode,** every line is read on its own:
 
 - each object must be on one line;
-- a line that isn't JSON, including a blank line, marks the source as failing until the next good line;
-- a line that isn't valid UTF-8 stops the player reading the plugin at all, with no error. The program keeps
-  running and printing, but its values just go stale, until it has printed [1 MiB](#size-limits) in all and
-  is cut off and restarted.
+- a line that isn't JSON, including a blank line, marks the source as failing until the next good line.
 
 Print diagnostics to **stderr**, not stdout. The player shows the end of stderr when the program fails (see
-[Errors](#errors-rate-limits-and-stale-values)), as long as it's UTF-8.
+[Errors](#errors-rate-limits-and-stale-values)).
 
 ### Encoding
 
-The settings come in as UTF-8, and stdout and stderr must be UTF-8:
+The settings come in as UTF-8, and stdout and stderr should be UTF-8:
 
 - **Input:**
   - In Python, read `sys.stdin.buffer`, not `sys.stdin`. On a normal Windows setup, `sys.stdin` decodes
     the pipe with the ANSI code page, and a setting of `Zürich` arrives as `ZÃ¼rich`.
   - In PowerShell, set `[Console]::InputEncoding` to UTF-8 first (see
     [the PowerShell example](#powershell)).
-- **stdout:**
-  - Python's `json.dumps` writes plain ASCII unless you pass `ensure_ascii=False`, so by default its output is
-    safe.
-  - Other text is written in the ANSI code page when stdout is a pipe, so `print("café")` writes a line that
-    isn't UTF-8. The player stops reading at that line: in poll mode the JSON after it is lost
-    (`didn't print JSON`), and in stream mode the values just stop (see [Stray prints](#stray-prints)).
-- **stderr:** if any of it isn't UTF-8, the player drops all of it and shows just `exited with code N`.
-  Python writes stderr in the ANSI code page too, so a traceback that mentions `Zürich`, or a user folder
-  such as `C:\Users\Jürgen`, shows nothing.
-- **In Python, `-X utf8` fixes both:** start it with `["python", "-X", "utf8", "disk.py"]`, which makes stdin,
-  stdout and stderr UTF-8, so a `print()` or a traceback of any text is safe. The examples here print only
-  `json.dumps` output, so without it they lose nothing but a traceback that holds such a character.
+- **Output:** the player reads each line of stdout, and the end of stderr, as UTF-8, and turns any byte that
+  isn't into `�`. Output in another encoding loses only those characters, never a line or the JSON:
+  - Python writes `print()` and tracebacks to a pipe in the ANSI code page, so `print("café")` arrives as
+    `caf�`, and a traceback that mentions `Zürich` shows `Z�rich`. Before poll mode's JSON, such a line is
+    just a stray line.
+  - Python's `json.dumps` writes plain ASCII unless you pass `ensure_ascii=False`, so its JSON always arrives
+    intact.
+  - To keep every character, start Python with `-X utf8`: `["python", "-X", "utf8", "disk.py"]` makes
+    stdin, stdout and stderr UTF-8.
 
 ### Size limits
 
-- **How much is read:** the player reads the first 1 MiB of stdout and the first 1 MiB of stderr *of one run
-  of the program*. It then stops reading, and the program's next write to that stream fails:
-  - In poll mode, a run that prints more than 1 MiB fails (Python exits with a `BrokenPipeError`).
-  - In stream mode, the 1 MiB counts over the whole life of the process. A streaming plugin that has printed
-    1 MiB in all is cut off and restarted. That's after about 3 hours of a 100-byte line every second. Logging
-    a lot to stderr does the same.
-- **Error messages** show the last 300 characters of the program's output, with its lines joined by ` | `.
-- **Keep text that isn't JSON short** (stdout that isn't JSON, a bad stream line, and stderr when it
-  crashes). If it's longer than 300 characters and the character just before its last 300 isn't ASCII, such
-  as `ü` or `°`, a bug in the player stops it polling the source until the source restarts (a settings
-  change, **Rescan**, or a new start). No error is shown, the values go stale, and `wvplay data` leaves the
-  source out.
+- **poll mode:** a run may print 1 MiB to stdout. One that prints more fails with `printed more than 1 MiB`.
+  The rest is still read, so the program isn't stuck on a full pipe, and runs to its end or its time limit.
+- **stream mode:** there's no limit over the program's life, but each line may be 1 MiB at most. A longer one
+  is skipped, and the source shows `printed a line longer than 1 MiB` until the next good line.
+- **stderr** is read for as long as the program runs, in either mode, and its last 64 KiB are kept.
+- **Error messages** show the last 300 characters of the program's output (the end of stderr after a crash, or
+  the text that wasn't JSON), with its lines joined by ` | ` and `...` before them when there was more.
 
 ### What happens to the values
 
@@ -607,20 +603,12 @@ while True:
 The rules:
 
 - **Settings arrive once,** when the program starts. Changing a setting or the interval in the studio
-  restarts it with the new ones, and so does **Rescan**.
-- **Start the program directly, not through a wrapper.** A settings change, **Rescan** or **Test** kills
-  only the process the player started.
-  - With `["cmd", "/c", ...]` starting another program, or PowerShell starting one, the program behind it
-    keeps running with its old settings next to the new copy. The player still drains its output, so its
-    prints don't fail, and each restart leaves one more copy running, still doing its work, until the player
-    exits or the copy has printed 1 MiB.
-  - Use `["python", "myplugin.py"]`, or the full path of an `.exe`. A venv's Python works by its full path
-    too: see [Python with its own packages](#python-with-its-own-packages).
+  restarts it with the new ones, and so does **Rescan**. Each restart stops the old program, and anything it
+  started.
 - **Flush after every line** (`print(..., flush=True)`). Python holds back output sent to a pipe, and without
   the flush the player sees nothing, possibly for minutes.
 - **One object per line:** `{"values": ...}` or `{"error": ...}`. A line that isn't JSON, or an error, marks
-  the source as failing until the next good line, but the program keeps running. A line that isn't valid
-  UTF-8 is worse: see [Stray prints](#stray-prints).
+  the source as failing until the next good line, but the program keeps running.
 - **On an error you can't recover from** (no API key, a bad setting), print `{"error": ...}` and keep running:
   sleep, and print it again now and then. Don't exit. When the program exits, its status becomes
   `exited with code 0; restarting in 1 s`, with the end of stderr after the code if there is any. That
@@ -629,20 +617,18 @@ The rules:
 - **The interval doesn't schedule anything here,** but values still go stale after 3 × the interval. Print
   at least that often, even when nothing has changed. The example prints at least once a minute, with an
   interval of 60 s.
-- **Print when something changes, not nonstop.**
-  - The player checks whether to stop a streaming plugin only after a quarter of a second without output,
-    so a plugin that prints nonstop can't be stopped or restarted cleanly.
-  - Nonstop printing also uses up the [1 MiB per run](#size-limits) sooner.
+- **Print when something changes, not nonstop.** Nonstop printing costs CPU in your program and the player,
+  for values the screen can't show any faster.
 - **Restarts:** if the program exits, the source shows `exited with code 1: <end of stderr>; restarting in 1 s`
   and the player starts it again.
   - The wait doubles after each exit in a row: 1, 2, 4, 8, 16, 32 and 60 s.
   - It goes back to 1 s once a run prints a good line.
-- **No back-off for rate limits:** the player doesn't pause a streaming plugin that reports a 429 or 503. The
-  log says `backing off`, but the program keeps running, so waiting is up to you.
-- **The Test button** starts the program, takes its first line, and stops it. If no line comes within the
-  interval or 30 s, whichever is shorter, it shows `printed nothing in N s`. But the studio waits only 20 s
-  for a test, so with an interval of 20 s or more you get "The player isn't running" instead. Either way, it's
-  usually a missing flush.
+- **No back-off for rate limits:** the player doesn't poll a streaming plugin, so it never pauses one. An
+  error with 429 or 503 in it is shown and logged like any other, and waiting is up to your program.
+- **The Test button** starts the program, takes its first line, and stops it.
+  - If no line comes within the interval or 30 s, whichever is shorter, it shows `printed nothing in N s`:
+    usually a missing flush.
+  - If the program exits first, it shows `exited with code N: <end of stderr>`.
 
 ## Errors, rate limits and stale values
 
@@ -657,13 +643,14 @@ mode, [keep running](#stream-mode) instead):
   the source recovers.
 - **The values** stay as they were until they go stale.
 
-If the program crashes before it prints any JSON, the player makes the message itself:
+If the program fails before it prints any JSON, the player makes the message itself:
 
 | what happened | the source's error |
 |---|---|
-| it exited with a non-zero code | `exited with code 1: <the end of stderr>`, such as the last lines of a Python traceback. If stderr isn't all UTF-8, just `exited with code 1` (see [Encoding](#encoding)) |
+| it exited with a non-zero code | `exited with code 1: <the end of stderr>`, such as the last lines of a Python traceback |
 | it exited with code 0 but printed no JSON | `didn't print JSON: <the end of stdout>`, or the end of stderr when stdout was empty |
 | it ran too long | `took longer than 30 s`, or less when the interval is shorter |
+| it printed too much | `printed more than 1 MiB` (poll mode), or `printed a line longer than 1 MiB` (stream mode) |
 | it couldn't be started | `couldn't run "python": program not found` |
 
 Catching exceptions and printing an `error`, as `disk.py` does, gives a clearer message than a traceback.
@@ -727,10 +714,8 @@ The **Data sources…** window needs the player to be running.
 
 - **Rescan** re-reads the plugins folder, and lists the plugins it skipped, with the reason.
 - **Test** runs the selected source once with the settings in the form, without saving. It shows the values,
-  "It worked, but gave no values", or the error.
-  - The studio waits 20 s for a test. A plugin that takes longer shows
-    "The player isn't running: start it with Play on cooler to test", even though the player is running.
-    So does a streaming plugin with an interval of 20 s or more that prints no line.
+  "It worked, but gave no values", or the error. It waits up to 45 s, longer than the player's own 30 s
+  limit, so a plugin that's too slow shows the player's `took longer than ...`.
 - **The status line** above the settings shows `Error: ...`, or when it last updated, followed by the
   ignored-key notes after a `·`.
 - **The Provides table** shows each key's live value.
@@ -745,7 +730,8 @@ each did and every value, and exits:
 - it reads plugins from the `plugins` folder next to `<folder>`, so put the test `data.json` in a folder
   beside `plugins`. Any folder works, not just the CoolerVideo folder: `<yours>\plugins\disk\` and
   `<yours>\plugin-test\data.json`, with `wvplay.exe` called by its full path;
-- the usage text says `<playlist.json>`, but either file works, because only its folder counts.
+- the usage text says `<playlist.json>`, but either file works, because only its folder counts;
+- when it exits, it stops every plugin it started, streaming ones included.
 
 The commands, and what they print, are in [step 5 of the quick start](#5-run-it-through-the-player).
 
@@ -759,8 +745,8 @@ The commands, and what they print, are in [step 5 of the quick start](#5-run-it-
 - A key the plugin doesn't have is ignored without a warning, `"settings": {...}` included, and the plugin
   then runs with its defaults.
 - `enabled` can be left out: a source is on unless it says `false`.
-- A password goes here too, in plain text. Use a throwaway key, or keep the test folder outside the
-  CoolerVideo folder: `plugin-test\` isn't ignored by git, so a real key there could be committed.
+- A password goes here too, in plain text. Git ignores the `plugin-test` folder, but use a throwaway key
+  where you can.
 - Save it as UTF-8 without a byte-order mark, like `plugin.json`. PowerShell 7's `Set-Content` does. Windows
   PowerShell 5.1's `Set-Content` writes the ANSI code page, and with `-Encoding utf8` it adds a byte-order
   mark, so for text like `Zürich` use `[IO.File]::WriteAllText("$PWD\plugin-test\data.json", '...')` there.
@@ -771,8 +757,9 @@ What else to know:
 
 - **What the output shows:**
   - Each source shows `ok`, `ok (<notes>)` or `failed: <error>`.
-  - A source that hasn't answered within the 30 s isn't listed at all: a streaming plugin that doesn't flush
-    just doesn't appear.
+  - A source that hasn't answered within the 30 s isn't listed at all: a streaming plugin that doesn't flush,
+    or a poll plugin that runs into a 30 s time limit. To see that one's `took longer than` error, give it an
+    interval under 30 s in the test `data.json`.
   - Values are in their default form, with `(stale)` after stale ones. `time` is a built-in that's always
     listed.
   - Log lines, such as plugins that were skipped and why, come first.
@@ -787,11 +774,6 @@ What else to know:
 - **Turn on only your plugin** in the test `data.json`.
   - Leave out the built-in sources: the player polls them already.
   - `claude`'s endpoint rate-limits a login that polls too often.
-- **A streaming plugin** shows its first line. When `wvplay data` exits, the plugin keeps running until its next
-  print fails.
-  - So don't pipe `wvplay data` into another command (`| Select-String`, `| Out-String`) while a streaming
-    plugin is on: the plugin holds the pipe open, and the command waits until the plugin exits.
-- **Clean up:** `plugin-test\` isn't ignored by git, so delete it when you're done.
 
 ### The player's log
 
@@ -800,7 +782,9 @@ starts. For plugins it shows:
 
 - how many plugins it found, and where: `plugins: 2 in C:\...\plugins`;
 - every plugin it skipped, and why;
-- each failure once, when it starts or changes, and `... is working again` when the source recovers.
+- each failure once, when it starts or changes, and `... is working again` when the source recovers;
+- `plugins: no job for ...`, logged once, if Windows ever won't give a plugin a job: stopping that plugin then
+  stops only its own program, not what it started.
 
 ## Using the values in text
 
@@ -832,9 +816,8 @@ The contract is the same in any language:
 - write UTF-8, to stdout and stderr alike;
 - exit when done (poll mode), or keep running, even after an error (stream mode).
 
-Name the interpreter in `command`, and reach programs in the plugin's folder through `cmd /c .\...` (poll
-mode) or by their full path, as in [Starting the program](#starting-the-program). In stream mode, start the
-program [directly](#stream-mode), not through `cmd`.
+Name the interpreter in `command`, and reach programs in the plugin's folder through `cmd /c .\...` or by
+their full path, as in [Starting the program](#starting-the-program).
 
 ### A batch file
 
@@ -911,41 +894,26 @@ try {
 
 ### A compiled program
 
-Put the `.exe` in the plugin's folder, and start it through `cmd`:
+Put the `.exe` in the plugin's folder, and start it through `cmd`, in either mode:
 
 ```json
-"run": { "command": ["cmd", "/c", ".\\myplugin.exe", "--some-option"] }
+"run": { "command": ["cmd", "/c", ".\\myplugin.exe", "--some-option"], "mode": "stream" }
 ```
 
-or by its full path, which you must use in stream mode, because when the player stops a program that `cmd`
-started, it stops only `cmd` (see [Stream mode](#stream-mode)):
-
-```json
-"run": { "command": ["C:\\Git\\CoolerVideo\\plugins\\myplugin\\myplugin.exe", "--some-option"], "mode": "stream" }
-```
-
+or by its full path: `["C:\\Git\\CoolerVideo\\plugins\\myplugin\\myplugin.exe", "--some-option"]`.
 `["myplugin.exe"]` and `[".\\myplugin.exe"]` don't work: see [Starting the program](#starting-the-program).
 
 ### Python with its own packages
 
 To use packages without installing them for everyone, give the plugin its own virtual environment
 (`python -m venv .venv` in its folder, then `.venv\Scripts\pip install ...`), and start that Python through
-`cmd`:
+`cmd`, in either mode:
 
 ```json
 "run": { "command": ["cmd", "/c", ".\\.venv\\Scripts\\python.exe", "myplugin.py"] }
 ```
 
-When `cmd` starts another program, as here, a [time-out](#when-it-runs-poll-mode) kills only `cmd`, so keep
-the plugin's own work well inside the time limit.
-
-**In stream mode, don't go through `cmd`:** a restart would leave the old Python running (see
-[Stream mode](#stream-mode)). Give the full path of the venv's Python instead. Stopping it stops the Python
-it starts too:
-
-```json
-"run": { "command": ["C:\\Git\\CoolerVideo\\plugins\\myplugin\\.venv\\Scripts\\python.exe", "myplugin.py"], "mode": "stream" }
-```
+A venv's `python.exe` starts the real Python as a program of its own, and stopping the plugin stops both.
 
 ## Security
 
@@ -969,25 +937,22 @@ it starts too:
 - [ ] A folder in `plugins\`, with a `plugin.json` that's valid JSON in UTF-8 without a byte-order mark.
 - [ ] `id`:
   - lowercase letters, digits, `_` or `-`;
-  - unique, and not `ha` or `hwinfo`;
+  - not a built-in's (`claude`, `pc`, `homeassistant`, `time`, `ha`, `hwinfo`, `lhm`) or another plugin's;
   - the start of every `provides` key and every key you print.
-- [ ] `name` is set, and every setting has `key`, `label` and `type`. Every `choice` has `choices` and a `default`.
-- [ ] No setting called `type`, `enabled`, `interval`, `hwinfo`, `url`, `token` or `entities`.
-- [ ] `command`:
-  - names the interpreter;
-  - refers to files in the plugin's folder only in arguments, through `cmd /c .\...`, or by their full path;
-  - in stream mode, starts the program that does the work directly: no `cmd /c` starting another program.
+- [ ] `name` is set, every setting has `key`, `label` and `type`, and every `choice` has `choices`.
+- [ ] No setting called `type`, `enabled` or `interval`.
+- [ ] `command` names the interpreter, and refers to files in the plugin's folder only in arguments, through
+      `cmd /c .\...`, or by their full path.
 - [ ] Reads stdin as UTF-8 (`sys.stdin.buffer` in Python), and copes with `null`, `""` and `0`.
 - [ ] Output:
   - poll mode: one JSON object, printed last;
   - stream mode: one object per line, flushed, and it keeps running after an error;
   - diagnostics go to stderr;
-  - stdout and stderr are UTF-8: Python that prints anything but `json.dumps` output runs with `-X utf8`.
+  - UTF-8: in Python, `json.dumps` with its default `ensure_ascii`, or `-X utf8` for anything else.
 - [ ] Values:
   - numbers are JSON numbers;
   - times have seconds and a time zone (`Z` or `+02:00`);
-  - no `NaN`, booleans, lists or `null`;
-  - no `"error"` key when it succeeds.
+  - no `NaN`, booleans, lists or `null`.
 - [ ] Failures print `{"error": "..."}`, with `429` or `503` in it when the server says to slow down, and
       never a secret.
 - [ ] Poll mode finishes well within the interval or 30 s, whichever is shorter. Network calls have their own
@@ -1006,16 +971,20 @@ These go to the player's log and the **Rescan** note, as `<folder>: <problem>`.
 | `plugin.json isn't valid: expected value at line 1 column 1` | the file is empty, isn't JSON, or starts with a byte-order mark: save it as UTF-8 without BOM |
 | ``plugin.json isn't valid: missing field `label` at line ...`` | a required field is missing. Every setting and `provides` entry needs a `label`, and the manifest needs an `id` and a `name` |
 | ``plugin.json isn't valid: missing field `min` at line ...`` | `interval` needs both `default` and `min` |
+| ``plugin.json isn't valid: invalid type: integer `5`, expected a string at line ...`` | a field of the wrong type, such as a `help` or `placeholder` that isn't text |
 | `plugin.json isn't valid: key must be a string at ...` (or another JSON error) | a JSON syntax error at that position, such as a trailing comma or a missing quote |
 | `the id "My Plugin" should be lowercase letters, digits, _ or -` | fix the `id` |
-| `there's already a source called "pc"` | the id is a built-in's or another plugin's: choose another |
+| `the id "pc" is the built-in This PC source's: choose another` | the id is a built-in's: choose another |
+| `the id "ha" is taken: the built-in Home Assistant source sets keys starting with "ha."` | the id is the start of a built-in's keys (`ha`, `hwinfo`, `lhm`): choose another |
+| `the plugin in C:\...\plugins\other already has the id "myplugin"` | two plugins have the same id: change one |
 | `the manifest has no name` | give it a `name` |
 | `plugin.json has no "run" section` / `"run" has no command` | add `"run": {"command": [...]}` |
 | `"run" mode should be "poll" or "stream", not "push"` | fix `mode` |
 | `provides "other.x", which isn't under myplugin.` | every `provides` key must start with your id and a dot |
 | `setting "units" is a choice with no choices` | add `choices` |
 | `setting "s" has an unknown type "slider"` | use `text`, `number`, `bool`, `choice`, `list` or `password` |
-| `setting "interval" can't have that key` | rename it: `type`, `enabled` and `interval` are taken |
+| `setting "interval" can't have that key: type, enabled and interval are the source's own` | rename the setting |
+| `setting "n" has a min above its max` | fix `min` or `max` |
 | `the interval's min and default should be numbers, at least 1` | fix `interval` |
 
 A plugin that doesn't appear at all, with no message, has no `plugin.json` directly in its folder, or hasn't been
@@ -1033,20 +1002,19 @@ These show as the source's error in the studio, in `wvplay data` and in the log.
 | `exited with code 1: 'run.cmd' is not recognized as an internal or external command, ...` | write `.\run.cmd`, not `run.cmd`, after `cmd /c`, and check the name |
 | `exited with code 1: ... running scripts is disabled on this system ...` | add `"-ExecutionPolicy", "Bypass"` before `-File` |
 | `exited with code N: <traceback or message>` | the program crashed before printing JSON: the end of its stderr says why. Run it [by hand](#by-hand) |
-| `exited with code N`, with nothing after it | it wrote nothing to stderr, or text that isn't UTF-8, such as a Python traceback with `ü` in it: start Python with `-X utf8` (see [Encoding](#encoding)), or run it [by hand](#by-hand) |
+| `exited with code N`, with nothing after it | it wrote nothing to stderr: run it [by hand](#by-hand) |
 | `didn't print JSON: <text>` | it printed something other than a JSON object: a stray line *after* the JSON, `NaN`, or plain text |
-| `didn't print JSON`, with nothing after it | it printed nothing at all, or a line that isn't UTF-8 before its JSON, such as Python's `print("café")` without `-X utf8` |
-| `null` | it printed `"error": null` beside its values: leave the `error` key out when it succeeds |
+| `didn't print JSON`, with nothing after it | it printed nothing at all, or (stream mode) a blank line |
 | `took longer than N s` | the run passed its time limit (the interval or 30 s, whichever is shorter). Add timeouts, or do less per run |
-| `printed nothing in N s` | (Test, stream mode, an interval under 20 s) no line in time: flush after each line |
-| `the output has neither "values" nor "error"` | the JSON object lacks both, or `values` isn't an object |
+| `printed nothing in N s` | (Test, stream mode) no line in time: flush after each line |
+| `printed more than 1 MiB` / `printed a line longer than 1 MiB` | it printed too much: see [Size limits](#size-limits) |
+| `the output has neither "values" nor "error"` | the JSON object lacks both, `values` isn't an object, or it's `{"error": null}` on its own |
 | `nothing usable: ignored x.y isn't under myplugin.; ...` | every key was outside your id or of the wrong type: see [Keys](#keys) |
 | `ok (ignored ...)` (a note, not an error) | some keys or values were ignored: the note names them |
 | `exited with code N: ...; restarting in N s` | (stream mode) the program exited, and the player restarts it, waiting up to 60 s |
 | `exited with code 0; restarting in N s`, and your own error only in the log | (stream mode) it printed `{"error": ...}` and exited: keep running instead, and print the error again now and then (see [Stream mode](#stream-mode)) |
-| `... BrokenPipeError ...` | it printed more than [1 MiB](#size-limits) in one run (or the player went away) |
 | `unknown source type "myplugin"` | `data.json` names an id that the player didn't load: a typo, a skipped plugin, or no rescan yet |
-| `data: ...\data.json isn't valid (Data at line 1, column 60)` (log) | a value in `data.json` has the wrong type, such as a setting named `hwinfo` or `url` holding the wrong kind of value. Nothing is polled until it's fixed |
+| `data: ...\data.json isn't valid (Data at line 1, column 60)` (log) | a value in `data.json` has the wrong type, such as `"enabled": "yes"` or a built-in's setting. Nothing is polled until it's fixed |
 
 ### Other symptoms
 
@@ -1054,17 +1022,14 @@ These show as the source's error in the studio, in `wvplay data` and in the log.
 |---|---|
 | The text shows `--` | the value is missing or stale: check the source's status, and its interval (stale after 3 intervals) |
 | A setting shows up as `ZÃ¼rich` | the plugin decoded stdin with the ANSI code page: read it as UTF-8 (`sys.stdin.buffer`) |
+| Text from the plugin shows `�`, as in `Z�rich` | it wrote that text in the ANSI code page, not UTF-8: in Python, use `json.dumps` without `ensure_ascii=False`, or start it with `-X utf8` (see [Encoding](#encoding)) |
 | A number won't take `:d` or `.1f` | it was sent as text (`"21.5"`): send a JSON number |
 | A time shows as text | it has no time zone, no seconds, or a zone with no colon (`+0200`): write `2026-10-14T10:00:00Z` or `...+02:00` |
 | `wvplay data` shows old values, and the plugin didn't run | its saved values are younger than its interval: use a fresh `LOCALAPPDATA`, as [above](#testing-from-the-command-line) |
+| `wvplay data` doesn't list a source at all | it gave no answer within 30 s: a streaming plugin that doesn't flush, or a poll plugin that ran into a 30 s time limit |
 | A streaming plugin's values arrive late or never | it isn't flushing stdout after each line |
-| A streaming plugin's values go stale while it's running | it prints less often than every 3 intervals, or it printed a line that isn't UTF-8 (see [Stray prints](#stray-prints)) |
-| A streaming plugin seems to run twice, or keeps using old settings | it's started through `cmd /c` (or another wrapper), so each restart left the old copy running: start it [directly](#stream-mode) |
-| A source shows no error but stopped updating, and `wvplay data` leaves it out | a long message with non-ASCII text hit a player bug: see [Size limits](#size-limits) |
-| `wvplay data` doesn't list a source at all | it gave no answer within 30 s: a streaming plugin that doesn't flush, or that printed a line that isn't UTF-8 first, or the player bug in the row above |
+| A streaming plugin's values go stale while it's running | it prints less often than every 3 intervals |
 | A test `data.json` setting is ignored | settings sit next to `type`, not under `"settings"`: see [Testing from the command line](#testing-from-the-command-line) |
 | Changing a default in `plugin.json` changes nothing | `data.json` already holds the old value: change it in the studio |
-| The studio says "Couldn't save the data sources: ... must be one of ..." | a `choice` setting has no `default`, so the studio saved `""`: add a default |
 | The password is "Not set" again | a `text` setting was changed, which drops a saved password: type it again |
-| Test says "The player isn't running" while it is | the test took longer than the studio's 20 s: a slow poll plugin, or a streaming plugin that printed no line (check that it flushes) |
 | A setting arrives as `Z?rich` when you test by hand | Windows PowerShell 5.1 piped it as ASCII: see [By hand](#by-hand) |

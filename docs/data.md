@@ -50,7 +50,8 @@ player polls them and draws the text.
   The last good values are kept in `%LOCALAPPDATA%\wvplay\last-values.json` (values and their time
   only, never a token), so they are back right after a restart, with their real age, and a source whose
   last success is younger than its interval isn't polled again at start. A source that is told to wait
-  (429 or 503, honouring `Retry-After`), or Claude on any error, backs off: 2, 4, 8 minutes, up to 30.
+  (429 or 503, honouring `Retry-After`), or Claude on any error, backs off: 2, 4, 8 minutes, up to 30. A
+  streaming plugin isn't polled, so it never backs off.
 - `time` is built in and always there.
 - The file lives in `playlist/`, which is gitignored, because it holds the HA token. The token is never
   logged, and never sent back to the browser.

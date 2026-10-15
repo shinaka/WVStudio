@@ -31,6 +31,8 @@ studio builds its UI entirely from these manifests:
   - `text`, `number`, `bool`, `choice` (with `choices`) and `list` (one entry per line);
   - `password`: write-only in the UI, never logged, never returned to the browser, and only ever given to
     its own source.
+- **Setting extras,** all optional and passed to the studio as they are: `help` (a line under the control),
+  `placeholder` (grey text in an empty box), and for a number, `min` and `max` (the box's limits, as hints).
 - **`provides`** documents keys up front, so the window and autocomplete can show them before any value
   arrives. A `pattern: true` entry covers dynamic keys such as `hwinfo.*`, `lhm.*` or `ha.*`; the live
   values fill those in.
@@ -47,16 +49,28 @@ studio builds its UI entirely from these manifests:
 ```
 
 - **How they run:**
-  - The command runs in the plugin's folder, with no window.
-  - Its settings arrive as one JSON object on stdin: `{"settings": {...}}`.
+  - The command runs in the plugin's folder, with no window, in a Windows job that holds it and every
+    program it starts. Stopping a plugin (a time-out, a settings change, **Rescan**, the player exiting by
+    any means) stops the whole job, so a wrapper such as `cmd /c` never leaves a program behind.
+  - Its settings arrive as one JSON object on stdin: `{"settings": {...}}`. A setting that data.json doesn't
+    set gets the manifest's default, or a `choice`'s first choice, or `null`.
   - **`poll` mode:** the command runs once per interval, and prints one JSON object:
-    `{"values": {"weather.temp": 21.5, "weather.desc": "Clear"}}` or `{"error": "..."}`. It's killed if it
-    takes longer than the interval, or 30 s at most.
+    `{"values": {"weather.temp": 21.5, "weather.desc": "Clear"}}` or `{"error": "..."}`. It's stopped if it
+    takes longer than the interval, or 30 s at most, and so is anything it leaves running when it exits. It
+    may print 1 MiB in all.
   - **`stream` mode:** the program keeps running and prints one such JSON object per line whenever it has
-    news. If it exits, it's restarted with a back-off.
+    news, each line 1 MiB at most, with no limit over its life. If it exits, it's restarted with a back-off.
+    It isn't polled, so a 429 or 503 in its error doesn't make the player back off.
 - **Rules:**
   - A plugin may only set keys that start with its own `id.`, so a plugin can't overwrite `claude.week`.
+  - A plugin's id can't be a built-in's (`claude`, `pc`, `homeassistant`, `time`), the first part of keys a
+    built-in sets (`ha`, `hwinfo`, `lhm`), or another plugin's: such a plugin is refused, with the reason.
+  - A setting can't be called `type`, `enabled` or `interval`. Any other key is the plugin's own, even one a
+    built-in uses (`url`, `token`...).
   - Values are numbers, text, or ISO time strings.
+  - `"error": null` is no error: an object with a `values` object and `"error": null` succeeds.
+  - Output is read as UTF-8, a line at a time, and any byte that isn't UTF-8 becomes `�`, so it costs one
+    character, never the line. stderr is decoded the same way, and its end shown when the program fails.
   - Bad output is logged briefly, and the source shows the error.
 - **Security:**
   - Plugins are programs you put in that folder yourself.
@@ -77,7 +91,8 @@ default settings.
 - `GET /catalog`: every manifest (without `run`), each with
   `status: {enabled, ok, error, notes, updated_at}`.
 - `POST /catalog/rescan`: re-reads the plugins folder.
-- `/test` works for plugins too: it runs the plugin once with the given settings.
+- `/test` works for plugins too: it runs the plugin once with the given settings. A plugin's run gives up
+  after 30 s at most, so the studio waits longer than that (45 s) and shows the player's own error.
 
 ## The studio
 

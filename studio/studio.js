@@ -1938,10 +1938,13 @@ const settingsOf = (m) => (Array.isArray(m?.settings) ? m.settings : []).filter(
 const providesOf = (m) => (Array.isArray(m?.provides) ? m.provides : []).filter((p) => p && typeof p.key === "string");
 const isSecret = (id, key) => settingsOf(manifestOf(id)).some((s) => s.key === key && s.type === "password") || SECRET_KEY.test(key);
 const intervalOf = (m) => ({ default: Math.max(1, num(m?.interval?.default, 60)), min: Math.max(1, num(m?.interval?.min, 5)) });
+// What a setting starts as without a default: a choice's first choice (as the player falls back to), else empty.
+const blankOf = (s) => s.type === "choice" ? (Array.isArray(s.choices) && s.choices.length ? String(s.choices[0]) : "")
+  : s.type === "bool" ? false : s.type === "list" ? [] : s.type === "number" ? 0 : "";
 function defaultsOf(m) {
   const d = { interval: intervalOf(m).default };
   for (const s of settingsOf(m)) {
-    if (s.type !== "password") d[s.key] = s.default ?? ({ bool: false, list: [], number: 0 }[s.type] ?? "");
+    if (s.type !== "password") d[s.key] = s.default ?? blankOf(s);
   }
   return d;
 }
