@@ -354,9 +354,12 @@ pub struct Source {
     pub interval: Option<f64>,
     /// pc: read HWiNFO's shared memory too.
     pub hwinfo: bool,
-    /// pc: read Libre Hardware Monitor's web server too, at `lhm_url`.
+    /// pc: read Libre Hardware Monitor's web server too, at `lhm_url`, with the user name and password
+    /// its Authentication was given, when either is set.
     pub lhm: bool,
     pub lhm_url: String,
+    pub lhm_user: String,
+    pub lhm_password: String,
     /// homeassistant
     pub url: String,
     pub token: String,
@@ -390,6 +393,8 @@ struct Builtin {
     hwinfo: bool,
     lhm: bool,
     lhm_url: String,
+    lhm_user: String,
+    lhm_password: String,
     url: String,
     token: String,
     entities: Vec<String>,
@@ -398,11 +403,12 @@ struct Builtin {
 impl Default for Builtin {
     fn default() -> Builtin {
         let s = Source::default();
-        Builtin { hwinfo: s.hwinfo, lhm: s.lhm, lhm_url: s.lhm_url, url: s.url, token: s.token, entities: s.entities }
+        Builtin { hwinfo: s.hwinfo, lhm: s.lhm, lhm_url: s.lhm_url, lhm_user: s.lhm_user, lhm_password: s.lhm_password,
+                  url: s.url, token: s.token, entities: s.entities }
     }
 }
 
-const BUILTIN_KEYS: [&str; 6] = ["hwinfo", "lhm", "lhm_url", "url", "token", "entities"];
+const BUILTIN_KEYS: [&str; 8] = ["hwinfo", "lhm", "lhm_url", "lhm_user", "lhm_password", "url", "token", "entities"];
 
 impl<'de> Deserialize<'de> for Source {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Source, D::Error> {
@@ -412,6 +418,7 @@ impl<'de> Deserialize<'de> for Source {
             let own: serde_json::Map<_, _> = BUILTIN_KEYS.iter().filter_map(|k| rest.remove_entry(*k)).collect();
             let b: Builtin = serde_json::from_value(serde_json::Value::Object(own)).map_err(serde::de::Error::custom)?;
             (source.hwinfo, source.lhm, source.lhm_url) = (b.hwinfo, b.lhm, b.lhm_url);
+            (source.lhm_user, source.lhm_password) = (b.lhm_user, b.lhm_password);
             (source.url, source.token, source.entities) = (b.url, b.token, b.entities);
         }
         source.extra = rest;
@@ -422,8 +429,8 @@ impl<'de> Deserialize<'de> for Source {
 impl Default for Source {
     fn default() -> Source {
         Source { kind: String::new(), enabled: true, interval: None, hwinfo: false, lhm: false,
-                 lhm_url: sources::LHM_URL.to_string(), url: String::new(), token: String::new(), entities: Vec::new(),
-                 extra: serde_json::Map::new() }
+                 lhm_url: sources::LHM_URL.to_string(), lhm_user: String::new(), lhm_password: String::new(),
+                 url: String::new(), token: String::new(), entities: Vec::new(), extra: serde_json::Map::new() }
     }
 }
 
@@ -457,6 +464,8 @@ impl Source {
             "hwinfo" => Some(json!(self.hwinfo)),
             "lhm" => Some(json!(self.lhm)),
             "lhm_url" => Some(json!(self.lhm_url)).filter(|_| !self.lhm_url.is_empty()),
+            "lhm_user" => Some(json!(self.lhm_user)).filter(|_| !self.lhm_user.is_empty()),
+            "lhm_password" => Some(json!(self.lhm_password)).filter(|_| !self.lhm_password.is_empty()),
             "url" => Some(json!(self.url)).filter(|_| !self.url.is_empty()),
             "token" => Some(json!(self.token)).filter(|_| !self.token.is_empty()),
             "entities" => Some(json!(self.entities)).filter(|_| !self.entities.is_empty()),
@@ -472,8 +481,9 @@ impl Source {
     fn copy_setting(&mut self, key: &str, from: &Source) {
         match key {
             "token" if catalog::is_builtin(&self.kind) => self.token = from.token.clone(),
+            "lhm_password" if catalog::is_builtin(&self.kind) => self.lhm_password = from.lhm_password.clone(),
             "url" if catalog::is_builtin(&self.kind) => self.url = from.url.clone(),
-            "hwinfo" | "lhm" | "lhm_url" | "entities" if catalog::is_builtin(&self.kind) => {}
+            "hwinfo" | "lhm" | "lhm_url" | "lhm_user" | "entities" if catalog::is_builtin(&self.kind) => {}
             _ => {
                 if let Some(v) = from.extra.get(key) {
                     self.extra.insert(key.to_string(), v.clone());
@@ -772,8 +782,9 @@ impl Hub {
     pub fn test(&self, mut source: Source) -> Result<Polled, String> {
         if let Some(manifest) = catalog::manifest(&source.kind) {
             let config = self.config.lock().unwrap();
-            // A saved password only stands in while every text setting (an address, a host...) is as
-            // saved: whoever can reach the studio could otherwise point a source at their own server.
+            // A saved password only stands in while every text setting (an address, a host, a user
+            // name: lhm_url and lhm_user for LHM's) is as saved: whoever can reach the studio could
+            // otherwise point a source at their own server.
             let same = |saved: &Source| {
                 let norm = |v: Option<serde_json::Value>| {
                     v.and_then(|v| v.as_str().map(|s| s.trim().trim_end_matches('/').to_lowercase()))
@@ -1138,6 +1149,10 @@ mod tests {
         let pc: Source = serde_json::from_str(r#"{ "type": "pc", "lhm": true, "lhm_url": "http://192.168.1.5:8086" }"#).unwrap();
         assert!(pc.lhm && pc.extra.is_empty());
         assert_eq!(pc.setting("lhm_url"), Some(json!("http://192.168.1.5:8086")));
+        assert_eq!((pc.setting("lhm_user"), pc.setting("lhm_password")), (None, None));
+        let pc: Source = serde_json::from_str(r#"{ "type": "pc", "lhm_user": "cooler", "lhm_password": "pw" }"#).unwrap();
+        assert!(pc.extra.is_empty() && pc.lhm_user == "cooler" && pc.lhm_password == "pw");
+        assert_eq!((pc.setting("lhm_user"), pc.setting("lhm_password")), (Some(json!("cooler")), Some(json!("pw"))));
         assert_eq!(plugins_for(Path::new("C:/x/playlist/playlist.json")), Path::new("C:/x/plugins"));
     }
 
@@ -1183,5 +1198,89 @@ mod tests {
         assert!(!backoff.active());
         assert_eq!(failing.as_deref(), Some("HTTP 429 Too Many Requests"));
         assert_eq!(hub.status.lock().unwrap()["throttled"].result, Err("HTTP 429 Too Many Requests".to_string()));
+    }
+
+    #[test]
+    fn builtin_settings_are_fields() {
+        // every setting of a built-in source is read into its own field, so setting(), copy_setting() and
+        // the poll all see it; none is left over as if it were a plugin's
+        for m in catalog::builtins() {
+            for s in &m.settings {
+                let value = match s.kind.as_str() {
+                    "bool" => json!(true),
+                    "list" => json!(["x"]),
+                    _ => json!("x"),
+                };
+                let mut set = json!({ "type": m.id });
+                set[s.key.as_str()] = value.clone();
+                let source: Source = serde_json::from_value(set).unwrap();
+                assert!(source.extra.is_empty(), "{}.{}", m.id, s.key);
+                assert_eq!(source.setting(&s.key), Some(value), "{}.{}", m.id, s.key);
+                if s.kind == "password" {
+                    let mut blank: Source = serde_json::from_value(json!({ "type": m.id })).unwrap();
+                    assert!(blank.lacks_password(&s.key));
+                    blank.copy_setting(&s.key, &source);
+                    assert!(!blank.lacks_password(&s.key), "{}.{}", m.id, s.key);
+                }
+            }
+        }
+    }
+
+    /// A hub with this data.json, polling nothing: for /test.
+    fn hub_with(sources: Vec<Source>) -> Hub {
+        Hub { file: PathBuf::new(), config: Mutex::new(Config { sources, ..Config::default() }), running: Mutex::default(),
+              status: Mutex::default(), server: Mutex::default(), plugins: PathBuf::new(), saved_at: Mutex::default() }
+    }
+
+    #[test]
+    fn lhm_password_stays_with_its_address() {
+        // two LHMs with the same login: A, where the password was saved, and B, an address typed since
+        let (user, password) = ("cooler", "s3cret-lhm");
+        let (a, at_a) = sources::fake::lhm(user, password);
+        let (b, at_b) = sources::fake::lhm(user, password);
+        let saved: Source = serde_json::from_value(json!({ "type": "pc", "lhm": true, "lhm_url": a, "lhm_user": user,
+                                                           "lhm_password": password })).unwrap();
+        let hub = hub_with(vec![saved]);
+        // what /test gets from the studio: no password, as the browser never has it
+        let test = |url: &str, user: &str| {
+            let source = json!({ "type": "pc", "enabled": true, "lhm": true, "lhm_url": url, "lhm_user": user });
+            hub.test(serde_json::from_value(source).unwrap()).unwrap()
+        };
+        let auth = |requests: &std::sync::mpsc::Receiver<sources::fake::Seen>| {
+            requests.recv_timeout(Duration::from_secs(5)).expect("no request").1.unwrap_or_default()
+        };
+        let lhm_keys = |polled: &Polled| polled.values.iter().filter(|(k, _)| k.starts_with("lhm.")).count();
+        let sent_password = |header: &str| {
+            let login = sources::fake::unbase64(header.trim_start_matches("Basic ")).unwrap();
+            String::from_utf8_lossy(&login).contains(password)
+        };
+
+        // its own address (written as the studio may): the saved password stands in
+        for url in [a.clone(), format!("{a}/"), format!(" {a} ")] {
+            let polled = test(&url, user);
+            assert_eq!(lhm_keys(&polled), 35, "{url}: {:?}", polled.notes);
+            assert!(sent_password(&auth(&at_a)));
+        }
+
+        // another address: it doesn't, so B never sees it, and says it refused what it got
+        let polled = test(&b, user);
+        let header = auth(&at_b);
+        assert!(!sent_password(&header) && header.starts_with("Basic "), "{header}");
+        assert_eq!(lhm_keys(&polled), 0);
+        assert!(polled.notes.iter().any(|n| n.contains(&format!("at {b} refused the user name or password"))), "{:?}", polled.notes);
+        assert!(polled.notes.iter().all(|n| !n.contains(password)));
+        assert!(at_a.try_recv().is_err());
+
+        // nor at A with another user name: the password has to be typed again
+        let polled = test(&a, "someone");
+        assert!(!sent_password(&auth(&at_a)));
+        assert_eq!(lhm_keys(&polled), 0);
+
+        // a password typed in the form is used, wherever it points
+        let typed = json!({ "type": "pc", "lhm": true, "lhm_url": b, "lhm_user": user, "lhm_password": password });
+        let polled = hub.test(serde_json::from_value(typed).unwrap()).unwrap();
+        assert!(sent_password(&auth(&at_b)));
+        assert_eq!(lhm_keys(&polled), 35);
+        assert!(at_a.try_recv().is_err());
     }
 }

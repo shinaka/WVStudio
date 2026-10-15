@@ -30,14 +30,18 @@ studio builds its UI entirely from these manifests:
 - **Setting types:**
   - `text`, `number`, `bool`, `choice` (with `choices`) and `list` (one entry per line);
   - `password`: write-only in the UI, never logged, never returned to the browser, and only ever given to
-    its own source.
+    its own source, with the text settings it was typed with: changing any of them (an address, a user
+    name) drops the saved password in the studio, and the player's `/test` won't use it either.
 - **Setting extras,** all optional and passed to the studio as they are: `help` (a line under the control),
   `placeholder` (grey text in an empty box), and for a number, `min` and `max` (the box's limits, as hints).
 - **`provides`** documents keys up front, so the window and autocomplete can show them before any value
   arrives. A `pattern: true` entry covers dynamic keys such as `hwinfo.*`, `lhm.*` or `ha.*`; the live
   values fill those in.
-- **Built-ins:** their manifests are compiled into the player. Home Assistant's `ha.*` keys come from its
-  `entities` setting.
+- **Built-ins:** their manifests are compiled into the player (`player/src/builtins.json`). Their settings:
+  - **pc** (This PC): `hwinfo` and `lhm` (bools), `lhm_url` and `lhm_user` (text), `lhm_password`
+    (password). See data.md.
+  - **homeassistant:** `url` (text), `token` (password) and `entities` (list). Its `ha.*` keys come from
+    `entities`.
 
 ## Plugins
 

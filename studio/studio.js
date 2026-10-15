@@ -1842,8 +1842,12 @@ const live = {
   selected: null,       // the source shown in the window
   formKey: "",          // what the settings form was built for
   timer: 0, seq: 0, saveTimer: 0, saving: Promise.resolve(),
+  clearedNote: "",      // the note last shown for a saved password the studio dropped
 };
 const SECRET_KEY = /(^|_)(token|password|secret|api_?key)$/i;  // a setting the page never gets back
+// A password kept as typed, spaces at the ends included, as LHM compares it exactly (studio.py's AS_TYPED). Any
+// other, a pasted token say, is trimmed. One that's all spaces is blank either way.
+const secretValue = (id, key, value) => (id === "pc" && key === "lhm_password" ? value : value.trim());
 
 /** Whether a text has a placeholder: `{key}` and the rest, not counting {{ and }}. */
 const isLive = (t) => /\{[^{}]+\}/.test(String(t ?? "").replace(/\{\{|\}\}/g, ""));
@@ -2093,7 +2097,11 @@ function settingRow(m, s) {
     if (s.type === "bool") src[s.key] = el.checked;
     else if (s.type === "number") { const v = parseFloat(el.value); if (!Number.isFinite(v)) return; src[s.key] = v; }
     else if (s.type === "list") src[s.key] = el.value.split("\n").map((e) => e.trim()).filter(Boolean);
-    else if (s.type === "password") { if (!el.value.trim()) return; src[s.key] = el.value.trim(); }
+    else if (s.type === "password") {
+      if (!el.value.trim()) return;
+      src[s.key] = secretValue(m.id, s.key, el.value);
+      if ($("srcMsg").textContent === live.clearedNote) srcNote("");  // typed again
+    }
     else src[s.key] = el.value;
     saveDataSoon();
   });
@@ -2158,8 +2166,31 @@ function saveData() {
     for (const k of Object.keys(s)) if (k !== "type" && isSecret(s.type, k)) { delete s[k]; s[`${k}_set`] = true; }
   }
   live.saving = live.saving.then(() => postJson("/api/data/config", body, { keepalive: true }))
-    .then(() => showDataConfig(), (err) => message(`Couldn't save the data sources: ${err.message}`, "warn"));
+    .then((saved) => { takeSecretFlags(saved); showDataConfig(); },
+          (err) => message(`Couldn't save the data sources: ${err.message}`, "warn"));
   return live.saving;
+}
+/** Whether each password is still set, from the saved config the studio answers with: it drops a saved one when a
+ *  text setting it went with (an address, a user name) changes, which the page would otherwise go on showing as
+ *  set. A password typed since stays as it is, for the next save. Says so when one was dropped. */
+function takeSecretFlags(saved) {
+  if (!live.config || !Array.isArray(saved?.sources)) return;
+  const nth = (list, s) => list.filter((x) => x && x.type === s.type).indexOf(s);  // matched as studio.py does
+  const cleared = [];
+  for (const s of live.config.sources) {
+    if (!s) continue;
+    const stored = saved.sources.filter((x) => x && x.type === s.type)[nth(live.config.sources, s)];
+    for (const [flag, on] of Object.entries(stored || {})) {
+      const k = flag.slice(0, -4);
+      if (!flag.endsWith("_set") || typeof on !== "boolean" || k in s) continue;
+      if (s[flag] && !on) cleared.push(settingsOf(manifestOf(s.type)).find((x) => x.key === k)?.label || `${sourceName(s.type)}: ${k}`);
+      s[flag] = on;
+    }
+  }
+  if (cleared.length) {
+    live.clearedNote = `${cleared.join(", ")}: cleared, as a setting it was saved with (an address, a user name) changed. Type it again.`;
+    srcNote(live.clearedNote, "warn");
+  }
 }
 window.addEventListener("pagehide", () => { if (live.saveTimer) saveData(); });
 function showDataConfig() {
@@ -2184,7 +2215,7 @@ async function testSource(m) {
   try {
     const source = { ...currentSource(m), type: m.id, enabled: true };
     for (const el of $("srcForm").querySelectorAll("input[type=password]")) {
-      if (el.value.trim()) source[el.dataset.k] = el.value.trim();
+      if (el.value.trim()) source[el.dataset.k] = secretValue(m.id, el.dataset.k, el.value);
     }
     const res = await postJson("/api/data/test", { source });
     const values = res.values && typeof res.values === "object" ? res.values : {}, keys = Object.keys(values).sort();

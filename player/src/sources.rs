@@ -1,6 +1,6 @@
 //! Where live values come from (docs/data.md): Claude plan usage, the PC's own sensors (Windows, NVIDIA,
 //! HWiNFO, Libre Hardware Monitor) and Home Assistant. Each poll returns its values, or what went wrong;
-//! tokens never appear in either.
+//! tokens and passwords never appear in either.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -89,10 +89,12 @@ struct Fetch {
     direct: bool,
     /// To the host's IPv4 addresses only.
     ipv4: bool,
+    /// Follows redirects (never with the `Authorization` header). Without, a redirect is the reply.
+    redirects: bool,
 }
 
 /// A web source's GET.
-const WEB: Fetch = Fetch { timeout: Duration::from_secs(20), limit: 64 << 20, direct: false, ipv4: false };
+const WEB: Fetch = Fetch { timeout: Duration::from_secs(20), limit: 64 << 20, direct: false, ipv4: false, redirects: true };
 
 /// A GET, as text. Errors say what failed (the status, say), never the headers.
 fn get(url: &str, headers: &[(&str, &str)], fetch: &Fetch) -> Result<String, Failure> {
@@ -102,6 +104,9 @@ fn get(url: &str, headers: &[(&str, &str)], fetch: &Fetch) -> Result<String, Fai
     }
     if fetch.ipv4 {
         config = config.ip_family(ureq::config::IpFamily::Ipv4Only);
+    }
+    if !fetch.redirects {
+        config = config.max_redirects(0);
     }
     let agent: ureq::Agent = config.build().into();
     let mut request = agent.get(url);
@@ -275,7 +280,9 @@ fn pc(source: &Source, state: &mut State) -> Polled {
         }
     }
     if source.lhm {
-        match lhm(&source.lhm_url) {
+        let login = (!source.lhm_user.is_empty() || !source.lhm_password.is_empty())
+            .then_some((source.lhm_user.as_str(), source.lhm_password.as_str()));
+        match lhm(&source.lhm_url, login) {
             Ok((found, note)) => {
                 add_lhm(&mut values, found);
                 notes.extend(note);
@@ -299,13 +306,35 @@ const LHM_LIMIT: u64 = 4 << 20;
 const LHM_MAX_SENSORS: usize = 4096;
 
 /// Libre Hardware Monitor's sensors, from its web server's data.json, and a note when some were left out.
-/// An error is the pc poll's note.
-fn lhm(url: &str) -> Result<(Vec<(String, Value)>, Option<String>), String> {
+/// An error is the pc poll's note. `login` (a user name and password, from Options > Remote Web Server >
+/// Authentication) goes to that address alone, in the request's `Authorization` header: never through a
+/// proxy, never on to wherever a redirect points, and never into a note.
+fn lhm(url: &str, login: Option<(&str, &str)>) -> Result<(Vec<(String, Value)>, Option<String>), String> {
     let base = lhm_base(url);
     let not_answering = |why: &str| {
         format!("Libre Hardware Monitor isn't answering at {base} ({why}): check that it's running, with Options > Remote Web Server on")
     };
-    let reply = get(&format!("{base}/data.json"), &[], &lhm_fetch(&base)).map_err(|e| not_answering(&lhm_why(&e)))?;
+    let auth = login.map(|(user, password)| basic_auth(user, password));
+    let headers: Vec<(&str, &str)> = auth.iter().map(|a| ("Authorization", a.as_str())).collect();
+    let reply = get(&format!("{base}/data.json"), &headers, &lhm_fetch(&base, login.is_some())).map_err(|e| match (e.status, login) {
+        // a running server keeps asking for a login, even with Authentication unticked, until Run is
+        // turned off and on
+        (Some(401), None) => format!(
+            "Libre Hardware Monitor at {base} asks for a user name and password (its Options > Remote Web Server > \
+             Authentication is on, or was only just turned off: then turn Remote Web Server > Run off and on): set \
+             them on This PC in the studio's Data sources window"),
+        (Some(401), Some((user, password))) if !lhm_can_check(user, password) => format!(
+            "Libre Hardware Monitor at {base} refused the user name or password: it can't check a user name with a ':' \
+             in it, or any character outside Latin-1 (like €), so choose others in its Options > Remote Web Server > \
+             Authentication, and on This PC"),
+        // LHM up to 0.9.6 hashes the stored hash again at each start, so the password set there stops
+        // working whenever LHM restarts (fixed in its code by 95e97cf, in no release yet)
+        (Some(401), Some(_)) => format!(
+            "Libre Hardware Monitor at {base} refused the user name or password: check them against its Options > \
+             Remote Web Server > Authentication (if Authentication was only just turned on, turn Remote Web Server > \
+             Run off and on). LHM 0.9.6 and earlier lose that password whenever LHM restarts: type it there again"),
+        _ => not_answering(&lhm_why(&e)),
+    })?;
     let tree = serde_json::from_str::<Json>(&reply).ok().filter(|tree| tree["Children"].is_array());
     let tree = tree.ok_or_else(|| not_answering("its reply isn't sensor data"))?;
     let mut sensors = lhm_sensors(&tree);
@@ -316,23 +345,52 @@ fn lhm(url: &str) -> Result<(Vec<(String, Value)>, Option<String>), String> {
     Ok((lhm_values(&sensors), note))
 }
 
-/// How LHM is asked: within LHM_TIMEOUT, for LHM_LIMIT at most. On this PC, never through a proxy, which
-/// HTTP_PROXY or ALL_PROXY would otherwise send even 127.0.0.1 to. `localhost` is asked at 127.0.0.1 only:
-/// LHM answers there whenever it answers at ::1, and Windows takes about 2 s to give up on each address,
-/// so with nothing listening, trying ::1 first would use up the time and hide why.
-fn lhm_fetch(base: &str) -> Fetch {
+/// How LHM is asked: within LHM_TIMEOUT, for LHM_LIMIT at most, and with no redirects (LHM never
+/// redirects). On this PC, never through a proxy, which HTTP_PROXY or ALL_PROXY would otherwise send even
+/// 127.0.0.1 to; with a `login`, never through one anywhere, so the password goes to LHM's address alone.
+/// `localhost` is asked at 127.0.0.1 only: LHM answers there whenever it answers at ::1, and Windows takes
+/// about 2 s to give up on each address, so with nothing listening, trying ::1 first would use up the time
+/// and hide why.
+fn lhm_fetch(base: &str, login: bool) -> Fetch {
     let host = base.parse::<ureq::http::Uri>().ok().and_then(|uri| uri.host().map(str::to_ascii_lowercase)).unwrap_or_default();
     let localhost = host == "localhost";
     let loopback = localhost || host.trim_matches(['[', ']']).parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback());
-    Fetch { timeout: LHM_TIMEOUT, limit: LHM_LIMIT, direct: loopback, ipv4: localhost }
+    Fetch { timeout: LHM_TIMEOUT, limit: LHM_LIMIT, direct: loopback || login, ipv4: localhost, redirects: false }
+}
+
+/// The `Authorization` header for HTTP Basic: `user:password` in base64. LHM's server (.NET's
+/// HttpListener) reads those bytes as Latin-1, then compares the user name as it is and the password's
+/// SHA-256 (of its UTF-8) with what Authentication was given. So they go as Latin-1 whenever every
+/// character has a byte there; otherwise LHM can't match them at all, and they go as UTF-8 (RFC 7617).
+fn basic_auth(user: &str, password: &str) -> String {
+    let login = format!("{user}:{password}");
+    let latin1: Option<Vec<u8>> = login.chars().map(|c| u8::try_from(u32::from(c)).ok()).collect();
+    format!("Basic {}", base64(&latin1.unwrap_or_else(|| login.into_bytes())))
+}
+
+/// Whether LHM could ever accept this login: it splits user from password at the first ':', and reads
+/// Latin-1 only.
+fn lhm_can_check(user: &str, password: &str) -> bool {
+    !user.contains(':') && user.chars().chain(password.chars()).all(|c| u32::from(c) <= 0xFF)
+}
+
+/// Standard base64, with padding.
+fn base64(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = chunk.iter().enumerate().fold(0u32, |n, (i, &b)| n | (u32::from(b) << (16 - 8 * i)));
+        for i in 0..4 {
+            out.push(if i <= chunk.len() { DIGITS[((n >> (18 - 6 * i)) & 63) as usize] as char } else { '=' });
+        }
+    }
+    out
 }
 
 /// Why a GET failed, briefly.
 fn lhm_why(e: &Failure) -> String {
     let lower = e.message.to_lowercase();
-    if e.status == Some(401) {
-        "it asks for a password (Remote Web Server > Authentication), which the player doesn't send".into()
-    } else if e.status.is_some() {
+    if e.status.is_some() {
         e.message.clone()
     } else if lower.contains("larger than") {
         format!("its reply is over {} MB, far more than LHM's", LHM_LIMIT >> 20)
@@ -347,15 +405,25 @@ fn lhm_why(e: &Failure) -> String {
 
 /// The address as set: the default when blank, `http://` when it names no scheme, without a trailing `/`
 /// or `/data.json` (the address a browser shows for the data, which LHM's server would take as a file).
+/// A user name and password written into it (`http://user:password@host`) are dropped: the address shows
+/// in notes and in the studio, so the login only ever comes from its own settings. LHM's address never
+/// has an `@` of its own, so that's everything up to the last `@` after the scheme, however it's written
+/// (a `/`, `?` or `#` in the password, or `http:/` for `http://`, would otherwise hide where it ends).
 fn lhm_base(url: &str) -> String {
     let url = url.trim().trim_end_matches('/');
     // ASCII lowercasing keeps every byte where it was, so the end that matched is the same length
     let url = if url.to_ascii_lowercase().ends_with("/data.json") { url[..url.len() - 10].trim_end_matches('/') } else { url };
-    match url {
-        "" => LHM_URL.to_string(),
-        url if url.contains("://") => url.to_string(),
-        url => format!("http://{url}"),
+    if url.is_empty() {
+        return LHM_URL.to_string();
     }
+    // a scheme is a letter, then letters, digits, `+`, `-` and `.`: a `://` after anything else is in the login
+    let scheme = |s: &str| s.starts_with(|c: char| c.is_ascii_alphabetic()) && s.chars().all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c));
+    let (scheme, rest) = match url.split_once("://") {
+        Some((name, rest)) if scheme(name) => (name, rest),
+        _ => ("http", url),
+    };
+    let rest = rest.rsplit_once('@').map_or(rest, |(_, host)| host);
+    format!("{scheme}://{rest}")
 }
 
 /// Adds Libre Hardware Monitor's values to the pc poll's. HWiNFO's `pc.cpu.temp`, when it gave one, wins.
@@ -845,6 +913,86 @@ mod win {
     }
 }
 
+/// A fake Libre Hardware Monitor, for tests here and in data.rs.
+#[cfg(test)]
+pub(crate) mod fake {
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+
+    /// A real data.json (0.9.6's shapes): 36 values.
+    pub const DATA: &str = include_str!("../tests/lhm-data.json");
+
+    /// LHM's own page for a login it refuses (HttpServer.cs).
+    const REFUSED: &str = "<HTML><HEAD><TITLE>401 Unauthorized</TITLE></HEAD>\n  <BODY><H4>401 Unauthorized</H4>\n  \
+                           Authorization required.</BODY></HTML> ";
+
+    /// What a request brought: its request line and its `Authorization` header.
+    pub type Seen = (String, Option<String>);
+
+    /// Serves DATA on a free port of 127.0.0.1 the way LHM does with Options > Remote Web Server >
+    /// Authentication on: its HttpServer.cs, on .NET's HttpListener with `AuthenticationSchemes.Basic` and
+    /// realm "Libre Hardware Monitor". Without Basic credentials, HttpListener answers 401 with the
+    /// challenge itself; with them (base64, read as Latin-1, split at the first ':'), the data when the user
+    /// name and password both match exactly, else LHM's 401 page. Every path is behind the check, as there.
+    /// Reports what each request brought, until the receiver goes.
+    pub fn lhm(user: &str, password: &str) -> (String, mpsc::Receiver<Seen>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (tx, rx) = mpsc::channel();
+        let (user, password) = (user.to_string(), password.to_string());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let (mut line, mut header, mut auth) = (String::new(), String::new(), None);
+                let _ = reader.read_line(&mut line);
+                while reader.read_line(&mut header).unwrap_or(0) > 2 {
+                    match header.split_once(':') {
+                        Some((name, value)) if name.eq_ignore_ascii_case("authorization") => auth = Some(value.trim().to_string()),
+                        _ => {}
+                    }
+                    header.clear();
+                }
+                let scheme = auth.as_deref().and_then(|a| a.split_once(' ')).filter(|(s, _)| s.eq_ignore_ascii_case("basic"));
+                let login: Option<String> = scheme.and_then(|(_, b64)| unbase64(b64.trim())).map(|b| b.into_iter().map(char::from).collect());
+                let challenge = "WWW-Authenticate: Basic realm=\"Libre Hardware Monitor\"\r\n";
+                let reply = match login.as_deref().map(|l| l.split_once(':')) {
+                    None => format!("HTTP/1.1 401 Unauthorized\r\n{challenge}Content-Length: 0\r\nConnection: close\r\n\r\n"),
+                    Some(None) => "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string(),
+                    Some(Some((u, p))) if u == user && p == password => {
+                        format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{DATA}", DATA.len())
+                    }
+                    Some(Some(_)) => format!("HTTP/1.1 401 Unauthorized\r\n{challenge}Content-Type: text/html\r\nContent-Length: {}\r\n\
+                                              Connection: close\r\n\r\n{REFUSED}", REFUSED.len()),
+                };
+                let _ = stream.write_all(reply.as_bytes());
+                drop(stream);
+                if tx.send((line.trim_end().to_string(), auth)).is_err() {
+                    return;
+                }
+            }
+        });
+        (url, rx)
+    }
+
+    /// Standard base64 back to bytes; None if it isn't.
+    pub fn unbase64(s: &str) -> Option<Vec<u8>> {
+        const DIGITS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let (mut bits, mut have, mut out) = (0u32, 0, Vec::new());
+        for c in s.trim_end_matches('=').bytes() {
+            bits = (bits << 6) | DIGITS.iter().position(|&d| d == c)? as u32;
+            have += 6;
+            if have >= 8 {
+                have -= 8;
+                out.push((bits >> have) as u8);
+                bits &= (1 << have) - 1;
+            }
+        }
+        Some(out)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1128,9 +1276,10 @@ mod tests {
 
     #[test]
     fn lhm_fetch_options() {
-        // on this PC: never through a proxy; localhost at 127.0.0.1 only
+        // on this PC: never through a proxy; localhost at 127.0.0.1 only; never a redirect
         let fetch = |url: &str| {
-            let f = lhm_fetch(&lhm_base(url));
+            let f = lhm_fetch(&lhm_base(url), false);
+            assert!(!f.redirects);
             (f.direct, f.ipv4, f.timeout, f.limit)
         };
         let (timeout, limit) = (LHM_TIMEOUT, LHM_LIMIT);
@@ -1143,7 +1292,43 @@ mod tests {
         assert_eq!(fetch("http://192.168.1.5:8085"), (false, false, timeout, limit));
         assert_eq!(fetch("http://pc.local:8085"), (false, false, timeout, limit));
         assert_eq!(fetch("http://localhost.example.com"), (false, false, timeout, limit));
-        assert!(LHM_LIMIT < WEB.limit);
+        // with a login, never through a proxy anywhere: the password goes to LHM's address alone
+        for url in ["", "http://LocalHost:8085", "http://192.168.1.5:8085", "http://pc.local:8085"] {
+            let (with, without) = (lhm_fetch(&lhm_base(url), true), lhm_fetch(&lhm_base(url), false));
+            assert!(with.direct && !with.redirects && with.ipv4 == without.ipv4, "{url}");
+        }
+        assert!(LHM_LIMIT < WEB.limit && WEB.redirects && !WEB.direct);
+    }
+
+    #[test]
+    fn basic_auth_as_lhm_reads_it() {
+        // RFC 4648's vectors, and RFC 7617's example
+        let vectors = [("", ""), ("f", "Zg=="), ("fo", "Zm8="), ("foo", "Zm9v"), ("foob", "Zm9vYg=="), ("fooba", "Zm9vYmE="),
+                       ("foobar", "Zm9vYmFy")];
+        for (plain, coded) in vectors {
+            assert_eq!(base64(plain.as_bytes()), coded);
+            assert_eq!(fake::unbase64(coded).as_deref(), Some(plain.as_bytes()));
+        }
+        assert_eq!(base64(&[0xFF, 0xFE, 0x00]), "//4A");
+        assert_eq!(basic_auth("Aladdin", "open sesame"), "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==");
+        // as Latin-1, which LHM's server decodes it as: "ä" is one byte, E4
+        assert_eq!(basic_auth("", "pä"), format!("Basic {}", base64(&[b':', b'p', 0xE4])));
+        assert_eq!(basic_auth("user", ""), "Basic dXNlcjo=");
+        // beyond Latin-1 nothing can match in LHM: UTF-8, then, and the note says why
+        assert_eq!(basic_auth("u", "€"), format!("Basic {}", base64("u:€".as_bytes())));
+        assert!(lhm_can_check("user", "pässwörd ÿ") && lhm_can_check("", "a:b"));
+        assert!(!lhm_can_check("u", "€") && !lhm_can_check("日本", "x") && !lhm_can_check("a:b", "x"));
+        // a login written into the address is dropped from it
+        assert_eq!(lhm_base("http://admin:hunter2@127.0.0.1:8085"), "http://127.0.0.1:8085");
+        assert_eq!(lhm_base("admin:hunter2@192.168.1.5:8086/data.json"), "http://192.168.1.5:8086");
+        assert_eq!(lhm_base("http://a@b:p@ss@host/lhm"), "http://host/lhm");
+        // up to the last '@', even where a '/', '?' or '#' in the password, or a mistyped scheme, would end it
+        for (url, base) in [("http://cooler:a/b@127.0.0.1:8085", "http://127.0.0.1:8085"), ("http://cooler:a?b@host", "http://host"),
+                            ("http://cooler:a#b@host/data.json", "http://host"), ("http:/cooler:pw@host:8086", "http://host:8086"),
+                            ("cooler:a://b@host", "http://host"), ("https://u:p\\@host", "https://host"),
+                            ("http://host/path@x", "http://x"), ("http://cooler:pw@", "http://")] {
+            assert_eq!(lhm_base(url), base, "{url}");
+        }
     }
 
     /// A tree with one CPU (`id`, `icon`: how it's marked) holding these temperatures, after a GPU's.
@@ -1240,29 +1425,29 @@ mod tests {
     fn lhm_over_http() {
         let (url, requests) = serve(vec![http("200 OK", LHM_DATA), http("200 OK", "<html>LHM</html>"),
                                          http("404 Not Found", ""), http("200 OK", "{}"), http("401 Unauthorized", "")]);
-        let (values, note) = lhm(&format!("{url}/")).unwrap();
+        let (values, note) = lhm(&format!("{url}/"), None).unwrap();
         assert_eq!(requests.recv().unwrap(), "GET /data.json HTTP/1.1");
         assert_eq!(get(&values, "pc.cpu.temp"), Some(&Value::Number(45.3)));
         assert_eq!((values.len(), note), (36, None));
-        let note = lhm(&url).unwrap_err();
+        let note = lhm(&url, None).unwrap_err();
         assert!(note.starts_with(&format!("Libre Hardware Monitor isn't answering at {url} (its reply isn't sensor data)")), "{note}");
         assert!(note.ends_with("check that it's running, with Options > Remote Web Server on"), "{note}");
-        assert!(lhm(&url).unwrap_err().contains("(HTTP 404 Not Found)"));
-        assert!(lhm(&url).unwrap_err().contains("(its reply isn't sensor data)"));
-        assert!(lhm(&url).unwrap_err().contains("(it asks for a password"));
+        assert!(lhm(&url, None).unwrap_err().contains("(HTTP 404 Not Found)"));
+        assert!(lhm(&url, None).unwrap_err().contains("(its reply isn't sensor data)"));
+        assert!(lhm(&url, None).unwrap_err().starts_with(&format!("Libre Hardware Monitor at {url} asks for a user name and password")));
     }
 
     #[test]
     fn lhm_address_and_size() {
         // the data's own address asks for /data.json once
         let (url, requests) = serve(vec![http("200 OK", LHM_DATA)]);
-        assert_eq!(lhm(&format!("{url}/data.json")).unwrap().0.len(), 36);
+        assert_eq!(lhm(&format!("{url}/data.json"), None).unwrap().0.len(), 36);
         assert_eq!(requests.recv().unwrap(), "GET /data.json HTTP/1.1");
 
         // a reply far bigger than LHM's is not read
         let big = format!(r#"{{ "Children": [], "pad": "{}" }}"#, "x".repeat(LHM_LIMIT as usize));
         let (url, _requests) = serve(vec![http("200 OK", &big)]);
-        let note = lhm(&url).unwrap_err();
+        let note = lhm(&url, None).unwrap_err();
         assert!(note.contains("(its reply is over 4 MB, far more than LHM's)"), "{note}");
 
         // past LHM_MAX_SENSORS, the rest are left out, with a note
@@ -1272,7 +1457,7 @@ mod tests {
         let tree = format!(r#"{{ "Text": "Sensor", "Children": [ {{ "Text": "PC", "Children": [ {{ "Text": "X", "HardwareId": "/x/0",
             "Children": [ {{ "Text": "Load", "Children": [ {} ] }} ] }} ] }} ] }}"#, sensors.join(","));
         let (url, _requests) = serve(vec![http("200 OK", &tree)]);
-        let (values, note) = lhm(&url).unwrap();
+        let (values, note) = lhm(&url, None).unwrap();
         assert_eq!(values.len(), LHM_MAX_SENSORS);
         assert_eq!(get(&values, &format!("lhm.x.load.s{}", LHM_MAX_SENSORS - 1)), Some(&Value::Number((LHM_MAX_SENSORS - 1) as f64)));
         let note = note.unwrap();
@@ -1295,7 +1480,7 @@ mod tests {
         // at localhost too: 127.0.0.1 only, so the reason shows before the time runs out
         let url = format!("http://localhost:{port}");
         let start = Instant::now();
-        let note = lhm(&url).unwrap_err();
+        let note = lhm(&url, None).unwrap_err();
         assert!(start.elapsed() < LHM_TIMEOUT, "{:?}", start.elapsed());
         assert!(note.contains(&format!("isn't answering at {url} (nothing is listening there)")), "{note}");
     }
@@ -1312,10 +1497,118 @@ mod tests {
             drop(connection);
         });
         let start = Instant::now();
-        let note = lhm(&url).unwrap_err();
+        let note = lhm(&url, None).unwrap_err();
         let took = start.elapsed();
         drop(hold);
         assert!(took >= Duration::from_millis(2500) && took < Duration::from_millis(4500), "{took:?}");
         assert!(note.contains(&format!("isn't answering at {url} (no reply in 3 s)")), "{note}");
+    }
+
+    /// What the fake LHM saw next.
+    fn seen(requests: &mpsc::Receiver<fake::Seen>) -> fake::Seen {
+        requests.recv_timeout(Duration::from_secs(5)).expect("no request")
+    }
+
+    #[test]
+    fn lhm_with_authentication() {
+        let (user, password) = ("cooler", "pässwörd 7");
+        let (url, requests) = fake::lhm(user, password);
+        // the right login: the values, sent as LHM reads it
+        let (values, note) = lhm(&url, Some((user, password))).unwrap();
+        assert_eq!((values.len(), note), (36, None));
+        assert_eq!(seen(&requests), ("GET /data.json HTTP/1.1".to_string(), Some(basic_auth(user, password))));
+        // none: LHM asks for one, and the note says where it goes
+        let note = lhm(&url, None).unwrap_err();
+        assert_eq!(seen(&requests).1, None);
+        assert_eq!(note, format!("Libre Hardware Monitor at {url} asks for a user name and password (its Options > Remote Web \
+                                  Server > Authentication is on, or was only just turned off: then turn Remote Web Server > Run \
+                                  off and on): set them on This PC in the studio's Data sources window"));
+        // a wrong password or user name (LHM compares both exactly, spaces too), or only one of them
+        let refused = format!("Libre Hardware Monitor at {url} refused the user name or password: check them against its Options > \
+                               Remote Web Server > Authentication (if Authentication was only just turned on, turn Remote Web \
+                               Server > Run off and on). LHM 0.9.6 and earlier lose that password whenever LHM restarts: type \
+                               it there again");
+        for (u, p) in [(user, "pässwörd 8"), (user, "PÄSSWÖRD 7"), ("Cooler", password), ("", password), (user, ""),
+                       (user, "pässwörd 7 "), (" cooler", password)] {
+            assert_eq!(lhm(&url, Some((u, p))), Err(refused.clone()), "{u:?}");
+            assert_eq!(seen(&requests).1, Some(basic_auth(u, p)));
+        }
+        // the same password in UTF-8 is refused: why it goes as Latin-1
+        let utf8 = format!("Basic {}", base64(format!("{user}:{password}").as_bytes()));
+        let fetch = lhm_fetch(&url, true);
+        assert_eq!(super::get(&format!("{url}/data.json"), &[("Authorization", &utf8)], &fetch).unwrap_err().status, Some(401));
+        assert_eq!(seen(&requests).1, Some(utf8));
+        // one LHM could never accept: the note says why
+        let note = lhm(&url, Some((user, "€uro"))).unwrap_err();
+        assert!(note.starts_with(&format!("Libre Hardware Monitor at {url} refused the user name or password: it can't check")), "{note}");
+        assert!(note.contains("outside Latin-1 (like €)") && !note.contains("€uro"), "{note}");
+        seen(&requests);
+        // the pc poll: LHM's values, with no note about it
+        let pc = |u: &str, p: &str| -> Source {
+            serde_json::from_value(serde_json::json!({ "type": "pc", "lhm": true, "lhm_url": url, "lhm_user": u, "lhm_password": p })).unwrap()
+        };
+        let polled = poll(&pc(user, password), &mut State::default()).unwrap_or_else(|e| panic!("failed: {e}"));
+        assert_eq!(polled.values.iter().filter(|(k, _)| k.starts_with("lhm.")).count(), 35);
+        assert!(polled.notes.iter().all(|n| !n.contains("Libre Hardware Monitor")), "{:?}", polled.notes);
+        assert_eq!(seen(&requests).1, Some(basic_auth(user, password)));
+        // neither set: no header at all; a wrong one: the note, and the rest of the poll as usual
+        let polled = poll(&pc("", ""), &mut State::default()).unwrap_or_else(|e| panic!("failed: {e}"));
+        assert_eq!(seen(&requests).1, None);
+        assert!(polled.notes.iter().any(|n| n.contains("asks for a user name and password")), "{:?}", polled.notes);
+        let polled = poll(&pc(user, "nope"), &mut State::default()).unwrap_or_else(|e| panic!("failed: {e}"));
+        assert_eq!(seen(&requests).1, Some(basic_auth(user, "nope")));
+        assert!(polled.notes.contains(&refused), "{:?}", polled.notes);
+        assert!(get(&polled.values, "pc.ram.total_gb").is_some() && polled.values.iter().all(|(k, _)| !k.starts_with("lhm.")));
+    }
+
+    #[test]
+    fn lhm_password_is_never_shown() {
+        // every way LHM can fail, with a login: the note never holds the password, nor the header
+        let password = "Zq7-sekrit-Wv";
+        let header = basic_auth("cooler", password);
+        let b64 = header.trim_start_matches("Basic ");
+        let check = |note: &str| {
+            assert!(!note.contains(password) && !note.contains(b64) && !note.contains("sekrit"), "{note}");
+        };
+        let (url, requests) = fake::lhm("cooler", "other");
+        check(&lhm(&url, Some(("cooler", password))).unwrap_err());
+        seen(&requests);
+        // a password written into the address is dropped, from the request and from the note
+        let host = url.trim_start_matches("http://");
+        for at in [format!("http://cooler:{password}@{host}"), format!("http://cooler:{password}/x@{host}"),
+                   format!("http://cooler:{password}?x@{host}"), format!("http://cooler:{password}#x@{host}"),
+                   format!("http:/cooler:{password}@{host}"), format!("cooler:{password}/x@{host}/data.json")] {
+            let note = lhm(&at, None).unwrap_err();
+            check(&note);
+            assert!(note.starts_with(&format!("Libre Hardware Monitor at {url} asks")), "{note}");
+            assert_eq!(seen(&requests).1, None);
+        }
+        let (url, _requests) = serve(vec![http("404 Not Found", ""), http("200 OK", "<html>"), http("500 Internal Server Error", password),
+                                          http("302 Found", "").replace("\r\n\r\n", &format!("\r\nLocation: http://x/{password}\r\n\r\n"))]);
+        for _ in 0..4 {
+            check(&lhm(&url, Some(("cooler", password))).unwrap_err());
+        }
+        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        check(&lhm(&format!("http://127.0.0.1:{port}"), Some(("cooler", password))).unwrap_err());
+        check(&lhm(&format!("http://cooler:{password}@127.0.0.1:{port}"), Some(("cooler", password))).unwrap_err());
+        check(&lhm(&format!("http://cooler:{password}@[::1"), Some(("cooler", password))).unwrap_err());
+        check(&lhm("http://cooler:x@no-such-host.invalid:8085", Some(("cooler", password))).unwrap_err());
+        // through the pc poll
+        let source: Source = serde_json::from_value(serde_json::json!({ "type": "pc", "lhm": true,
+            "lhm_url": format!("http://127.0.0.1:{port}"), "lhm_user": "cooler", "lhm_password": password })).unwrap();
+        let polled = poll(&source, &mut State::default()).unwrap_or_else(|e| panic!("failed: {e}"));
+        assert!(!polled.notes.is_empty());
+        polled.notes.iter().for_each(|n| check(n));
+    }
+
+    #[test]
+    fn lhm_redirect_is_not_followed() {
+        // a redirect at LHM's address isn't LHM: it's the note, and the login goes nowhere else
+        let (elsewhere, sent_there) = fake::lhm("cooler", "pw");
+        let (url, requests) = serve(vec![http("302 Found", "").replace("\r\n\r\n", &format!("\r\nLocation: {elsewhere}/data.json\r\n\r\n"))]);
+        let note = lhm(&url, Some(("cooler", "pw"))).unwrap_err();
+        assert_eq!(requests.recv().unwrap(), "GET /data.json HTTP/1.1");
+        assert!(note.contains(&format!("isn't answering at {url} (HTTP 302 Found)")), "{note}");
+        assert!(sent_there.recv_timeout(Duration::from_millis(500)).is_err());
     }
 }

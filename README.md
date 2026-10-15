@@ -72,7 +72,8 @@ each one provides, with live values (click a key to insert it):
   it, so the values go stale if Claude Code hasn't run for a while.
 - **PC sensors:** CPU load, RAM, and NVIDIA GPU temperature, load, power and memory. CPU temperature and
   every other sensor need HWiNFO running with **Shared Memory Support** on, or Libre Hardware Monitor (free
-  and open source) running as administrator with its **Remote Web Server** on. To set that up, see
+  and open source) running as administrator with its **Remote Web Server** on, ideally with its
+  **Authentication** (a user name and password, which the player sends). To set that up, see
   [Setting up Libre Hardware Monitor](docs/data.md#setting-up-libre-hardware-monitor).
 - **Home Assistant:** any entities, via your HA address and a long-lived token. The token only ever goes
   to the address it was entered with.
