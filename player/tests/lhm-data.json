@@ -1,0 +1,74 @@
+{"id":0,"Text":"Sensor","Min":"Min","Value":"Value","Max":"Max","ImageURL":"","Children":[
+{"id":1,"Text":"DESKTOP-JIM","Min":"","Value":"","Max":"","ImageURL":"images_icon/computer.png","Children":[
+ {"id":2,"Text":"ASUS ROG STRIX X670E-E GAMING WIFI","Min":"","Value":"","Max":"","HardwareId":"/motherboard","ImageURL":"images_icon/mainboard.png","Children":[
+  {"id":3,"Text":"Nuvoton NCT6799D","Min":"","Value":"","Max":"","HardwareId":"/lpc/nct6799d/0","ImageURL":"images_icon/chip.png","Children":[
+   {"id":4,"Text":"Voltages","Min":"","Value":"","Max":"","ImageURL":"images_icon/voltage.png","Children":[
+    {"id":5,"Text":"Vcore","Min":"0,968 V","Value":"1,350 V","Max":"1,402 V","SensorId":"/lpc/nct6799d/0/voltage/0","Type":"Voltage","RawMin":"0,968 V","RawValue":"1,350 V","RawMax":"1,402 V","ImageURL":"images/transparent.png","Children":[]},
+    {"id":6,"Text":"+12V","Min":"12,096 V","Value":"12,192 V","Max":"12,288 V","SensorId":"/lpc/nct6799d/0/voltage/1","Type":"Voltage","RawMin":"12,096 V","RawValue":"12,192 V","RawMax":"12,288 V","ImageURL":"images/transparent.png","Children":[]}]},
+   {"id":7,"Text":"Temperatures","Min":"","Value":"","Max":"","ImageURL":"images_icon/temperature.png","Children":[
+    {"id":8,"Text":"CPU","Min":"38,5 °C","Value":"45,0 °C","Max":"79,5 °C","SensorId":"/lpc/nct6799d/0/temperature/0","Type":"Temperature","RawMin":"38,5 °C","RawValue":"45,0 °C","RawMax":"79,5 °C","ImageURL":"images/transparent.png","Children":[]},
+    {"id":9,"Text":"Motherboard","Min":"33,0 °C","Value":"35,5 °C","Max":"37,0 °C","SensorId":"/lpc/nct6799d/0/temperature/1","Type":"Temperature","RawMin":"33,0 °C","RawValue":"35,5 °C","RawMax":"37,0 °C","ImageURL":"images/transparent.png","Children":[]}]},
+   {"id":10,"Text":"Fans","Min":"","Value":"","Max":"","ImageURL":"images_icon/fan.png","Children":[
+    {"id":11,"Text":"Fan #1","Min":"987 RPM","Value":"1023 RPM","Max":"1544 RPM","SensorId":"/lpc/nct6799d/0/fan/0","Type":"Fan","RawMin":"987 RPM","RawValue":"1023 RPM","RawMax":"1544 RPM","ImageURL":"images/transparent.png","Children":[]},
+    {"id":12,"Text":"Fan #2","Min":"-","Value":"-","Max":"-","SensorId":"/lpc/nct6799d/0/fan/1","Type":"Fan","RawMin":" RPM","RawValue":" RPM","RawMax":" RPM","ImageURL":"images/transparent.png","Children":[]}]},
+   {"id":13,"Text":"Controls","Min":"","Value":"","Max":"","ImageURL":"images_icon/control.png","Children":[
+    {"id":14,"Text":"Fan #1","Min":"40,0 %","Value":"45,1 %","Max":"72,2 %","SensorId":"/lpc/nct6799d/0/control/0","Type":"Control","RawMin":"40,0 %","RawValue":"45,1 %","RawMax":"72,2 %","ImageURL":"images/transparent.png","Children":[]}]}]}]},
+ {"id":15,"Text":"AMD Ryzen 9 7950X","Min":"","Value":"","Max":"","HardwareId":"/amdcpu/0","ImageURL":"images_icon/cpu.png","Children":[
+  {"id":16,"Text":"Voltages","Min":"","Value":"","Max":"","ImageURL":"images_icon/voltage.png","Children":[
+   {"id":17,"Text":"Core (SVI3 TFN)","Min":"0.912 V","Value":"1.256 V","Max":"1.391 V","SensorId":"/amdcpu/0/voltage/0","Type":"Voltage","RawMin":"0.912 V","RawValue":"1.256 V","RawMax":"1.391 V","ImageURL":"images/transparent.png","Children":[]}]},
+  {"id":18,"Text":"Clocks","Min":"","Value":"","Max":"","ImageURL":"images_icon/clock.png","Children":[
+   {"id":19,"Text":"Bus Speed","Min":"99.8 MHz","Value":"100.0 MHz","Max":"100.1 MHz","SensorId":"/amdcpu/0/clock/0","Type":"Clock","RawMin":"99.8 MHz","RawValue":"100.0 MHz","RawMax":"100.1 MHz","ImageURL":"images/transparent.png","Children":[]},
+   {"id":20,"Text":"Core #1","Min":"2994.6 MHz","Value":"5082.4 MHz","Max":"5741.2 MHz","SensorId":"/amdcpu/0/clock/1","Type":"Clock","RawMin":"2994.6 MHz","RawValue":"5082.4 MHz","RawMax":"5741.2 MHz","ImageURL":"images/transparent.png","Children":[]}]},
+  {"id":21,"Text":"Temperatures","Min":"","Value":"","Max":"","ImageURL":"images_icon/temperature.png","Children":[
+   {"id":22,"Text":"CCD1 (Tdie)","Min":"35.8 °C","Value":"41.0 °C","Max":"78.3 °C","SensorId":"/amdcpu/0/temperature/3","Type":"Temperature","RawMin":"35.8 °C","RawValue":"41.0 °C","RawMax":"78.3 °C","ImageURL":"images/transparent.png","Children":[]},
+   {"id":23,"Text":"Core (Tctl/Tdie)","Min":"38.4 °C","Value":"45.3 °C","Max":"81.6 °C","SensorId":"/amdcpu/0/temperature/2","Type":"Temperature","RawMin":"38.4 °C","RawValue":"45.3 °C","RawMax":"81.6 °C","ImageURL":"images/transparent.png","Children":[]},
+   {"id":24,"Text":"CCD2 (Tdie)","Min":"34.1 °C","Value":"39.8 °C","Max":"75.0 °C","SensorId":"/amdcpu/0/temperature/4","Type":"Temperature","RawMin":"34.1 °C","RawValue":"39.8 °C","RawMax":"75.0 °C","ImageURL":"images/transparent.png","Children":[]}]},
+  {"id":25,"Text":"Load","Min":"","Value":"","Max":"","ImageURL":"images_icon/load.png","Children":[
+   {"id":26,"Text":"CPU Total","Min":"0.4 %","Value":"7.4 %","Max":"100.0 %","SensorId":"/amdcpu/0/load/0","Type":"Load","RawMin":"0.4 %","RawValue":"7.4 %","RawMax":"100.0 %","ImageURL":"images/transparent.png","Children":[]},
+   {"id":27,"Text":"Core Max","Min":"3.1 %","Value":"21.9 %","Max":"100.0 %","SensorId":"/amdcpu/0/load/1","Type":"Load","RawMin":"3.1 %","RawValue":"21.9 %","RawMax":"100.0 %","ImageURL":"images/transparent.png","Children":[]}]},
+  {"id":28,"Text":"Powers","Min":"","Value":"","Max":"","ImageURL":"images_icon/power.png","Children":[
+   {"id":29,"Text":"Package","Min":"31.2 W","Value":"62.5 W","Max":"201.7 W","SensorId":"/amdcpu/0/power/0","Type":"Power","RawMin":"31.2 W","RawValue":"62.5 W","RawMax":"201.7 W","ImageURL":"images/transparent.png","Children":[]}]}]},
+ {"id":30,"Text":"Generic Memory","Min":"","Value":"","Max":"","ImageURL":"images_icon/ram.png","Children":[
+  {"id":31,"Text":"Load","Min":"","Value":"","Max":"","ImageURL":"images_icon/load.png","Children":[
+   {"id":32,"Text":"Memory","Min":"41.3 %","Value":"57.2 %","Max":"63.0 %","ImageURL":"images/transparent.png","Children":[]}]},
+  {"id":33,"Text":"Data","Min":"","Value":"","Max":"","ImageURL":"images_icon/power.png","Children":[
+   {"id":34,"Text":"Memory Used","Min":"13.1 GB","Value":"18.2 GB","Max":"20.0 GB","ImageURL":"images/transparent.png","Children":[]},
+   {"id":35,"Text":"Memory Available","Min":"11.7 GB","Value":"13.6 GB","Max":"18.6 GB","ImageURL":"images/transparent.png","Children":[]}]}]},
+ {"id":36,"Text":"NVIDIA GeForce RTX 4090","Min":"","Value":"","Max":"","HardwareId":"/gpu-nvidia/0","ImageURL":"images_icon/nvidia.png","Children":[
+  {"id":37,"Text":"Clocks","Min":"","Value":"","Max":"","ImageURL":"images_icon/clock.png","Children":[
+   {"id":38,"Text":"GPU Core","Min":"210.0 MHz","Value":"2520.0 MHz","Max":"2805.0 MHz","SensorId":"/gpu-nvidia/0/clock/0","Type":"Clock","RawMin":"210.0 MHz","RawValue":"2520.0 MHz","RawMax":"2805.0 MHz","ImageURL":"images/transparent.png","Children":[]}]},
+  {"id":39,"Text":"Temperatures","Min":"","Value":"","Max":"","ImageURL":"images_icon/temperature.png","Children":[
+   {"id":40,"Text":"GPU Core","Min":"34.0 °C","Value":"52.0 °C","Max":"71.0 °C","SensorId":"/gpu-nvidia/0/temperature/0","Type":"Temperature","RawMin":"34.0 °C","RawValue":"52.0 °C","RawMax":"71.0 °C","ImageURL":"images/transparent.png","Children":[]},
+   {"id":41,"Text":"GPU Hot Spot","Min":"41.2 °C","Value":"61.3 °C","Max":"82.9 °C","SensorId":"/gpu-nvidia/0/temperature/2","Type":"Temperature","RawMin":"41.2 °C","RawValue":"61.3 °C","RawMax":"82.9 °C","ImageURL":"images/transparent.png","Children":[]},
+   {"id":42,"Text":"GPU Memory Junction","Min":"-","Value":"-","Max":"-","SensorId":"/gpu-nvidia/0/temperature/3","Type":"Temperature","RawMin":" °C","RawValue":" °C","RawMax":" °C","ImageURL":"images/transparent.png","Children":[]}]},
+  {"id":43,"Text":"Load","Min":"","Value":"","Max":"","ImageURL":"images_icon/load.png","Children":[
+   {"id":44,"Text":"GPU Core","Min":"0.0 %","Value":"33.0 %","Max":"100.0 %","SensorId":"/gpu-nvidia/0/load/0","Type":"Load","RawMin":"0.0 %","RawValue":"33.0 %","RawMax":"100.0 %","ImageURL":"images/transparent.png","Children":[]}]},
+  {"id":45,"Text":"Fans","Min":"","Value":"","Max":"","ImageURL":"images_icon/fan.png","Children":[
+   {"id":46,"Text":"GPU Fan 1","Min":"0 RPM","Value":"1180 RPM","Max":"1650 RPM","SensorId":"/gpu-nvidia/0/fan/1","Type":"Fan","RawMin":"0 RPM","RawValue":"1180 RPM","RawMax":"1650 RPM","ImageURL":"images/transparent.png","Children":[]},
+   {"id":47,"Text":"GPU Fan 2","Min":"NaN RPM","Value":"NaN RPM","Max":"NaN RPM","SensorId":"/gpu-nvidia/0/fan/2","Type":"Fan","RawMin":"NaN RPM","RawValue":"NaN RPM","RawMax":"NaN RPM","ImageURL":"images/transparent.png","Children":[]}]},
+  {"id":48,"Text":"Powers","Min":"","Value":"","Max":"","ImageURL":"images_icon/power.png","Children":[
+   {"id":49,"Text":"GPU Package","Min":"21.3 W","Value":"182.4 W","Max":"449.8 W","SensorId":"/gpu-nvidia/0/power/0","Type":"Power","RawMin":"21.3 W","RawValue":"182.4 W","RawMax":"449.8 W","ImageURL":"images/transparent.png","Children":[]}]},
+  {"id":50,"Text":"Data","Min":"","Value":"","Max":"","ImageURL":"images_icon/power.png","Children":[
+   {"id":51,"Text":"GPU Memory Used","Min":"1874.0 MB","Value":"8123.0 MB","Max":"14002.0 MB","SensorId":"/gpu-nvidia/0/smalldata/1","Type":"SmallData","RawMin":"1874.0 MB","RawValue":"8123.0 MB","RawMax":"14002.0 MB","ImageURL":"images/transparent.png","Children":[]}]}]},
+ {"id":52,"Text":"NVIDIA GeForce RTX 4090","Min":"","Value":"","Max":"","HardwareId":"/gpu-nvidia/1","ImageURL":"images_icon/nvidia.png","Children":[
+  {"id":53,"Text":"Temperatures","Min":"","Value":"","Max":"","ImageURL":"images_icon/temperature.png","Children":[
+   {"id":54,"Text":"GPU Core","Min":"30.0 °C","Value":"48.5 °C","Max":"66.0 °C","SensorId":"/gpu-nvidia/1/temperature/0","Type":"Temperature","RawMin":"30.0 °C","RawValue":"48.5 °C","RawMax":"66.0 °C","ImageURL":"images/transparent.png","Children":[]}]},
+  {"id":55,"Text":"Load","Min":"","Value":"","Max":"","ImageURL":"images_icon/load.png","Children":[
+   {"id":56,"Text":"GPU Core","Min":"0.0 %","Value":"12.0 %","Max":"99.0 %","SensorId":"/gpu-nvidia/1/load/0","Type":"Load","RawMin":"0.0 %","RawValue":"12.0 %","RawMax":"99.0 %","ImageURL":"images/transparent.png","Children":[]}]}]},
+ {"id":63,"Text":"Corsair HX1000i","Min":"","Value":"","Max":"","HardwareId":"/psu/corsair/0","ImageURL":"images_icon/power-supply.png","Children":[
+  {"id":64,"Text":"Times","Min":"","Value":"","Max":"","ImageURL":"images_icon/time.png","Children":[
+   {"id":65,"Text":"Uptime","Min":"0:00:01","Value":"1:00:00.5","Max":"1:00:00.5","SensorId":"/psu/corsair/0/timespan/0","Type":"TimeSpan","RawMin":"1","RawValue":"3600.5","RawMax":"3600.5","ImageURL":"images/transparent.png","Children":[]},
+   {"id":66,"Text":"Total uptime","Min":"142:21:21:18","Value":"142:21:21:18","Max":"142:21:21:18","SensorId":"/psu/corsair/0/timespan/1","Type":"TimeSpan","RawMin":"1.234568e+07","RawValue":"1.234568e+07","RawMax":"1.234568e+07","ImageURL":"images/transparent.png","Children":[]}]}]},
+ {"id":67,"Text":"Ethernet","Min":"","Value":"","Max":"","ImageURL":"images_icon/nic.png","Children":[
+  {"id":68,"Text":"Throughput","Min":"","Value":"","Max":"","ImageURL":"images_icon/throughput.png","Children":[
+   {"id":69,"Text":"Upload Speed","Min":"0,0 KB/s","Value":"512,0 KB/s","Max":"1,5 MB/s","SensorId":"/nic/{9F1B2C3D-0000-4000-8000-00AA00BB00CC}/throughput/7","Type":"Throughput","ImageURL":"images/transparent.png","Children":[]},
+   {"id":70,"Text":"Download Speed","Min":"0,0 KB/s","Value":"1,2 MB/s","Max":"11,8 MB/s","SensorId":"/nic/{9F1B2C3D-0000-4000-8000-00AA00BB00CC}/throughput/8","Type":"Throughput","ImageURL":"images/transparent.png","Children":[]},
+   {"id":71,"Text":"Connection Speed","Min":"1Gbps","Value":"1Gbps","Max":"1Gbps","SensorId":"/nic/{9F1B2C3D-0000-4000-8000-00AA00BB00CC}/throughput/9","Type":"Throughput","ImageURL":"images/transparent.png","Children":[]}]}]},
+ {"id":57,"Text":"Samsung SSD 990 PRO 2TB","Min":"","Value":"","Max":"","HardwareId":"/nvme/0","ImageURL":"images_icon/hdd.png","Children":[
+  {"id":58,"Text":"Temperatures","Min":"","Value":"","Max":"","ImageURL":"images_icon/temperature.png","Children":[
+   {"id":59,"Text":"Composite Temperature","Min":"33.9 °C","Value":"39.9 °C","Max":"52.9 °C","SensorId":"/nvme/0/temperature/0","Type":"Temperature","RawMin":33.85,"RawValue":39.85,"RawMax":52.85,"ImageURL":"images/transparent.png","Children":[]}]},
+  {"id":72,"Text":"Data","Min":"","Value":"","Max":"","ImageURL":"images_icon/data.png","Children":[
+   {"id":73,"Text":"Data Read","Min":"2.0 TB","Value":"2.0 TB","Max":"2.0 TB","SensorId":"/nvme/0/data/0","Type":"Data","RawMin":2199023255552,"RawValue":2199023255552,"RawMax":2199023255552,"ImageURL":"images/transparent.png","Children":[]}]},
+  {"id":60,"Text":"Throughput","Min":"","Value":"","Max":"","ImageURL":"images_icon/throughput.png","Children":[
+   {"id":61,"Text":"Read Rate","Min":"0.0 KB/s","Value":"120.6 KB/s","Max":"3.4 GB/s","SensorId":"/nvme/0/throughput/0","Type":"Throughput","RawMin":0,"RawValue":123456.5,"RawMax":3650722201.6,"ImageURL":"images/transparent.png","Children":[]},
+   {"id":62,"Text":"Write Rate","Min":"-","Value":"-","Max":"-","SensorId":"/nvme/0/throughput/1","Type":"Throughput","RawMin":null,"RawValue":null,"RawMax":null,"ImageURL":"images/transparent.png","Children":[]}]}]}]}]}

@@ -32,8 +32,8 @@ studio builds its UI entirely from these manifests:
   - `password`: write-only in the UI, never logged, never returned to the browser, and only ever given to
     its own source.
 - **`provides`** documents keys up front, so the window and autocomplete can show them before any value
-  arrives. A `pattern: true` entry covers dynamic keys such as `hwinfo.*` or `ha.*`; the live values fill
-  those in.
+  arrives. A `pattern: true` entry covers dynamic keys such as `hwinfo.*`, `lhm.*` or `ha.*`; the live
+  values fill those in.
 - **Built-ins:** their manifests are compiled into the player. Home Assistant's `ha.*` keys come from its
   `entities` setting.
 

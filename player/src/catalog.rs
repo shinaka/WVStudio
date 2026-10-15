@@ -248,6 +248,15 @@ mod tests {
         let pc = all.iter().find(|m| m.id == "pc").unwrap();
         assert_eq!(pc.setting("hwinfo").unwrap().kind, "bool");
         assert!(pc.provides.iter().any(|p| p.key == "hwinfo.*" && p.pattern));
+        // Libre Hardware Monitor: off, at the address the player falls back to
+        let lhm = pc.setting("lhm").unwrap();
+        assert_eq!((lhm.kind.as_str(), &lhm.default), ("bool", &Some(json!(false))));
+        let url = pc.setting("lhm_url").unwrap();
+        assert_eq!((url.kind.as_str(), &url.default), ("text", &Some(json!(crate::sources::LHM_URL))));
+        assert_eq!(crate::data::Source::default().lhm_url, crate::sources::LHM_URL);
+        assert!(pc.provides.iter().any(|p| p.key == "lhm.*" && p.pattern));
+        let temp = pc.provides.iter().find(|p| p.key == "pc.cpu.temp").unwrap();
+        assert!(temp.label.contains("HWiNFO") && temp.label.contains("Libre Hardware Monitor"));
         for key in ["pc.cpu.load", "pc.cpu.temp", "pc.ram.used_gb", "pc.gpu.temp", "pc.gpu.vram_total_gb"] {
             assert!(pc.provides.iter().any(|p| p.key == key), "{key}");
         }

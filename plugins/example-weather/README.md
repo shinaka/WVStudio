@@ -41,5 +41,8 @@ and prints the values, and the studio's **Test** button does the same for one so
 
 Copy this folder, rename it, change the `id` and the rest of `plugin.json`, and replace `weather.py`.
 Anything that can read stdin and print JSON will do: Python, PowerShell (`"command": ["powershell",
-"-NoProfile", "-File", "my.ps1"]`), a .cmd, a compiled program. Plugins are read when the player starts
-and when you press **Rescan** in the sources window.
+"-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "my.ps1"]`), a .cmd or a compiled program in this folder
+(`"command": ["cmd", "/c", ".\\my.cmd"]`). Plugins are read when the player starts and when you press
+**Rescan** in the sources window.
+
+The full guide, with every rule, testing and troubleshooting, is [docs/plugins.md](../../docs/plugins.md).

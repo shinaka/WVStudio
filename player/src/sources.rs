@@ -1,7 +1,8 @@
 //! Where live values come from (docs/data.md): Claude plan usage, the PC's own sensors (Windows, NVIDIA,
-//! HWiNFO) and Home Assistant. Each poll returns its values, or what went wrong; tokens never appear in
-//! either.
+//! HWiNFO, Libre Hardware Monitor) and Home Assistant. Each poll returns its values, or what went wrong;
+//! tokens never appear in either.
 
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::thread::sleep;
@@ -68,7 +69,7 @@ impl std::fmt::Display for Failure {
 pub fn poll(source: &Source, state: &mut State) -> Result<Polled, Failure> {
     match source.kind.as_str() {
         "claude" => Ok(Polled { values: claude()?, notes: Vec::new() }),
-        "pc" => Ok(pc(source.hwinfo, state)),
+        "pc" => Ok(pc(source, state)),
         "homeassistant" => homeassistant(source),
         "time" => Ok(Polled { values: Vec::new(), notes: Vec::new() }), // always there, never polled
         other => match crate::catalog::manifest(other) {
@@ -78,13 +79,31 @@ pub fn poll(source: &Source, state: &mut State) -> Result<Polled, Failure> {
     }
 }
 
+/// How a GET is made.
+struct Fetch {
+    /// Given up after this, in all.
+    timeout: Duration,
+    /// The longest reply read, in bytes.
+    limit: u64,
+    /// Straight to the host, never through a proxy the environment names (HTTP_PROXY, ALL_PROXY...).
+    direct: bool,
+    /// To the host's IPv4 addresses only.
+    ipv4: bool,
+}
+
+/// A web source's GET.
+const WEB: Fetch = Fetch { timeout: Duration::from_secs(20), limit: 64 << 20, direct: false, ipv4: false };
+
 /// A GET, as text. Errors say what failed (the status, say), never the headers.
-fn get(url: &str, headers: &[(&str, &str)]) -> Result<String, Failure> {
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(20)))
-        .http_status_as_error(false)
-        .build()
-        .into();
+fn get(url: &str, headers: &[(&str, &str)], fetch: &Fetch) -> Result<String, Failure> {
+    let mut config = ureq::Agent::config_builder().timeout_global(Some(fetch.timeout)).http_status_as_error(false);
+    if fetch.direct {
+        config = config.proxy(None);
+    }
+    if fetch.ipv4 {
+        config = config.ip_family(ureq::config::IpFamily::Ipv4Only);
+    }
+    let agent: ureq::Agent = config.build().into();
     let mut request = agent.get(url);
     for (name, value) in headers {
         request = request.header(*name, *value);
@@ -96,7 +115,7 @@ fn get(url: &str, headers: &[(&str, &str)]) -> Result<String, Failure> {
         let reason = status.canonical_reason().map(|r| format!(" {r}")).unwrap_or_default();
         return Err(Failure { message: format!("HTTP {}{reason}", status.as_u16()), status: Some(status.as_u16()), retry_after });
     }
-    reply.body_mut().with_config().limit(64 << 20).read_to_string().map_err(|e| Failure::from(e.to_string()))
+    reply.body_mut().with_config().limit(fetch.limit).read_to_string().map_err(|e| Failure::from(e.to_string()))
 }
 
 /// A `Retry-After` header: seconds, or an HTTP date (RFC 2822), as how long to wait from `now`.
@@ -126,7 +145,7 @@ fn claude() -> Result<Vec<(String, Value)>, Failure> {
         return Err("the Claude Code login has expired (Claude Code renews it when it runs)".into());
     }
     let reply = get(USAGE, &[("Authorization", &format!("Bearer {token}")), ("anthropic-beta", "oauth-2025-04-20"),
-                             ("User-Agent", "wvplay")])?;
+                             ("User-Agent", "wvplay")], &WEB)?;
     let usage: Json = serde_json::from_str(&reply).map_err(|_| Failure::from("the usage reply isn't JSON"))?;
     Ok(claude_values(&usage))
 }
@@ -170,7 +189,7 @@ fn homeassistant(source: &Source) -> Result<Polled, Failure> {
     if source.token.is_empty() {
         return Err("no token set".into());
     }
-    let reply = get(&format!("{url}/api/states"), &[("Authorization", &format!("Bearer {}", source.token))])?;
+    let reply = get(&format!("{url}/api/states"), &[("Authorization", &format!("Bearer {}", source.token))], &WEB)?;
     let states: Json = serde_json::from_str(&reply).map_err(|_| Failure::from("the states reply isn't JSON"))?;
     Ok(ha_values(&states, &source.entities))
 }
@@ -205,8 +224,9 @@ fn ha_values(states: &Json, entities: &[String]) -> Polled {
 }
 
 /// The PC's own sensors: CPU load and memory from Windows, the GPU from NVIDIA's driver, and (with
-/// `hwinfo`) everything HWiNFO reads.
-fn pc(hwinfo: bool, state: &mut State) -> Polled {
+/// `hwinfo`, `lhm`) everything HWiNFO or Libre Hardware Monitor reads. A part that can't be read is a
+/// note, never a failure, so the rest still comes through.
+fn pc(source: &Source, state: &mut State) -> Polled {
     let (mut values, mut notes) = (Vec::new(), Vec::new());
     let mut put = |key: &str, value: f64| values.push((key.to_string(), Value::Number(value)));
 
@@ -248,13 +268,372 @@ fn pc(hwinfo: bool, state: &mut State) -> Polled {
         Err(e) => notes.push(e.to_string()),
     }
 
-    if hwinfo {
+    if source.hwinfo {
         match win::hwinfo().and_then(|bytes| hwinfo_readings(&bytes)) {
             Ok(readings) => values.extend(hwinfo_values(&readings)),
             Err(e) => notes.push(e),
         }
     }
+    if source.lhm {
+        match lhm(&source.lhm_url) {
+            Ok((found, note)) => {
+                add_lhm(&mut values, found);
+                notes.extend(note);
+            }
+            Err(e) => notes.push(e),
+        }
+    }
     Polled { values, notes }
+}
+
+/// Where Libre Hardware Monitor's web server answers unless set otherwise.
+pub const LHM_URL: &str = "http://127.0.0.1:8085";
+
+/// How long the pc poll waits for Libre Hardware Monitor, so one that isn't there never stalls it.
+const LHM_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// The most of LHM's reply the player reads, and the most sensors it takes from it. A real data.json is
+/// well under 1 MB, with a few hundred sensors: this keeps anything else that answers at the address from
+/// filling the store with keys, which it keeps.
+const LHM_LIMIT: u64 = 4 << 20;
+const LHM_MAX_SENSORS: usize = 4096;
+
+/// Libre Hardware Monitor's sensors, from its web server's data.json, and a note when some were left out.
+/// An error is the pc poll's note.
+fn lhm(url: &str) -> Result<(Vec<(String, Value)>, Option<String>), String> {
+    let base = lhm_base(url);
+    let not_answering = |why: &str| {
+        format!("Libre Hardware Monitor isn't answering at {base} ({why}): check that it's running, with Options > Remote Web Server on")
+    };
+    let reply = get(&format!("{base}/data.json"), &[], &lhm_fetch(&base)).map_err(|e| not_answering(&lhm_why(&e)))?;
+    let tree = serde_json::from_str::<Json>(&reply).ok().filter(|tree| tree["Children"].is_array());
+    let tree = tree.ok_or_else(|| not_answering("its reply isn't sensor data"))?;
+    let mut sensors = lhm_sensors(&tree);
+    let note = (sensors.len() > LHM_MAX_SENSORS).then(|| {
+        format!("Libre Hardware Monitor at {base} lists {} sensors: only the first {LHM_MAX_SENSORS} are read", sensors.len())
+    });
+    sensors.truncate(LHM_MAX_SENSORS);
+    Ok((lhm_values(&sensors), note))
+}
+
+/// How LHM is asked: within LHM_TIMEOUT, for LHM_LIMIT at most. On this PC, never through a proxy, which
+/// HTTP_PROXY or ALL_PROXY would otherwise send even 127.0.0.1 to. `localhost` is asked at 127.0.0.1 only:
+/// LHM answers there whenever it answers at ::1, and Windows takes about 2 s to give up on each address,
+/// so with nothing listening, trying ::1 first would use up the time and hide why.
+fn lhm_fetch(base: &str) -> Fetch {
+    let host = base.parse::<ureq::http::Uri>().ok().and_then(|uri| uri.host().map(str::to_ascii_lowercase)).unwrap_or_default();
+    let localhost = host == "localhost";
+    let loopback = localhost || host.trim_matches(['[', ']']).parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback());
+    Fetch { timeout: LHM_TIMEOUT, limit: LHM_LIMIT, direct: loopback, ipv4: localhost }
+}
+
+/// Why a GET failed, briefly.
+fn lhm_why(e: &Failure) -> String {
+    let lower = e.message.to_lowercase();
+    if e.status == Some(401) {
+        "it asks for a password (Remote Web Server > Authentication), which the player doesn't send".into()
+    } else if e.status.is_some() {
+        e.message.clone()
+    } else if lower.contains("larger than") {
+        format!("its reply is over {} MB, far more than LHM's", LHM_LIMIT >> 20)
+    } else if lower.contains("timeout") || lower.contains("timed out") {
+        format!("no reply in {} s", LHM_TIMEOUT.as_secs())
+    } else if lower.contains("refused") || lower.contains("10061") {
+        "nothing is listening there".into()
+    } else {
+        e.message.clone()
+    }
+}
+
+/// The address as set: the default when blank, `http://` when it names no scheme, without a trailing `/`
+/// or `/data.json` (the address a browser shows for the data, which LHM's server would take as a file).
+fn lhm_base(url: &str) -> String {
+    let url = url.trim().trim_end_matches('/');
+    // ASCII lowercasing keeps every byte where it was, so the end that matched is the same length
+    let url = if url.to_ascii_lowercase().ends_with("/data.json") { url[..url.len() - 10].trim_end_matches('/') } else { url };
+    match url {
+        "" => LHM_URL.to_string(),
+        url if url.contains("://") => url.to_string(),
+        url => format!("http://{url}"),
+    }
+}
+
+/// Adds Libre Hardware Monitor's values to the pc poll's. HWiNFO's `pc.cpu.temp`, when it gave one, wins.
+fn add_lhm(values: &mut Vec<(String, Value)>, lhm: Vec<(String, Value)>) {
+    let has_temp = values.iter().any(|(k, _)| k == "pc.cpu.temp");
+    values.extend(lhm.into_iter().filter(|(k, _)| !(has_temp && k == "pc.cpu.temp")));
+}
+
+/// One Libre Hardware Monitor sensor: its hardware's key (numbered when two have the same name), whether
+/// that hardware is a CPU, its type (`temperature`, `load`...), its name, its name as a key part, and its
+/// value (None when it has no reading: "-").
+struct LhmSensor {
+    hardware: String,
+    cpu: bool,
+    kind: String,
+    name: String,
+    key: String,
+    value: Option<f64>,
+}
+
+/// The hardware the walk is in.
+#[derive(Default)]
+struct LhmHardware {
+    key: String,
+    /// From its `HardwareId` (`/amdcpu/0`), which only newer versions give.
+    cpu: Option<bool>,
+    /// Whether it has the CPU icon, for versions with no ids at all.
+    cpu_icon: bool,
+}
+
+/// Every sensor in data.json, in tree order. The tree is a root ("Sensor"), the computer, its hardware
+/// (which can hold more, like a motherboard's SuperIO chip), a group per sensor type ("Temperatures"),
+/// then the sensors. Sensors have `SensorId` and `Type` (0.8.7 on), and since 0.9.5 `RawValue`, while
+/// hardware has `HardwareId`. Without those (Open Hardware Monitor's shape), a group is told by its
+/// children all being leaves.
+fn lhm_sensors(tree: &Json) -> Vec<LhmSensor> {
+    let mut sensors = Vec::new();
+    lhm_walk(tree, &LhmHardware::default(), None, &mut HashMap::new(), &mut sensors);
+    sensors
+}
+
+fn lhm_walk(node: &Json, hardware: &LhmHardware, group: Option<&str>, named: &mut HashMap<String, usize>,
+            out: &mut Vec<LhmSensor>) {
+    let text = node["Text"].as_str().unwrap_or_default();
+    let children = node["Children"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let leaf = |n: &Json| n["Children"].as_array().is_none_or(Vec::is_empty);
+    let sensor = |n: &Json| n.get("SensorId").is_some() || n.get("Type").is_some();
+    if sensor(node) || (group.is_some() && leaf(node)) {
+        // kept even with no reading, so that the keys after it stay where they are
+        let kind = match node["Type"].as_str() {
+            Some(kind) => slug(kind),
+            None => lhm_type(group.unwrap_or_default()),
+        };
+        let id = node["SensorId"].as_str();
+        let cpu = hardware.cpu.or_else(|| id.map(lhm_cpu_id)).unwrap_or(hardware.cpu_icon);
+        // a sensor's id ends in its type and number: `/amdcpu/0/temperature/2` is `temperature_2`
+        let id_end = id.map(|id| id.rsplitn(3, '/').take(2).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("_"));
+        let key = lhm_name(text, id_end.as_deref(), "sensor");
+        out.push(LhmSensor { hardware: hardware.key.clone(), cpu, kind, name: text.to_string(), key, value: lhm_value(node) });
+    } else if node.get("HardwareId").is_none() && !children.is_empty() && children.iter().all(|c| leaf(c) || sensor(c)) {
+        for child in children {
+            lhm_walk(child, hardware, Some(text), named, out);
+        }
+    } else {
+        // hardware, or the root and the computer above it
+        let mut key = lhm_name(text, node["HardwareId"].as_str(), "hardware");
+        let count = named.entry(key.clone()).or_default();
+        *count += 1;
+        if *count > 1 {
+            key = format!("{key}_{count}");
+        }
+        let here = LhmHardware {
+            key,
+            cpu: node["HardwareId"].as_str().map(lhm_cpu_id),
+            cpu_icon: node["ImageURL"].as_str().is_some_and(|u| u.ends_with("/cpu.png")),
+        };
+        for child in children {
+            lhm_walk(child, &here, None, named, out);
+        }
+    }
+}
+
+/// Whether an LHM id (`/amdcpu/0`, `/intelcpu/0/temperature/1`) is a CPU's.
+fn lhm_cpu_id(id: &str) -> bool {
+    id.trim_start_matches('/').split('/').next().is_some_and(|first| first.to_ascii_lowercase().contains("cpu"))
+}
+
+/// A sensor's type from its group's name, for versions that don't give `Type`: "Temperatures" is
+/// `temperature` (LHM's TypeNode names).
+fn lhm_type(group: &str) -> String {
+    const GROUPS: [(&str, &str); 20] = [
+        ("voltages", "voltage"), ("currents", "current"), ("capacities", "energy"), ("clocks", "clock"),
+        ("load", "load"), ("temperatures", "temperature"), ("fans", "fan"), ("flows", "flow"),
+        ("controls", "control"), ("levels", "level"), ("powers", "power"), ("data", "data"),
+        ("factors", "factor"), ("frequencies", "frequency"), ("throughput", "throughput"), ("times", "timespan"),
+        ("timings", "timing"), ("noise_levels", "noise"), ("conductivities", "conductivity"),
+        ("humidity_levels", "humidity"),
+    ];
+    let group = slug(group);
+    match GROUPS.iter().find(|(name, _)| *name == group) {
+        Some((_, kind)) => kind.to_string(),
+        None => group.strip_suffix('s').unwrap_or(&group).to_string(), // one LHM added since: its name, singular
+    }
+}
+
+/// A sensor's value: `RawValue` when there is one (a number in the newest versions, text like "45.3 °C" in
+/// 0.9.5 and 0.9.6), else what `Value` shows. None when it has none ("-").
+fn lhm_value(node: &Json) -> Option<f64> {
+    let raw = match &node["RawValue"] {
+        // LHM's newest code gives data in bytes, where 0.9.6 gave GB: GB, as before
+        Json::Number(n) if node["Type"] == "Data" => n.as_f64().map(|bytes| bytes / (1u64 << 30) as f64),
+        Json::Number(n) => n.as_f64(),
+        Json::String(s) => lhm_reading(s),
+        _ => None,
+    };
+    raw.or_else(|| node["Value"].as_str().and_then(lhm_reading)).filter(|v| v.is_finite())
+}
+
+/// A reading as LHM writes it, in the PC's Regional format: "45.3 °C", "45,3 °C", "45٫3 °C", "‎−5.0 °C",
+/// "1.234568e+07" (a big time span in seconds, on .NET Framework), "1:02:03" (a time span, as seconds). A
+/// temperature shown in °F is turned back into °C, and throughput shown scaled ("1.2 MB/s", "100Mbps", what
+/// `Value` shows) back into B/s (bit/s for "Connection Speed"). None when it doesn't start with a number.
+fn lhm_reading(s: &str) -> Option<f64> {
+    let s = s.trim_matches(|c: char| c.is_whitespace() || bidi_mark(c));
+    match s {
+        // the two link speeds LHM shows as they are
+        "100Mbps" => return Some(1e8),
+        "1Gbps" => return Some(1e9),
+        _ => {}
+    }
+    if s.contains(':') {
+        // [d:]h:mm:ss[.fff]
+        let parts: Vec<f64> = s.split(':').map(|part| leading_number(part).map(|(n, _)| n)).collect::<Option<_>>()?;
+        let weights = [86400.0, 3600.0, 60.0, 1.0];
+        return (parts.len() <= weights.len()).then(|| parts.iter().rev().zip(weights.iter().rev()).map(|(p, w)| p * w).sum());
+    }
+    let (n, unit) = leading_number(s)?;
+    let scale = match unit.trim() {
+        "°F" => return Some((n - 32.0) / 1.8),
+        "KB/s" | "Kbps" => 1024.0,
+        "MB/s" | "Mbps" => 1024.0 * 1024.0,
+        "GB/s" | "Gbps" => 1024.0 * 1024.0 * 1024.0,
+        _ => 1.0,
+    };
+    Some(n * scale)
+}
+
+/// The number a text starts with, and the rest of the text. The decimal point is `.`, `,`, `٫` (Arabic), or
+/// `/` between digits (Persian, on .NET Framework). The sign is `-` or `−`, with any bidi marks around it,
+/// and an exponent (`e+07`) is applied.
+fn leading_number(s: &str) -> Option<(f64, &str)> {
+    fn sign(s: &str) -> (bool, &str) {
+        let s = s.trim_start_matches(bidi_mark);
+        match s.strip_prefix(['-', '−']) {
+            Some(rest) => (true, rest.trim_start_matches(bidi_mark)),
+            None => (false, s.strip_prefix('+').unwrap_or(s).trim_start_matches(bidi_mark)),
+        }
+    }
+    fn digits(s: &str) -> (&str, &str) {
+        s.split_at(s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len()))
+    }
+    let (negative, s) = sign(s.trim_start());
+    let (whole, mut rest) = digits(s);
+    if whole.is_empty() {
+        return None;
+    }
+    let mut number = whole.to_string();
+    if let Some(point) = rest.chars().next().filter(|c| matches!(c, '.' | ',' | '٫' | '/')) {
+        let (fraction, after) = digits(&rest[point.len_utf8()..]);
+        if point != '/' || !fraction.is_empty() {
+            number = format!("{whole}.{fraction}");
+            rest = after;
+        }
+    }
+    if let Some(after) = rest.strip_prefix(['e', 'E']) {
+        let (exponent_negative, after) = sign(after);
+        let (exponent, after) = digits(after);
+        if !exponent.is_empty() {
+            number = format!("{number}e{}{exponent}", if exponent_negative { "-" } else { "" });
+            rest = after;
+        }
+    }
+    let n: f64 = number.parse().ok()?;
+    Some((if negative { -n } else { n }, rest))
+}
+
+/// The invisible marks some Regional formats put around a number's sign (U+200E before "-5.5" in Hebrew,
+/// U+061C in Arabic), and their kin.
+fn bidi_mark(c: char) -> bool {
+    matches!(c, '\u{61c}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{feff}')
+}
+
+/// A hardware or sensor name as a key part: slugified, with accents dropped ("Température" is
+/// `temperature`). When that leaves nothing (a name in another script, like a NIC that Windows calls
+/// "イーサネット"), it's the slugified id (`nic_<guid>`, `temperature_3`), else `fallback`.
+fn lhm_name(name: &str, id: Option<&str>, fallback: &str) -> String {
+    [slug(&plain_latin(name)), id.map(slug).unwrap_or_default()]
+        .into_iter()
+        .find(|key| !key.is_empty())
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+/// Lowercase, with Latin letters' accents dropped: "Conexión" is "conexion", "Lüfter" "lufter".
+fn plain_latin(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars().flat_map(char::to_lowercase) {
+        out.push_str(match c {
+            'à'..='å' | 'ā' | 'ă' | 'ą' => "a",
+            'æ' => "ae",
+            'ç' | 'ć' | 'ĉ' | 'ċ' | 'č' => "c",
+            'ð' | 'ď' | 'đ' => "d",
+            'è'..='ë' | 'ē' | 'ĕ' | 'ė' | 'ę' | 'ě' => "e",
+            'ĝ' | 'ğ' | 'ġ' | 'ģ' => "g",
+            'ĥ' | 'ħ' => "h",
+            'ì'..='ï' | 'ĩ' | 'ī' | 'ĭ' | 'į' | 'ı' => "i",
+            'ĳ' => "ij",
+            'ĵ' => "j",
+            'ķ' => "k",
+            'ĺ' | 'ļ' | 'ľ' | 'ŀ' | 'ł' => "l",
+            'ñ' | 'ń' | 'ņ' | 'ň' => "n",
+            'ò'..='ö' | 'ø' | 'ō' | 'ŏ' | 'ő' => "o",
+            'œ' => "oe",
+            'ŕ' | 'ŗ' | 'ř' => "r",
+            'ś' | 'ŝ' | 'ş' | 'š' | 'ș' => "s",
+            'ß' => "ss",
+            'ţ' | 'ť' | 'ŧ' | 'ț' => "t",
+            'þ' => "th",
+            'ù'..='ü' | 'ũ' | 'ū' | 'ŭ' | 'ů' | 'ű' | 'ų' => "u",
+            'ŵ' => "w",
+            'ý' | 'ÿ' | 'ŷ' => "y",
+            'ź' | 'ż' | 'ž' => "z",
+            '\u{300}'..='\u{36f}' => "", // an accent written apart from its letter
+            c => {
+                out.push(c);
+                continue;
+            }
+        });
+    }
+    out
+}
+
+/// Every sensor with a reading as `lhm.<hardware>.<type>.<sensor>`, plus `pc.cpu.temp`: the CPU die
+/// temperature. A key that's taken gets `_2`, `_3`... in tree order, counting the sensors with no reading
+/// too, so a sensor's key doesn't change when another one's reading comes and goes.
+fn lhm_values(sensors: &[LhmSensor]) -> Vec<(String, Value)> {
+    let mut values = Vec::new();
+    let mut taken = HashSet::new();
+    for s in sensors {
+        let kind = if s.kind.is_empty() { "other" } else { &s.kind };
+        let base = format!("lhm.{}.{kind}.{}", s.hardware, s.key);
+        let (mut key, mut n) = (base.clone(), 1);
+        while !taken.insert(key.clone()) {
+            n += 1;
+            key = format!("{base}_{n}");
+        }
+        if let Some(value) = s.value {
+            values.push((key, Value::Number(value)));
+        }
+    }
+    if let Some(temp) = lhm_cpu_temp(sensors) {
+        values.push(("pc.cpu.temp".into(), Value::Number(temp)));
+    }
+    values
+}
+
+/// The CPU die temperature: "Core (Tctl/Tdie)" on AMD ("Core (Tdie)", then "Core (Tctl)", when LHM shows
+/// them apart), "CPU Package" on Intel, else "Core Max", else "Core Average", else the CPU's first. Only
+/// sensors with a reading count.
+fn lhm_cpu_temp(sensors: &[LhmSensor]) -> Option<f64> {
+    let rank = |s: &&LhmSensor| match s.name.to_lowercase().as_str() {
+        "core (tctl/tdie)" | "cpu package" => 0,
+        "core (tdie)" => 1,
+        "core (tctl)" => 2,
+        "core max" => 3,
+        "core average" => 4,
+        _ => 5,
+    };
+    sensors.iter().filter(|s| s.cpu && s.kind == "temperature" && s.value.is_some()).min_by_key(rank).and_then(|s| s.value)
 }
 
 /// One HWiNFO reading: its sensor's name, its label, its type (1 is a temperature) and its value.
@@ -580,5 +959,363 @@ mod tests {
         assert_eq!(values.len(), 4);
         bytes[..4].copy_from_slice(b"DEAD");
         assert!(hwinfo_readings(&bytes).is_err());
+    }
+
+    /// LHM's data.json, with a node of each shape: 0.9.5 and 0.9.6 (RawValue as text, some in a Regional
+    /// format with a decimal comma, and a PSU's time span in the exponent form .NET Framework writes), the
+    /// newest (RawValue a number or null, data in bytes), before 0.9.5 (no RawValue, so throughput only as
+    /// shown, scaled: the "Ethernet" hardware), and before 0.8.7 (no ids, no Type either: "Generic Memory").
+    const LHM_DATA: &str = include_str!("../tests/lhm-data.json");
+
+    fn lhm_tree(data: &str) -> Vec<(String, Value)> {
+        lhm_values(&lhm_sensors(&serde_json::from_str(data).unwrap()))
+    }
+
+    #[test]
+    fn lhm_data_json() {
+        let v = lhm_tree(LHM_DATA);
+        let n = |key: &str| match get(&v, key) {
+            Some(Value::Number(n)) => *n,
+            other => panic!("{key}: {other:?}"),
+        };
+        // the SuperIO chip, nested in the motherboard, is the hardware; a decimal comma reads as a point
+        assert_eq!(n("lhm.nuvoton_nct6799d.voltage.vcore"), 1.35);
+        assert_eq!(n("lhm.nuvoton_nct6799d.voltage.12v"), 12.192);
+        assert_eq!(n("lhm.nuvoton_nct6799d.temperature.cpu"), 45.0);
+        assert_eq!(n("lhm.nuvoton_nct6799d.fan.fan_1"), 1023.0);
+        assert_eq!(n("lhm.nuvoton_nct6799d.control.fan_1"), 45.1);
+        assert_eq!(n("lhm.amd_ryzen_9_7950x.temperature.core_tctl_tdie"), 45.3);
+        assert_eq!(n("lhm.amd_ryzen_9_7950x.temperature.ccd1_tdie"), 41.0);
+        assert_eq!(n("lhm.amd_ryzen_9_7950x.clock.core_1"), 5082.4);
+        assert_eq!(n("lhm.amd_ryzen_9_7950x.load.core_max"), 21.9);
+        assert_eq!(n("lhm.amd_ryzen_9_7950x.power.package"), 62.5);
+        // before 0.9.5: the type from the group's name, the value from what's shown
+        assert_eq!(n("lhm.generic_memory.load.memory"), 57.2);
+        assert_eq!(n("lhm.generic_memory.data.memory_used"), 18.2);
+        assert_eq!(n("lhm.nvidia_geforce_rtx_4090.temperature.gpu_core"), 52.0);
+        assert_eq!(n("lhm.nvidia_geforce_rtx_4090.smalldata.gpu_memory_used"), 8123.0);
+        // the second of two identical GPUs
+        assert_eq!(n("lhm.nvidia_geforce_rtx_4090_2.temperature.gpu_core"), 48.5);
+        assert_eq!(n("lhm.nvidia_geforce_rtx_4090_2.load.gpu_core"), 12.0);
+        // a raw number wins over the shown text, which is in KB/s; data in bytes is GB, as before
+        assert_eq!(n("lhm.samsung_ssd_990_pro_2tb.temperature.composite_temperature"), 39.85);
+        assert_eq!(n("lhm.samsung_ssd_990_pro_2tb.throughput.read_rate"), 123456.5);
+        assert_eq!(n("lhm.samsung_ssd_990_pro_2tb.data.data_read"), 2048.0);
+        // a time span in seconds, short and long ("1.234568e+07": 7 digits, then the exponent)
+        assert_eq!(n("lhm.corsair_hx1000i.timespan.uptime"), 3600.5);
+        assert_eq!(n("lhm.corsair_hx1000i.timespan.total_uptime"), 12_345_680.0);
+        // throughput shown scaled, back in B/s; the link speed in bit/s
+        assert_eq!(n("lhm.ethernet.throughput.upload_speed"), 512.0 * 1024.0);
+        assert_eq!(n("lhm.ethernet.throughput.download_speed"), 1.2 * 1024.0 * 1024.0);
+        assert_eq!(n("lhm.ethernet.throughput.connection_speed"), 1e9);
+        // no value ("-", " RPM", null, NaN): left out
+        for key in ["lhm.nuvoton_nct6799d.fan.fan_2", "lhm.nvidia_geforce_rtx_4090.temperature.gpu_memory_junction",
+                    "lhm.nvidia_geforce_rtx_4090.fan.gpu_fan_2", "lhm.samsung_ssd_990_pro_2tb.throughput.write_rate"] {
+            assert!(get(&v, key).is_none(), "{key}");
+        }
+        // the CPU's own die temperature, not the motherboard's "CPU" nor a CCD's
+        assert_eq!(n("pc.cpu.temp"), 45.3);
+        assert_eq!(v.len(), 36);
+        assert!(v.iter().all(|(k, _)| k == "pc.cpu.temp" || (k.starts_with("lhm.") && k.split('.').count() == 4)));
+        // nothing above the hardware (the root, the computer) is a sensor
+        assert!(v.iter().all(|(k, _)| !k.contains("desktop_jim") && !k.contains("sensor.")));
+    }
+
+    #[test]
+    fn lhm_keys() {
+        // two identical boards, each with a doubled sensor, an unnamed one, and a type LHM added later
+        let board = |id: u32| format!(r##"{{ "Text": "Board", "HardwareId": "/lpc/x/{id}", "Children": [
+            {{ "Text": "Temperatures", "Children": [
+                {{ "Text": "Aux", "Type": "Temperature", "SensorId": "/lpc/x/{id}/temperature/0", "Value": "1.0 °C" }},
+                {{ "Text": "Aux", "Type": "Temperature", "SensorId": "/lpc/x/{id}/temperature/1", "Value": "2.0 °C" }},
+                {{ "Text": "Aux 2", "Type": "Temperature", "SensorId": "/lpc/x/{id}/temperature/2", "Value": "3.0 °C" }},
+                {{ "Text": "#", "Type": "Temperature", "SensorId": "/lpc/x/{id}/temperature/3", "Value": "4.0 °C" }} ] }},
+            {{ "Text": "Wobbles", "Children": [ {{ "Text": "Wobble", "Value": "5" }} ] }} ] }}"##);
+        let tree = format!(r#"{{ "Text": "Sensor", "Children": [ {{ "Text": "PC", "Children": [ {}, {} ] }} ] }}"#, board(0), board(1));
+        let v = lhm_tree(&tree);
+        let keys: Vec<&str> = v.iter().map(|(k, _)| k.as_str()).collect();
+        // the one named "#" by its id's end
+        assert_eq!(keys, [
+            "lhm.board.temperature.aux", "lhm.board.temperature.aux_2", "lhm.board.temperature.aux_2_2",
+            "lhm.board.temperature.temperature_3", "lhm.board.wobble.wobble",
+            "lhm.board_2.temperature.aux", "lhm.board_2.temperature.aux_2", "lhm.board_2.temperature.aux_2_2",
+            "lhm.board_2.temperature.temperature_3", "lhm.board_2.wobble.wobble",
+        ]);
+        assert_eq!(get(&v, "lhm.board.temperature.aux_2"), Some(&Value::Number(2.0)));
+        assert_eq!(get(&v, "lhm.board.temperature.aux_2_2"), Some(&Value::Number(3.0)));
+        // the same tree always gives the same keys
+        assert_eq!(lhm_tree(&tree), v);
+        // ...even when a sensor has no reading for a while: it's left out, and holds its key
+        let gap = tree.replacen(r#""Value": "1.0 °C""#, r#""Value": "-""#, 1);
+        let without = lhm_tree(&gap);
+        assert_eq!(get(&without, "lhm.board.temperature.aux"), None);
+        assert_eq!(get(&without, "lhm.board.temperature.aux_2"), Some(&Value::Number(2.0)));
+        assert_eq!(get(&without, "lhm.board.temperature.aux_2_2"), Some(&Value::Number(3.0)));
+        assert_eq!(without.len(), v.len() - 1);
+
+        // names with nothing in a-z or 0-9 (a NIC Windows names in Japanese, a renamed sensor): by their id,
+        // else as "hardware" and "sensor"; accents are dropped
+        let tree = r#"{ "Text": "Sensor", "Children": [ { "Text": "PC", "Children": [
+            { "Text": "イーサネット", "HardwareId": "/nic/{9F1B2C3D-0000-4000-8000-00AA00BB00CC}", "Children": [
+                { "Text": "Throughput", "Children": [
+                    { "Text": "Débit", "Type": "Throughput", "SensorId": "/nic/{9F1B2C3D-0000-4000-8000-00AA00BB00CC}/throughput/7", "Value": "5.0 B/s" },
+                    { "Text": "温度", "Type": "Throughput", "SensorId": "/nic/{9F1B2C3D-0000-4000-8000-00AA00BB00CC}/throughput/8", "Value": "6.0 B/s" } ] } ] },
+            { "Text": "Ѳ", "Children": [ { "Text": "Temperatures", "Children": [ { "Text": "湿度", "Value": "7.0 °C" },
+                                                                        { "Text": "Lüfter Ærø", "Value": "8.0 °C" } ] } ] } ] } ] }"#;
+        let keys: Vec<String> = lhm_tree(tree).into_iter().map(|(k, _)| k).collect();
+        assert_eq!(keys, [
+            "lhm.nic_9f1b2c3d_0000_4000_8000_00aa00bb00cc.throughput.debit",
+            "lhm.nic_9f1b2c3d_0000_4000_8000_00aa00bb00cc.throughput.throughput_8",
+            "lhm.hardware.temperature.sensor", "lhm.hardware.temperature.lufter_aero",
+        ]);
+        // older names for the groups
+        let types: Vec<String> = ["Voltages", "Capacities", "Times", "Noise Levels", "Humidity Levels", "Fans", "Data"]
+            .into_iter().map(lhm_type).collect();
+        assert_eq!(types, ["voltage", "energy", "timespan", "noise", "humidity", "fan", "data"]);
+        assert_eq!(slug("TimeSpan"), "timespan");
+        assert_eq!(slug("SmallData"), "smalldata");
+    }
+
+    #[test]
+    fn lhm_readings() {
+        for (text, want) in [("45.0 °C", Some(45.0)), ("45,0 °C", Some(45.0)), ("  7.4 %", Some(7.4)), ("1023 RPM", Some(1023.0)),
+                             ("−5,5 °C", Some(-5.5)), ("-0.25 V", Some(-0.25)), ("12.", Some(12.0)),
+                             ("1:02:03", Some(3723.0)), ("2:01:02:03,5", Some(176_523.5)), ("0:00:07.25", Some(7.25)),
+                             ("-", None), ("", None), (" °C", None), ("NaN RPM", None), ("∞ W", None), (".5", None)] {
+            assert_eq!(lhm_reading(text), want, "{text:?}");
+        }
+        // Regional formats, as .NET 10 (ICU) writes them: Arabic's decimal point, and bidi marks around the
+        // sign (ar-SA, fa-IR, he-IL, ps-AF); fa-IR's "/" on .NET Framework
+        for (text, want) in [("45٫3 °C", 45.3), ("1٫250 V", 1.25), ("\u{61c}-5٫5 °C", -5.5), ("\u{200e}\u{2212}5٫5 °C", -5.5),
+                             ("\u{200e}-5.5 °C", -5.5), ("\u{200f}-12٫5", -12.5), ("\u{200e}-\u{200e}5٫5 °C", -5.5),
+                             ("45/3 °C", 45.3), ("-5/5 °C", -5.5), ("1/250 V", 1.25)] {
+            assert_eq!(lhm_reading(text), Some(want), "{text:?}");
+        }
+        // a big time span in seconds, in exponent form (.NET Framework, past 1e7)
+        for (text, want) in [("1.234568e+07", 12_345_680.0), ("1,234568e+07", 12_345_680.0), ("1E+10", 1e10),
+                             ("2.5e-05", 2.5e-5), ("1٫234568e\u{200e}+07", 12_345_680.0), ("2/5e-05", 2.5e-5), ("5e", 5.0)] {
+            assert_eq!(lhm_reading(text), Some(want), "{text:?}");
+        }
+        // throughput as shown before 0.9.5: back in B/s, the link speed in bit/s
+        for (text, want) in [("512,0 KB/s", 524_288.0), ("2.0 MB/s", 2_097_152.0), ("1.0 GB/s", 1_073_741_824.0),
+                             ("123.0 B/s", 123.0), ("1Gbps", 1e9), ("100Mbps", 1e8), ("900 bps", 900.0),
+                             ("9.5 Mbps", 9.5 * 1_048_576.0), ("2.5 Gbps", 2.5 * 1_073_741_824.0), ("8123.0 MB", 8123.0)] {
+            assert_eq!(lhm_reading(text), Some(want), "{text:?}");
+        }
+        // shown in Fahrenheit: back to Celsius
+        assert!(lhm_reading("113.0 °F").is_some_and(|c| (c - 45.0).abs() < 1e-9));
+        let node = |raw: Json, shown: &str| lhm_value(&serde_json::json!({ "RawValue": raw, "Value": shown }));
+        assert_eq!(node(serde_json::json!(39.85), "39.9 °C"), Some(39.85));
+        assert_eq!(node(serde_json::json!("39,9 °C"), "102.0 °F"), Some(39.9));
+        assert_eq!(node(Json::Null, "-"), None);
+        assert_eq!(node(serde_json::json!("NaN"), "NaN °C"), None);
+        assert_eq!(lhm_value(&serde_json::json!({ "Value": "41,5 °C" })), Some(41.5));
+        // the exponent form, with the exact time span shown beside it
+        assert_eq!(node(serde_json::json!("1.234568e+07"), "142:21:21:18"), Some(12_345_680.0));
+        // the newest code's data is in bytes: GB, as 0.9.6 gave it
+        let data = |raw: Json| lhm_value(&serde_json::json!({ "Type": "Data", "RawValue": raw, "Value": "x" }));
+        assert_eq!(data(serde_json::json!(19_541_196_800.0_f64)), Some(19_541_196_800.0 / 1_073_741_824.0));
+        assert_eq!(data(serde_json::json!("18,2 GB")), Some(18.2));
+        assert_eq!(lhm_base(""), LHM_URL);
+        assert_eq!(lhm_base(" http://127.0.0.1:8085/ "), "http://127.0.0.1:8085");
+        assert_eq!(lhm_base("192.168.1.5:8086"), "http://192.168.1.5:8086");
+        // the data's own address, as a browser shows it
+        assert_eq!(lhm_base("http://127.0.0.1:8085/data.json"), "http://127.0.0.1:8085");
+        assert_eq!(lhm_base("192.168.1.5:8086/Data.JSON/"), "http://192.168.1.5:8086");
+        assert_eq!(lhm_base("/data.json"), LHM_URL);
+        assert_eq!(lhm_base("http://host/lhm/data.json"), "http://host/lhm");
+    }
+
+    #[test]
+    fn lhm_fetch_options() {
+        // on this PC: never through a proxy; localhost at 127.0.0.1 only
+        let fetch = |url: &str| {
+            let f = lhm_fetch(&lhm_base(url));
+            (f.direct, f.ipv4, f.timeout, f.limit)
+        };
+        let (timeout, limit) = (LHM_TIMEOUT, LHM_LIMIT);
+        assert_eq!(fetch(""), (true, false, timeout, limit));
+        assert_eq!(fetch("http://127.0.0.1:8085"), (true, false, timeout, limit));
+        assert_eq!(fetch("127.4.5.6:8085"), (true, false, timeout, limit));
+        assert_eq!(fetch("http://LocalHost:8085/data.json"), (true, true, timeout, limit));
+        assert_eq!(fetch("http://[::1]:8085"), (true, false, timeout, limit));
+        // elsewhere, as the environment says
+        assert_eq!(fetch("http://192.168.1.5:8085"), (false, false, timeout, limit));
+        assert_eq!(fetch("http://pc.local:8085"), (false, false, timeout, limit));
+        assert_eq!(fetch("http://localhost.example.com"), (false, false, timeout, limit));
+        assert!(LHM_LIMIT < WEB.limit);
+    }
+
+    /// A tree with one CPU (`id`, `icon`: how it's marked) holding these temperatures, after a GPU's.
+    fn cpu_tree(id: Option<&str>, icon: &str, temps: &[(&str, f64)]) -> String {
+        let sensors: Vec<String> = temps.iter().enumerate().map(|(i, (name, t))| match id {
+            Some(id) => format!(r#"{{ "Text": "{name}", "SensorId": "{id}/temperature/{i}", "Type": "Temperature", "Value": "{t} °C" }}"#),
+            None => format!(r#"{{ "Text": "{name}", "Value": "{t} °C", "Children": [] }}"#),
+        }).collect();
+        let hardware_id = match id {
+            Some(id) => format!(r#""HardwareId": "{id}","#),
+            None => String::new(),
+        };
+        format!(r#"{{ "Text": "Sensor", "Children": [ {{ "Text": "PC", "Children": [
+            {{ "Text": "GPU", "HardwareId": "/gpu-nvidia/0", "Children": [ {{ "Text": "Temperatures", "Children": [
+                {{ "Text": "GPU Core", "SensorId": "/gpu-nvidia/0/temperature/0", "Type": "Temperature", "Value": "99.0 °C" }} ] }} ] }},
+            {{ "Text": "CPU", {hardware_id} "ImageURL": "images_icon/{icon}", "Children": [
+                {{ "Text": "Temperatures", "Children": [ {} ] }} ] }} ] }} ] }}"#, sensors.join(","))
+    }
+
+    #[test]
+    fn lhm_cpu_temperature() {
+        let temp = |id, icon, temps: &[(&str, f64)]| get(&lhm_tree(&cpu_tree(id, icon, temps)), "pc.cpu.temp").cloned();
+        let amd = Some("/amdcpu/0");
+        let intel = Some("/intelcpu/0");
+        // AMD: Tctl/Tdie, wherever it is; when shown apart, Tdie, then Tctl
+        assert_eq!(temp(amd, "cpu.png", &[("CCD1 (Tdie)", 41.0), ("Core (Tctl/Tdie)", 45.3)]), Some(Value::Number(45.3)));
+        assert_eq!(temp(amd, "cpu.png", &[("Core (Tctl)", 55.3), ("Core (Tdie)", 45.3), ("CCD1 (Tdie)", 41.0)]), Some(Value::Number(45.3)));
+        assert_eq!(temp(amd, "cpu.png", &[("CCD1 (Tdie)", 41.0), ("Core (Tctl)", 55.3)]), Some(Value::Number(55.3)));
+        // Intel: the package
+        assert_eq!(temp(intel, "cpu.png", &[("CPU Core #1", 50.0), ("CPU Package", 58.0), ("Core Max", 61.0)]),
+                   Some(Value::Number(58.0)));
+        // else Core Max, else Core Average, else the CPU's first
+        assert_eq!(temp(intel, "cpu.png", &[("CPU Core #1", 50.0), ("Core Average", 52.0), ("Core Max", 61.0)]),
+                   Some(Value::Number(61.0)));
+        assert_eq!(temp(intel, "cpu.png", &[("CPU Core #1", 50.0), ("Core Average", 52.0)]), Some(Value::Number(52.0)));
+        assert_eq!(temp(intel, "cpu.png", &[("CPU Core #1", 50.0), ("CPU Core #2", 51.0)]), Some(Value::Number(50.0)));
+        // never the GPU's, nor any other hardware's
+        assert_eq!(temp(intel, "cpu.png", &[]), None);
+        assert_eq!(temp(Some("/lpc/nct6799d/0"), "cpu.png", &[("CPU", 47.0)]), None);
+        // with no ids at all (before LHM, or a stripped-down tree), the CPU is told by its icon
+        assert_eq!(temp(None, "cpu.png", &[("Core (Tctl/Tdie)", 44.0)]), Some(Value::Number(44.0)));
+        assert_eq!(temp(None, "chip.png", &[("CPU", 47.0)]), None);
+        // with sensor ids but no hardware ids (0.8.7 to 0.9.4), by the sensor's id
+        let old = cpu_tree(amd, "chip.png", &[("Core (Tctl/Tdie)", 43.0)]).replace(r#""HardwareId": "/amdcpu/0","#, "");
+        assert!(!old.contains("HardwareId\": \"/amdcpu"));
+        assert_eq!(get(&lhm_tree(&old), "pc.cpu.temp"), Some(&Value::Number(43.0)));
+
+        // HWiNFO's comes first, when it gave one; LHM's sensors come through all the same
+        let lhm = lhm_tree(&cpu_tree(amd, "cpu.png", &[("Core (Tctl/Tdie)", 45.3)]));
+        let mut values = vec![("pc.cpu.temp".to_string(), Value::Number(61.5)), ("pc.cpu.load".to_string(), Value::Number(9.0))];
+        add_lhm(&mut values, lhm.clone());
+        assert_eq!(values.iter().filter(|(k, _)| k == "pc.cpu.temp").count(), 1);
+        assert_eq!(get(&values, "pc.cpu.temp"), Some(&Value::Number(61.5)));
+        assert_eq!(get(&values, "lhm.cpu.temperature.core_tctl_tdie"), Some(&Value::Number(45.3)));
+        let mut values = vec![("pc.cpu.load".to_string(), Value::Number(9.0))];
+        add_lhm(&mut values, lhm);
+        assert_eq!(get(&values, "pc.cpu.temp"), Some(&Value::Number(45.3)));
+    }
+
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::time::Instant;
+
+    /// A local web server on a free port that gives each connection the next reply, and reports each
+    /// request line.
+    fn serve(replies: Vec<String>) -> (String, mpsc::Receiver<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            for reply in replies {
+                let Ok((mut stream, _)) = listener.accept() else { return };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                let _ = reader.read_line(&mut line);
+                let mut header = String::new();
+                while reader.read_line(&mut header).unwrap_or(0) > 2 {
+                    header.clear();
+                }
+                let _ = tx.send(line.trim_end().to_string());
+                let _ = stream.write_all(reply.as_bytes());
+            }
+        });
+        (url, rx)
+    }
+
+    fn http(status: &str, body: &str) -> String {
+        format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len())
+    }
+
+    #[test]
+    fn lhm_over_http() {
+        let (url, requests) = serve(vec![http("200 OK", LHM_DATA), http("200 OK", "<html>LHM</html>"),
+                                         http("404 Not Found", ""), http("200 OK", "{}"), http("401 Unauthorized", "")]);
+        let (values, note) = lhm(&format!("{url}/")).unwrap();
+        assert_eq!(requests.recv().unwrap(), "GET /data.json HTTP/1.1");
+        assert_eq!(get(&values, "pc.cpu.temp"), Some(&Value::Number(45.3)));
+        assert_eq!((values.len(), note), (36, None));
+        let note = lhm(&url).unwrap_err();
+        assert!(note.starts_with(&format!("Libre Hardware Monitor isn't answering at {url} (its reply isn't sensor data)")), "{note}");
+        assert!(note.ends_with("check that it's running, with Options > Remote Web Server on"), "{note}");
+        assert!(lhm(&url).unwrap_err().contains("(HTTP 404 Not Found)"));
+        assert!(lhm(&url).unwrap_err().contains("(its reply isn't sensor data)"));
+        assert!(lhm(&url).unwrap_err().contains("(it asks for a password"));
+    }
+
+    #[test]
+    fn lhm_address_and_size() {
+        // the data's own address asks for /data.json once
+        let (url, requests) = serve(vec![http("200 OK", LHM_DATA)]);
+        assert_eq!(lhm(&format!("{url}/data.json")).unwrap().0.len(), 36);
+        assert_eq!(requests.recv().unwrap(), "GET /data.json HTTP/1.1");
+
+        // a reply far bigger than LHM's is not read
+        let big = format!(r#"{{ "Children": [], "pad": "{}" }}"#, "x".repeat(LHM_LIMIT as usize));
+        let (url, _requests) = serve(vec![http("200 OK", &big)]);
+        let note = lhm(&url).unwrap_err();
+        assert!(note.contains("(its reply is over 4 MB, far more than LHM's)"), "{note}");
+
+        // past LHM_MAX_SENSORS, the rest are left out, with a note
+        let sensors: Vec<String> = (0..LHM_MAX_SENSORS + 5)
+            .map(|i| format!(r#"{{ "Text": "S{i}", "Type": "Load", "SensorId": "/x/0/load/{i}", "Value": "{i}.0 %" }}"#))
+            .collect();
+        let tree = format!(r#"{{ "Text": "Sensor", "Children": [ {{ "Text": "PC", "Children": [ {{ "Text": "X", "HardwareId": "/x/0",
+            "Children": [ {{ "Text": "Load", "Children": [ {} ] }} ] }} ] }} ] }}"#, sensors.join(","));
+        let (url, _requests) = serve(vec![http("200 OK", &tree)]);
+        let (values, note) = lhm(&url).unwrap();
+        assert_eq!(values.len(), LHM_MAX_SENSORS);
+        assert_eq!(get(&values, &format!("lhm.x.load.s{}", LHM_MAX_SENSORS - 1)), Some(&Value::Number((LHM_MAX_SENSORS - 1) as f64)));
+        let note = note.unwrap();
+        assert!(note.contains(&format!("lists {} sensors: only the first {LHM_MAX_SENSORS} are read", LHM_MAX_SENSORS + 5)), "{note}");
+    }
+
+    #[test]
+    fn lhm_not_running_is_a_note() {
+        // nothing listening: the pc poll still works, with a note, and isn't held up
+        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let url = format!("http://127.0.0.1:{port}");
+        let source: Source = serde_json::from_value(serde_json::json!({ "type": "pc", "lhm": true, "lhm_url": url })).unwrap();
+        let start = Instant::now();
+        let polled = poll(&source, &mut State::default()).unwrap_or_else(|e| panic!("failed: {e}"));
+        assert!(start.elapsed() < Duration::from_secs(5), "{:?}", start.elapsed());
+        let note = format!("Libre Hardware Monitor isn't answering at {url} (");
+        assert_eq!(polled.notes.iter().filter(|n| n.starts_with(&note)).count(), 1, "{:?}", polled.notes);
+        assert!(get(&polled.values, "pc.ram.total_gb").is_some() && get(&polled.values, "pc.cpu.load").is_some());
+        assert!(polled.values.iter().all(|(k, _)| !k.starts_with("lhm.")));
+        // at localhost too: 127.0.0.1 only, so the reason shows before the time runs out
+        let url = format!("http://localhost:{port}");
+        let start = Instant::now();
+        let note = lhm(&url).unwrap_err();
+        assert!(start.elapsed() < LHM_TIMEOUT, "{:?}", start.elapsed());
+        assert!(note.contains(&format!("isn't answering at {url} (nothing is listening there)")), "{note}");
+    }
+
+    #[test]
+    fn lhm_silent_server_times_out() {
+        // a server that takes the connection and never answers is given up on after LHM_TIMEOUT
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (hold, held) = mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            let connection = listener.accept();
+            let _ = held.recv(); // until the test is done
+            drop(connection);
+        });
+        let start = Instant::now();
+        let note = lhm(&url).unwrap_err();
+        let took = start.elapsed();
+        drop(hold);
+        assert!(took >= Duration::from_millis(2500) && took < Duration::from_millis(4500), "{took:?}");
+        assert!(note.contains(&format!("isn't answering at {url} (no reply in 3 s)")), "{note}");
     }
 }

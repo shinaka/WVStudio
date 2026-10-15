@@ -334,6 +334,9 @@ pub struct Source {
     pub interval: Option<f64>,
     /// pc: read HWiNFO's shared memory too.
     pub hwinfo: bool,
+    /// pc: read Libre Hardware Monitor's web server too, at `lhm_url`.
+    pub lhm: bool,
+    pub lhm_url: String,
     /// homeassistant
     pub url: String,
     pub token: String,
@@ -345,8 +348,9 @@ pub struct Source {
 
 impl Default for Source {
     fn default() -> Source {
-        Source { kind: String::new(), enabled: true, interval: None, hwinfo: false, url: String::new(),
-                 token: String::new(), entities: Vec::new(), extra: serde_json::Map::new() }
+        Source { kind: String::new(), enabled: true, interval: None, hwinfo: false, lhm: false,
+                 lhm_url: sources::LHM_URL.to_string(), url: String::new(), token: String::new(), entities: Vec::new(),
+                 extra: serde_json::Map::new() }
     }
 }
 
@@ -375,6 +379,8 @@ impl Source {
     pub fn setting(&self, key: &str) -> Option<serde_json::Value> {
         match key {
             "hwinfo" => Some(json!(self.hwinfo)),
+            "lhm" => Some(json!(self.lhm)),
+            "lhm_url" => Some(json!(self.lhm_url)).filter(|_| !self.lhm_url.is_empty()),
             "url" => Some(json!(self.url)).filter(|_| !self.url.is_empty()),
             "token" => Some(json!(self.token)).filter(|_| !self.token.is_empty()),
             "entities" => Some(json!(self.entities)).filter(|_| !self.entities.is_empty()),
@@ -391,7 +397,7 @@ impl Source {
         match key {
             "token" => self.token = from.token.clone(),
             "url" => self.url = from.url.clone(),
-            "hwinfo" | "entities" => {}
+            "hwinfo" | "lhm" | "lhm_url" | "entities" => {}
             _ => {
                 if let Some(v) = from.extra.get(key) {
                     self.extra.insert(key.to_string(), v.clone());
@@ -1001,6 +1007,14 @@ mod tests {
         assert_eq!(s.setting("token"), None);
         assert_eq!(s.every().as_secs(), 60);
         assert_eq!(c.sources[1].setting("hwinfo"), Some(json!(true)));
+        // Libre Hardware Monitor is off unless set, at its default address unless set
+        let pc = &c.sources[1];
+        assert!(!pc.lhm && pc.lhm_url == sources::LHM_URL);
+        assert_eq!(pc.setting("lhm"), Some(json!(false)));
+        assert_eq!(pc.setting("lhm_url"), Some(json!("http://127.0.0.1:8085")));
+        let pc: Source = serde_json::from_str(r#"{ "type": "pc", "lhm": true, "lhm_url": "http://192.168.1.5:8086" }"#).unwrap();
+        assert!(pc.lhm && pc.extra.is_empty());
+        assert_eq!(pc.setting("lhm_url"), Some(json!("http://192.168.1.5:8086")));
         assert_eq!(plugins_for(Path::new("C:/x/playlist/playlist.json")), Path::new("C:/x/plugins"));
     }
 }

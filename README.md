@@ -71,7 +71,9 @@ each one provides, with live values (click a key to insert it):
   Claude Code's `/usage` uses. It reads Claude Code's own login each time and never refreshes or stores
   it, so the values go stale if Claude Code hasn't run for a while.
 - **PC sensors:** CPU load, RAM, and NVIDIA GPU temperature, load, power and memory. CPU temperature and
-  every other HWiNFO sensor need HWiNFO running with **Shared Memory Support** on.
+  every other sensor need HWiNFO running with **Shared Memory Support** on, or Libre Hardware Monitor (free
+  and open source) running as administrator with its **Remote Web Server** on. To set that up, see
+  [Setting up Libre Hardware Monitor](docs/data.md#setting-up-libre-hardware-monitor).
 - **Home Assistant:** any entities, via your HA address and a long-lived token. The token only ever goes
   to the address it was entered with.
 
@@ -79,6 +81,7 @@ each one provides, with live values (click a key to insert it):
   player runs it on an interval or keeps it running. `plugins/example-weather/` (Open-Meteo, no account
   needed) is a working example and a template, and its README explains the format. The studio can switch
   plugins on and off and change their settings, but never create one or change the program it runs.
+  To write your own, follow the guide in [docs/plugins.md](docs/plugins.md).
 
 Each source has its own interval (default 60 s). Write a placeholder as `{key}`, `{key:d}`, `{key:.1f}`,
 `{time:%H:%M}` or `{key|fallback}`. The full spec is in `docs/data.md`, `docs/sources.md` and `docs/widgets.md`. Settings are

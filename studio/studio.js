@@ -2184,13 +2184,15 @@ async function testSource(m) {
     }
     const res = await postJson("/api/data/test", { source });
     const values = res.values && typeof res.values === "object" ? res.values : {}, keys = Object.keys(values).sort();
+    // parts the source skipped (Libre Hardware Monitor not answering, say), under the values
+    const notes = (Array.isArray(res.notes) ? res.notes : []).map((note) => make("div", "warn", String(note)));
     if (res.player === false) show("warn", "The player isn't running: start it with Play on cooler to test.");
     else if (res.error) show("warn", String(res.error));
-    else if (!keys.length) show("muted", "It worked, but gave no values.");
+    else if (!keys.length) show("muted", "It worked, but gave no values.", ...notes);
     else {
       const list = make("div", "values");
       list.append(...keys.map((k) => valueRow(k, values[k])));
-      show("", make("span", "info", `${keys.length} value${keys.length > 1 ? "s" : ""}, now:`), list);
+      show("", make("span", "info", `${keys.length} value${keys.length > 1 ? "s" : ""}, now:`), list, ...notes);
     }
   } catch (err) {
     show("warn", err.message);
