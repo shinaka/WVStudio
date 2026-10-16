@@ -117,10 +117,10 @@ impl Region<'_> {
     }
 }
 
-/// Draws the shape into `buf` (straight RGBA, the whole canvas) at the object's opacity, as one group:
-/// the stroke covers the fill, and neither shows through the other where the object is translucent.
-/// Returns the pixel box it touched, if any.
-pub fn draw(buf: &mut RgbaImage, o: &Object, s: &Shape) -> Option<(i64, i64, i64, i64)> {
+/// Draws the shape into `buf` (straight RGBA, its top-left at `origin` on the panel) at the object's
+/// opacity, as one group: the stroke covers the fill, and neither shows through the other where the
+/// object is translucent. Returns the pixel box it touched, in panel pixels, if any.
+pub fn draw(buf: &mut RgbaImage, origin: (i64, i64), o: &Object, s: &Shape) -> Option<(i64, i64, i64, i64)> {
     let fill_at = s.fill.as_ref().map(|paint| paint_fn(paint, o));
     let stroke = s.stroke.as_ref().filter(|st| st.width > 0.0).map(|st| (rgb(&st.color), st.width / 2.0));
     if fill_at.is_none() && stroke.is_none() || o.opacity <= 0.0 {
@@ -138,9 +138,11 @@ pub fn draw(buf: &mut RgbaImage, o: &Object, s: &Shape) -> Option<(i64, i64, i64
         a: (o.x, o.y),
         b: (o.x + o.w, o.y + o.h),
     };
-    let (bw, bh) = (buf.width() as i64, buf.height() as i64);
+    // the buffer, in panel pixels
+    let (bl, bt) = origin;
+    let (br, bb) = (bl + buf.width() as i64, bt + buf.height() as i64);
     let (l, t, r, b) = bounds(o, s);
-    let (l, t, r, b) = (l.max(0), t.max(0), r.min(bw), b.min(bh));
+    let (l, t, r, b) = (l.max(bl), t.max(bt), r.min(br), b.min(bb));
     if l >= r || t >= b {
         return None;
     }
@@ -168,7 +170,7 @@ pub fn draw(buf: &mut RgbaImage, o: &Object, s: &Shape) -> Option<(i64, i64, i64
                 continue;
             }
             let colour = [px[0] / px[3], px[1] / px[3], px[2] / px[3]];
-            over(buf.get_pixel_mut(x as u32, y as u32), colour, a);
+            over(buf.get_pixel_mut((x - bl) as u32, (y - bt) as u32), colour, a);
             painted = Some(match painted {
                 Some((pl, pt, pr, pb)) => (pl.min(x), pt.min(y), pr.max(x + 1), pb.max(y + 1)),
                 None => (x, y, x + 1, y + 1),
@@ -247,7 +249,8 @@ mod tests {
     use crate::playlist::{Kind, Stop, Stroke};
 
     fn object(x: f64, y: f64, w: f64, h: f64, s: Shape) -> (Object, Shape) {
-        let o = Object { id: "s".into(), visible: true, opacity: 1.0, x, y, w, h, rotate: 0, flip: false, kind: Kind::Shape(s.clone()) };
+        let o = Object { id: "s".into(), visible: true, opacity: 1.0, x, y, w, h, rotate: 0, flip: false, kind: Kind::Shape(s.clone()),
+                         clip: None, groups: Vec::new() };
         (o, s)
     }
 
@@ -261,7 +264,7 @@ mod tests {
     fn crisp_rect_is_exact() {
         let mut buf = RgbaImage::new(20, 20);
         let (o, s) = object(2.0, 3.0, 4.0, 2.0, Shape { crisp: true, ..Shape::default() });
-        assert_eq!(draw(&mut buf, &o, &s), Some((2, 3, 6, 5)));
+        assert_eq!(draw(&mut buf, (0, 0), &o, &s), Some((2, 3, 6, 5)));
         let mut want = Vec::new();
         for y in 3..5 {
             for x in 2..6 {
@@ -272,7 +275,7 @@ mod tests {
         assert!(buf.pixels().filter(|p| p[3] > 0).all(|p| *p == image::Rgba([255, 255, 255, 255])));
         let mut buf = RgbaImage::new(20, 20);
         let (o, s) = object(2.5, 3.5, 4.0, 2.0, Shape { crisp: true, ..Shape::default() });
-        draw(&mut buf, &o, &s);
+        draw(&mut buf, (0, 0), &o, &s);
         assert_eq!(painted(&buf).len(), 8); // 2.5 <= centre < 6.5: columns 2..=5, and rows 3..=4
         assert_eq!(painted(&buf)[0], (2, 3));
     }
@@ -283,7 +286,7 @@ mod tests {
         let mut buf = RgbaImage::new(30, 30);
         let stroke = Some(Stroke { color: "#ff0000".into(), width: 2.0 });
         let (o, s) = object(5.0, 5.0, 10.0, 10.0, Shape { crisp: true, fill: None, stroke, ..Shape::default() });
-        draw(&mut buf, &o, &s);
+        draw(&mut buf, (0, 0), &o, &s);
         // ring one pixel thick each side of the outline at 5 and 15: columns 4..=5 and 14..=15
         let px = painted(&buf);
         assert!(px.contains(&(4, 10)) && px.contains(&(5, 10)) && !px.contains(&(6, 10)) && !px.contains(&(3, 10)));
@@ -292,7 +295,7 @@ mod tests {
         // an ellipse's centre pixel is in, the box corner is out
         let mut buf = RgbaImage::new(30, 30);
         let (o, s) = object(5.0, 5.0, 10.0, 10.0, Shape { crisp: true, shape: ShapeKind::Ellipse, ..Shape::default() });
-        draw(&mut buf, &o, &s);
+        draw(&mut buf, (0, 0), &o, &s);
         let px = painted(&buf);
         assert!(px.contains(&(10, 10)) && !px.contains(&(5, 5)) && px.contains(&(5, 10)));
         for (x, y) in &px {
@@ -306,7 +309,7 @@ mod tests {
     fn smooth_edges() {
         let mut buf = RgbaImage::new(20, 20);
         let (o, s) = object(2.5, 2.0, 4.0, 3.0, Shape::default());
-        draw(&mut buf, &o, &s);
+        draw(&mut buf, (0, 0), &o, &s);
         assert_eq!(buf.get_pixel(2, 3)[3], 128); // half covered
         assert_eq!(buf.get_pixel(3, 3)[3], 255);
         let total: f64 = buf.pixels().map(|p| p[3] as f64 / 255.0).sum();
@@ -315,7 +318,7 @@ mod tests {
         let mut buf = RgbaImage::new(20, 20);
         let stroke = Some(Stroke { color: "#00ff00".into(), width: 2.0 });
         let (o, s) = object(2.0, 2.0, 10.0, 10.0, Shape { shape: ShapeKind::Line, stroke, ..Shape::default() });
-        draw(&mut buf, &o, &s);
+        draw(&mut buf, (0, 0), &o, &s);
         assert!(buf.get_pixel(6, 6)[3] == 255 && buf.get_pixel(12, 2)[3] == 0);
     }
 
@@ -324,7 +327,7 @@ mod tests {
         let fill = Some(Paint::Linear { angle: 0.0, stops: vec![Stop { at: 0.0, color: "#000000".into() }, Stop { at: 1.0, color: "#ffffff".into() }] });
         let mut buf = RgbaImage::new(20, 20);
         let (o, s) = object(0.0, 0.0, 10.0, 4.0, Shape { fill, crisp: true, ..Shape::default() });
-        draw(&mut buf, &o, &s);
+        draw(&mut buf, (0, 0), &o, &s);
         let row: Vec<u8> = (0..10).map(|x| buf.get_pixel(x, 1)[0]).collect();
         assert!(row.windows(2).all(|w| w[1] > w[0]), "{row:?}");
         assert_eq!((row[0], row[9]), (13, 242)); // pixel centres at 0.05 and 0.95 of the way
@@ -332,7 +335,7 @@ mod tests {
         let fill = Some(Paint::Linear { angle: 90.0, stops: vec![Stop { at: 0.0, color: "#ff0000".into() }, Stop { at: 0.5, color: "#0000ff".into() }] });
         let mut buf = RgbaImage::new(20, 20);
         let (o, s) = object(0.0, 0.0, 10.0, 10.0, Shape { fill, crisp: true, ..Shape::default() });
-        draw(&mut buf, &o, &s);
+        draw(&mut buf, (0, 0), &o, &s);
         assert_eq!(buf.get_pixel(5, 9).0, [0, 0, 255, 255]); // past the last stop: its colour
         assert!(buf.get_pixel(5, 0)[0] > 200);
     }

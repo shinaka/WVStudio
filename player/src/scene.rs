@@ -19,12 +19,12 @@ use image::{RgbImage, RgbaImage};
 
 use crate::art::{self, HEIGHT, Options, Prepared, WIDTH};
 use crate::media::{self, Cursor, Source, View};
-use crate::playlist::{Fill, Kind, Layer, Object, Scene, Shape, Widget, stamp};
+use crate::playlist::{Fill, Kind, Layer, Object, Scene, Shape, Text, stamp};
 use crate::text::{self, DEFAULT_FONT};
 use crate::{player, shape};
 
 /// Bump when drawing changes, so scenes prepared by an older player are drawn again.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 /// The longest cycle: the loops' least common multiple is cut off here.
 const MAX_CYCLE: Duration = Duration::from_secs(60);
 /// Frames closer together than this are merged.
@@ -106,23 +106,31 @@ impl Buf {
         }
     }
 
-    /// Lays the buffer over a whole-canvas RGBA buffer at `opacity`. Returns the box it touched.
-    fn onto_rgba(&self, canvas: &mut RgbaImage, opacity: f32) -> Option<(i64, i64, i64, i64)> {
+    /// Lays the buffer over an RGBA buffer whose top-left is `origin` on the panel, at `opacity`, where the
+    /// two meet. Returns the box it touched, in panel pixels.
+    fn onto_rgba(&self, target: &mut RgbaImage, origin: (i64, i64), opacity: f32) -> Option<(i64, i64, i64, i64)> {
         if self.is_empty() {
             return None;
         }
         let (w, h) = self.image.dimensions();
+        let (ox, oy) = origin;
+        let (l, t) = ((self.left as i64).max(ox), (self.top as i64).max(oy));
+        let r = (self.left as i64 + w as i64).min(ox + target.width() as i64);
+        let b = (self.top as i64 + h as i64).min(oy + target.height() as i64);
+        if l >= r || t >= b {
+            return None;
+        }
         let k = (opacity.clamp(0.0, 1.0) * 256.0).round() as u32;
-        for y in 0..h {
-            for x in 0..w {
-                let s = self.image.get_pixel(x, y);
+        for y in t..b {
+            for x in l..r {
+                let s = self.image.get_pixel((x - self.left as i64) as u32, (y - self.top as i64) as u32);
                 let a = (s[3] as u32 * k + 128) >> 8;
                 if a > 0 {
-                    over_u8(canvas.get_pixel_mut(self.left + x, self.top + y), &s.0, a);
+                    over_u8(target.get_pixel_mut((x - ox) as u32, (y - oy) as u32), &s.0, a);
                 }
             }
         }
-        Some((self.left as i64, self.top as i64, (self.left + w) as i64, (self.top + h) as i64))
+        Some((l, t, r, b))
     }
 }
 
@@ -161,13 +169,18 @@ enum ObjKind<'a> {
         starts: Vec<Duration>,
         loop_len: Duration,
     },
-    Text(&'a Widget),
+    Text(&'a Text),
     Shape(&'a Shape),
 }
 
 impl Obj<'_> {
     fn animated(&self) -> bool {
         matches!(&self.kind, ObjKind::Media { starts, .. } if starts.len() > 1)
+    }
+
+    /// Text with placeholders, filled in while playing.
+    fn live(&self) -> bool {
+        matches!(&self.kind, ObjKind::Text(w) if w.live)
     }
 
     /// Which of its frames shows at `t`.
@@ -220,29 +233,7 @@ impl Slot<'_> {
                 return Buf { left: l as u32, top: t as u32, image };
             }
         }
-        let mut canvas = RgbaImage::new(WIDTH, HEIGHT);
-        let mut touched: Option<(i64, i64, i64, i64)> = None;
-        for obj in &mut self.objects {
-            let index = obj.index_at(t);
-            let object = obj.object;
-            let rect = match &mut obj.kind {
-                ObjKind::Media { cursor, fill, .. } => {
-                    let frame = cursor.frame(index);
-                    draw_media(&mut canvas, object, &frame, *fill)
-                }
-                ObjKind::Text(w) => {
-                    let layer = text::Layer::render([*w]);
-                    layer.bounds().map(|b| {
-                        let buf = Buf::crop(layer.image(), Some((b.left as i64, b.top as i64, b.right as i64, b.bottom as i64)));
-                        buf.onto_rgba(&mut canvas, 1.0);
-                        (b.left as i64, b.top as i64, b.right as i64, b.bottom as i64)
-                    })
-                }
-                ObjKind::Shape(s) => shape::draw(&mut canvas, object, s),
-            };
-            touched = union(touched, rect);
-        }
-        Buf::take(canvas, touched)
+        render_objects(&mut self.objects, t, 0, (0, 0), (WIDTH, HEIGHT))
     }
 
     /// A static layer's buffer, from the cache when its content hasn't changed.
@@ -273,6 +264,35 @@ impl Slot<'_> {
     }
 }
 
+/// Draws `objs` at `t` into a transparent buffer whose top-left is `origin` on the panel and whose size is
+/// `size`, opening and closing their groups below `depth` (the ones already open are the caller's).
+fn render_objects(objs: &mut [Obj], t: Duration, depth: usize, origin: (i64, i64), size: (u32, u32)) -> Buf {
+    let _ = depth; // no object is in a group yet
+    let mut canvas = RgbaImage::new(size.0, size.1);
+    let mut touched: Option<(i64, i64, i64, i64)> = None;
+    for obj in objs {
+        let index = obj.index_at(t);
+        let object = obj.object;
+        let rect = match &mut obj.kind {
+            ObjKind::Media { cursor, fill, .. } => {
+                let frame = cursor.frame(index);
+                draw_media(&mut canvas, origin, object, &frame, *fill)
+            }
+            ObjKind::Text(w) => {
+                let layer = text::Layer::render([*w]);
+                layer.bounds().map(|b| {
+                    let buf = Buf::crop(layer.image(), Some((b.left as i64, b.top as i64, b.right as i64, b.bottom as i64)));
+                    buf.onto_rgba(&mut canvas, origin, 1.0);
+                    (b.left as i64, b.top as i64, b.right as i64, b.bottom as i64)
+                })
+            }
+            ObjKind::Shape(s) => shape::draw(&mut canvas, origin, object, s),
+        };
+        touched = union(touched, rect);
+    }
+    Buf::take(canvas, touched)
+}
+
 fn union(a: Option<(i64, i64, i64, i64)>, b: Option<(i64, i64, i64, i64)>) -> Option<(i64, i64, i64, i64)> {
     match (a, b) {
         (Some(a), Some(b)) => Some((a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3))),
@@ -282,17 +302,21 @@ fn union(a: Option<(i64, i64, i64, i64)>, b: Option<(i64, i64, i64, i64)>) -> Op
 }
 
 /// Draws a turned and scaled frame at the object's box, repeated outward as its fill mode says, at the
-/// object's opacity. Returns the pixel box touched.
-fn draw_media(canvas: &mut RgbaImage, o: &Object, frame: &RgbaImage, fill: Fill) -> Option<(i64, i64, i64, i64)> {
+/// object's opacity, into `canvas`, whose top-left is `origin` on the panel. Returns the pixel box touched,
+/// in panel pixels.
+fn draw_media(canvas: &mut RgbaImage, origin: (i64, i64), o: &Object, frame: &RgbaImage, fill: Fill) -> Option<(i64, i64, i64, i64)> {
     let (x, y) = (o.x.round() as i64, o.y.round() as i64);
     let (w, h) = (frame.width() as i64, frame.height() as i64);
     let k = (o.opacity.clamp(0.0, 1.0) * 256.0).round() as u32;
     if w == 0 || h == 0 || k == 0 {
         return None;
     }
+    // the canvas, in panel pixels
+    let (cl, ct) = origin;
+    let (cr, cb) = (cl + canvas.width() as i64, ct + canvas.height() as i64);
     let (l, t, r, b) = match fill {
-        Fill::None => (x.max(0), y.max(0), (x + w).min(WIDTH as i64), (y + h).min(HEIGHT as i64)),
-        _ => (0, 0, WIDTH as i64, HEIGHT as i64),
+        Fill::None => (x.max(cl), y.max(ct), (x + w).min(cr), (y + h).min(cb)),
+        _ => (cl, ct, cr, cb),
     };
     if l >= r || t >= b {
         return None;
@@ -317,7 +341,7 @@ fn draw_media(canvas: &mut RgbaImage, o: &Object, frame: &RgbaImage, fill: Fill)
             if a == 0 {
                 continue;
             }
-            let d = canvas.get_pixel_mut(px as u32, py as u32);
+            let d = canvas.get_pixel_mut((px - cl) as u32, (py - ct) as u32);
             if a >= 255 {
                 *d = image::Rgba([s[0], s[1], s[2], 255]);
             } else {
@@ -337,10 +361,15 @@ struct Plan<'a> {
 }
 
 fn plan<'a>(scene: &'a Scene, global: &'a [Layer], opts: &Options) -> Plan<'a> {
-    let mut slots: Vec<(Slot<'a>, Vec<usize>)> = Vec::new(); // each with where its live text objects are
+    split_live(slots(scene, global, opts), opts)
+}
+
+/// One slot per visible layer, the scene's then the global ones, bottom first, each with its visible
+/// objects ready to draw (an image or video that can't be opened is left out). Live text is still in them.
+fn slots<'a>(scene: &'a Scene, global: &'a [Layer], opts: &Options) -> Vec<Slot<'a>> {
+    let mut slots = Vec::new();
     for layer in scene.layers.iter().chain(global).filter(|l| l.visible) {
         let mut objects = Vec::new();
-        let mut live = Vec::new();
         for o in layer.objects.iter().filter(|o| o.visible) {
             let kind = match &o.kind {
                 Kind::Media(m) => {
@@ -351,7 +380,8 @@ fn plan<'a>(scene: &'a Scene, global: &'a [Layer], opts: &Options) -> Plan<'a> {
                             continue;
                         }
                     };
-                    let view = View { rotate: o.rotate, flip: o.flip, w: o.w.round().max(1.0) as u32, h: o.h.round().max(1.0) as u32, smooth: m.smooth };
+                    let view = View { rotate: o.rotate, flip: o.flip, w: o.w.round().max(1.0) as u32, h: o.h.round().max(1.0) as u32, smooth: m.smooth,
+                                      tint: None };
                     let durations = source.durations();
                     let mut starts = Vec::with_capacity(durations.len());
                     let mut at = Duration::ZERO;
@@ -361,24 +391,26 @@ fn plan<'a>(scene: &'a Scene, global: &'a [Layer], opts: &Options) -> Plan<'a> {
                     }
                     ObjKind::Media { cursor: Cursor::new(&m.src, &source, view), fill: m.fill, starts, loop_len: at.max(Duration::from_millis(1)) }
                 }
-                Kind::Text(w) => {
-                    if w.live {
-                        live.push(objects.len());
-                    }
-                    ObjKind::Text(w)
-                }
+                Kind::Text(w) => ObjKind::Text(w),
                 Kind::Shape(s) => ObjKind::Shape(s),
             };
             objects.push(Obj { object: o, kind });
         }
-        slots.push((Slot { opacity: layer.opacity, objects, key: 0 }, live));
+        slots.push(Slot { opacity: layer.opacity, objects, key: 0 });
     }
+    slots
+}
+
+/// Sorts the slots around the live text, which is left out of them, and keys them for the buffer cache.
+fn split_live<'a>(slots: Vec<Slot<'a>>, opts: &Options) -> Plan<'a> {
+    // where each slot's live text is
+    let live: Vec<Vec<usize>> = slots.iter().map(|s| (0..s.objects.len()).filter(|j| s.objects[*j].live()).collect()).collect();
     // the lowest live text, and whether only still things sit above it
-    let first_live = slots.iter().position(|(_, live)| !live.is_empty());
-    let still_above = first_live.is_some_and(|p| slots[p..].iter().all(|(s, _)| !s.animated()));
+    let first_live = live.iter().position(|l| !l.is_empty());
+    let still_above = first_live.is_some_and(|p| slots[p..].iter().all(|s| !s.animated()));
     let mut below = Vec::new();
     let mut above = Vec::new();
-    for (i, (mut slot, live)) in slots.into_iter().enumerate() {
+    for (i, (mut slot, live)) in slots.into_iter().zip(live).enumerate() {
         let split = match first_live {
             Some(p) if still_above && i == p => live[0],
             _ => usize::MAX,
@@ -434,7 +466,7 @@ pub fn key(scene: &Scene, global: &[Layer], opts: &Options) -> u64 {
                     .objects
                     .iter()
                     .map(|o| match &o.kind {
-                        Kind::Text(w) if w.live => Object { kind: Kind::Text(Widget { text: String::new(), ..w.clone() }), ..o.clone() },
+                        Kind::Text(w) if w.live => Object { kind: Kind::Text(Text { text: String::new(), ..w.clone() }), ..o.clone() },
                         _ => o.clone(),
                     })
                     .collect(),
@@ -544,7 +576,7 @@ fn flatten(slots: &mut [Slot]) -> Buf {
     let mut touched = None;
     for slot in slots {
         let buf = slot.render_cached();
-        touched = union(touched, buf.onto_rgba(&mut canvas, slot.opacity));
+        touched = union(touched, buf.onto_rgba(&mut canvas, (0, 0), slot.opacity));
     }
     Buf::take(canvas, touched)
 }
@@ -573,7 +605,7 @@ pub fn prepare(scene: &Scene, global: &[Layer], opts: &Options) -> Result<Prepar
             i = end;
         }
     }
-    let sampling = art::sampling(scene);
+    let sampling = art::sampling(scene, global);
     let mut frames = Vec::with_capacity(times.len());
     let mut batch: Vec<Composite> = Vec::with_capacity(BATCH);
     for (t, duration) in times {
@@ -606,9 +638,9 @@ pub fn prepare(scene: &Scene, global: &[Layer], opts: &Options) -> Result<Prepar
     Ok(Prepared { frames, above })
 }
 
-/// The scene at time `t`, upright, with `live` (its live widgets, filled in) drawn where they belong:
-/// what the cooler would show, for checking without it.
-pub fn render_at(scene: &Scene, global: &[Layer], opts: &Options, t: Duration, live: &[Widget]) -> RgbImage {
+/// The scene at time `t`, upright, with `live` (its live text, filled in) drawn where it belongs: what
+/// the cooler would show, for checking without it.
+pub fn render_at(scene: &Scene, global: &[Layer], opts: &Options, t: Duration, live: &[Text]) -> RgbImage {
     let mut plan = plan(scene, global, opts);
     let mut frame = background(scene);
     for slot in &mut plan.below {
@@ -784,7 +816,7 @@ mod tests {
         assert!(frame.get_pixel(200, 120)[1] < 50, "the cover was drawn into the frames");
         assert!(frame.get_pixel(10, 10)[0] > 200);
         // drawn where it belongs: under the cover
-        let filled = Widget { text: "12:34".into(), x: 100.0, y: 100.0, size: 60.0, kind: "text".into(), ..Widget::default() };
+        let filled = Text { text: "12:34".into(), x: 100.0, y: 100.0, size: 60.0, kind: "text".into(), ..Text::default() };
         let im = render_at(&p.scenes[0], &p.global, &opts(), Duration::ZERO, &[filled.clone()]);
         assert_eq!(im.get_pixel(200, 120), &Rgb([0, 255, 0]));
         // the global layer counts as above too
@@ -883,3 +915,11 @@ mod tests {
         assert_eq!(frames, 3 + 2);
     }
 }
+
+/// Groups, clips, rounding, keep_aspect and tint (docs/widgets.md, Drawing). Owned by work package P2.
+#[cfg(test)]
+mod drawing_tests {}
+
+/// Live text laid over the frames: the over list (docs/widgets.md, Live text). Owned by work package P3.
+#[cfg(test)]
+mod over_tests {}

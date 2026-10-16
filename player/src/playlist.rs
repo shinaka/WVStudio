@@ -1,8 +1,8 @@
 //! What to play: one file, every image in a folder, or a playlist file.
 //!
 //! A playlist is scenes made of layers and objects (docs/scenes.md), with files relative to the playlist's
-//! own folder. Version 1 files (one piece plus text widgets per item, docs/widgets.md) are turned into
-//! scenes as they're read; nothing is written back.
+//! own folder. Version 1 files (one piece plus its text per item, docs/text.md) are turned into scenes as
+//! they're read; nothing is written back.
 //!
 //! ```json
 //! { "version": 2, "seconds": 30, "global": { "layers": [ ... ] },
@@ -18,8 +18,14 @@ use serde_json::Value;
 
 use crate::art::{HEIGHT, WIDTH};
 use crate::text::DEFAULT_FONT;
+use crate::widget::{self, Expander, Frame, Library};
 
 const IMAGE_TYPES: [&str; 7] = ["png", "gif", "webp", "jpg", "jpeg", "bmp", "apng"];
+
+/// left, top, right, bottom in panel pixels; right and bottom are exclusive.
+pub type Rect = [i64; 4];
+/// A file's modified time and size, as `stamp` gives it.
+pub type Stamp = (SystemTime, u64);
 
 /// The whole file, ready to draw.
 #[derive(Clone, Debug, PartialEq)]
@@ -28,6 +34,9 @@ pub struct Playlist {
     /// Drawn over every scene, above its own layers.
     pub global: Vec<Layer>,
     pub scenes: Vec<Scene>,
+    /// Every file whose change means reading again, with the stamp it had when the read looked at it.
+    /// Empty for now: `fingerprint` still finds them itself.
+    pub watch: Vec<(PathBuf, Option<Stamp>)>,
 }
 
 /// One entry: a 1600x720 canvas with a background colour and a stack of layers, bottom first.
@@ -71,9 +80,9 @@ pub struct Layer {
 
 impl Layer {
     /// Text with placeholders (docs/data.md), drawn while playing, with the layer's opacity folded in.
-    pub fn live(&self) -> impl Iterator<Item = Widget> + '_ {
+    pub fn live(&self) -> impl Iterator<Item = Text> + '_ {
         self.objects.iter().filter(|o| o.visible).filter_map(move |o| match &o.kind {
-            Kind::Text(w) if w.live => Some(Widget { opacity: w.opacity * self.opacity, ..w.clone() }),
+            Kind::Text(w) if w.live => Some(Text { opacity: w.opacity * self.opacity, ..w.clone() }),
             _ => None,
         })
     }
@@ -95,13 +104,30 @@ pub struct Object {
     pub rotate: u16,
     pub flip: bool,
     pub kind: Kind,
+    /// Where it may draw, when it's part of a widget's copy (docs/widgets.md): the copy's box, cut by any
+    /// copy around it. None elsewhere.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clip: Option<Rect>,
+    /// The translucent copies and widget layers it sits in, outermost first. Empty elsewhere.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<Group>,
+}
+
+/// A copy or widget layer below 100% that an object sits in: its objects are drawn together into a buffer
+/// covering `rect`, which is laid over what holds it at `opacity` (docs/widgets.md, Opacity).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Group {
+    /// Its copy's or widget layer's id path: `c`, `c/l1`, `c/w9`.
+    pub id: String,
+    pub opacity: f32,
+    pub rect: Rect,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum Kind {
     Media(Media),
-    Text(Widget),
+    Text(Text),
     Shape(Shape),
 }
 
@@ -114,11 +140,18 @@ pub struct Media {
     /// Lanczos instead of nearest neighbour.
     pub smooth: bool,
     pub fill: Fill,
+    /// The file fitted inside its box, keeping its shape, and centred (docs/widgets.md). Not read yet.
+    #[serde(skip_serializing_if = "std::ops::Not::not", skip_deserializing)]
+    pub keep_aspect: bool,
+    /// `#rrggbb`: every pixel the file draws takes this colour, keeping its own transparency
+    /// (docs/widgets.md). Not read yet.
+    #[serde(skip_serializing_if = "Option::is_none", skip_deserializing)]
+    pub tint: Option<String>,
 }
 
 impl Default for Media {
     fn default() -> Media {
-        Media { src: PathBuf::new(), smooth: false, fill: Fill::None }
+        Media { src: PathBuf::new(), smooth: false, fill: Fill::None, keep_aspect: false, tint: None }
     }
 }
 
@@ -196,10 +229,10 @@ impl Default for Stroke {
     }
 }
 
-/// A piece of text over the art. Keys left out take the defaults in docs/widgets.md.
+/// A piece of text over the art. Keys left out take the defaults in docs/text.md.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct Widget {
+pub struct Text {
     pub id: String,
     /// Only "text" is drawn; other types are skipped.
     #[serde(rename = "type")]
@@ -227,11 +260,14 @@ pub struct Widget {
     /// Its text has placeholders, filled in while playing. Not part of the file (or the cache keys).
     #[serde(skip)]
     pub live: bool,
+    /// Its object's `clip`, for the text renderer. Not part of the file.
+    #[serde(skip)]
+    pub clip: Option<Rect>,
 }
 
-impl Default for Widget {
-    fn default() -> Widget {
-        Widget {
+impl Default for Text {
+    fn default() -> Text {
+        Text {
             id: String::new(),
             kind: String::new(),
             text: String::new(),
@@ -247,6 +283,7 @@ impl Default for Widget {
             outline: Outline::default(),
             crisp: false,
             live: false,
+            clip: None,
         }
     }
 }
@@ -351,11 +388,12 @@ pub fn read(target: &Path, default_seconds: f64, ffmpeg: &Path) -> Result<Playli
             .collect();
         paths.sort_by_key(|p| p.file_name().map(|n| n.to_string_lossy().to_lowercase()));
         let scenes = paths.into_iter().enumerate().map(|(i, p)| piece(&p, i, default_seconds, ffmpeg)).collect();
-        Playlist { seconds: default_seconds, global: Vec::new(), scenes }
+        Playlist { seconds: default_seconds, global: Vec::new(), scenes, watch: Vec::new() }
     } else if target.extension().is_some_and(|e| e.eq_ignore_ascii_case("json")) {
         parse(&std::fs::read(target)?, target.parent().unwrap_or(Path::new(".")), default_seconds, ffmpeg)?
     } else {
-        Playlist { seconds: default_seconds, global: Vec::new(), scenes: vec![piece(target, 0, default_seconds, ffmpeg)] }
+        let scenes = vec![piece(target, 0, default_seconds, ffmpeg)];
+        Playlist { seconds: default_seconds, global: Vec::new(), scenes, watch: Vec::new() }
     };
     if playlist.scenes.is_empty() {
         return Err(format!("nothing to play in {}", target.display()).into());
@@ -364,12 +402,16 @@ pub fn read(target: &Path, default_seconds: f64, ffmpeg: &Path) -> Result<Playli
 }
 
 /// A playlist file's scenes, with paths relative to `base`. Version 1 files are converted as they're read.
+/// Copies of widgets (docs/widgets.md) are expanded into the objects they draw, within a budget for the
+/// global layers and one for each scene.
 pub fn parse(json: &[u8], base: &Path, default_seconds: f64, ffmpeg: &Path) -> Result<Playlist, Box<dyn Error>> {
     let file: Value = serde_json::from_slice(json)?;
     let version = file.get("version").and_then(Value::as_u64).unwrap_or(if file.get("scenes").is_some() { 2 } else { 1 });
     let fallback = file.get("seconds").and_then(Value::as_f64).unwrap_or(default_seconds);
     let file = if version >= 2 { file } else { convert(file, base, ffmpeg) };
-    let global = layers(file.get("global").and_then(|g| g.get("layers")), base);
+    let mut library = Library::new(widget::widgets_for(base));
+    let mut expander = Expander::new(&mut library, ffmpeg, "the global layers");
+    let global = layers(file.get("global").and_then(|g| g.get("layers")), base, &mut expander);
     let scenes = file
         .get("scenes")
         .and_then(Value::as_array)
@@ -379,19 +421,21 @@ pub fn parse(json: &[u8], base: &Path, default_seconds: f64, ffmpeg: &Path) -> R
         .enumerate()
         .filter_map(|(i, value)| {
             let keys: SceneKeys = lenient(value, "scene")?;
+            let id = if keys.id.is_empty() { format!("s{i}") } else { keys.id };
+            let mut expander = Expander::new(&mut library, ffmpeg, &format!("scene {id}"));
             Some(Scene {
-                id: if keys.id.is_empty() { format!("s{i}") } else { keys.id },
+                id,
                 name: keys.name,
                 seconds: keys.seconds.unwrap_or(fallback).max(1.0),
                 background: keys.background,
-                layers: layers(Some(&Value::Array(keys.layers)), base),
+                layers: layers(Some(&Value::Array(keys.layers)), base, &mut expander),
             })
         })
         .collect();
-    Ok(Playlist { seconds: fallback, global, scenes })
+    Ok(Playlist { seconds: fallback, global, scenes, watch: Vec::new() })
 }
 
-/// Version 1 (items with a file, a layout and widgets, plus an overlay) as version 2, in memory. See
+/// Version 1 (items with a file, a layout and their text `widgets`, plus an overlay) as version 2, in memory. See
 /// docs/scenes.md, "Moving from version 1".
 fn convert(file: Value, base: &Path, ffmpeg: &Path) -> Value {
     let get = |v: &Value, key: &str| v.get(key).cloned().unwrap_or(Value::Null);
@@ -477,7 +521,9 @@ fn piece(path: &Path, index: usize, seconds: f64, ffmpeg: &Path) -> Scene {
         h: h as f64,
         rotate: 0,
         flip: false,
-        kind: Kind::Media(Media { src: path.to_path_buf(), smooth, fill: Fill::None }),
+        kind: Kind::Media(Media { src: path.to_path_buf(), smooth, fill: Fill::None, keep_aspect: false, tint: None }),
+        clip: None,
+        groups: Vec::new(),
     };
     Scene {
         id: format!("f{index}"),
@@ -506,7 +552,8 @@ pub fn fitted((w, h): (u32, u32)) -> (i64, i64, u32, u32) {
     (((WIDTH - nw) / 2) as i64, ((HEIGHT - nh) / 2) as i64, nw, nh)
 }
 
-fn layers(list: Option<&Value>, base: &Path) -> Vec<Layer> {
+/// The layers in `list`, each copy of a widget in them expanded by `expander`.
+fn layers(list: Option<&Value>, base: &Path, expander: &mut Expander) -> Vec<Layer> {
     list.and_then(Value::as_array)
         .cloned()
         .unwrap_or_default()
@@ -514,12 +561,24 @@ fn layers(list: Option<&Value>, base: &Path) -> Vec<Layer> {
         .enumerate()
         .filter_map(|(i, value)| {
             let keys: LayerKeys = lenient(value, "layer")?;
+            let opacity = keys.opacity.clamp(0.0, 1.0);
+            let mut objects = Vec::new();
+            for value in keys.objects {
+                if value.get("type").and_then(Value::as_str) == Some("widget") {
+                    // a copy in a hidden layer isn't expanded, and costs nothing
+                    if keys.visible && opacity > 0.0 {
+                        expander.copy(value, &Frame::top(base), &mut objects);
+                    }
+                } else {
+                    objects.extend(object(value, base));
+                }
+            }
             Some(Layer {
                 id: if keys.id.is_empty() { format!("l{i}") } else { keys.id },
                 name: keys.name,
                 visible: keys.visible,
-                opacity: keys.opacity.clamp(0.0, 1.0),
-                objects: keys.objects.into_iter().filter_map(|o| object(o, base)).collect(),
+                opacity,
+                objects,
             })
         })
         .collect()
@@ -539,7 +598,7 @@ fn object(value: Value, base: &Path) -> Option<Object> {
             Kind::Media(media)
         }
         "text" => {
-            let mut w: Widget = lenient(value, "text")?;
+            let mut w: Text = lenient(value, "text")?;
             // a relative font is next to the playlist, like the pieces; no font at all means the default
             w.font = if w.font.as_os_str().is_empty() { PathBuf::from(DEFAULT_FONT) } else { base.join(&w.font) };
             w.live = crate::data::is_live(&w.text);
@@ -562,6 +621,8 @@ fn object(value: Value, base: &Path) -> Option<Object> {
         rotate: if [0, 90, 180, 270].contains(&common.rotate) { common.rotate } else { 0 },
         flip: common.flip,
         kind,
+        clip: None,
+        groups: Vec::new(),
     })
 }
 
@@ -610,7 +671,7 @@ pub fn fingerprint(target: &Path, playlist: &Playlist) -> Vec<(PathBuf, Option<(
 }
 
 /// A file's modified time and size, to notice when it's been replaced.
-pub fn stamp(path: &Path) -> Option<(SystemTime, u64)> {
+pub fn stamp(path: &Path) -> Option<Stamp> {
     std::fs::metadata(path).ok().and_then(|m| Some((m.modified().ok()?, m.len())))
 }
 
@@ -623,15 +684,15 @@ mod tests {
     }
 
     #[test]
-    fn widget_defaults() {
-        let w: Widget = serde_json::from_str(r#"{ "id": "w1", "type": "text" }"#).unwrap();
-        assert_eq!(w, Widget { id: "w1".into(), kind: "text".into(), ..Widget::default() });
+    fn text_defaults() {
+        let w: Text = serde_json::from_str(r#"{ "id": "w1", "type": "text" }"#).unwrap();
+        assert_eq!(w, Text { id: "w1".into(), kind: "text".into(), ..Text::default() });
         assert_eq!(w.font, PathBuf::from(r"C:\Windows\Fonts\segoeui.ttf"));
         assert_eq!((w.size, w.opacity, w.x, w.y, w.line_height), (48.0, 1.0, 0.0, 0.0, 1.2));
         assert_eq!((w.color.as_str(), w.align, w.valign, w.crisp), ("#ffffff", Align::Left, Valign::Top, false));
         assert_eq!(w.outline, Outline { color: "#000000".into(), width: 0.0 });
         // half an outline keeps the other half's default
-        let w: Widget = serde_json::from_str(r#"{ "type": "text", "outline": { "width": 3 } }"#).unwrap();
+        let w: Text = serde_json::from_str(r#"{ "type": "text", "outline": { "width": 3 } }"#).unwrap();
         assert_eq!(w.outline, Outline { color: "#000000".into(), width: 3.0 });
     }
 
@@ -663,7 +724,7 @@ mod tests {
         assert_eq!(ids, ["i", "v", "s", "n", "t"]); // unknown types, an image without a file, and junk are skipped
         let i = &s.layers[0].objects[0];
         assert_eq!((i.x, i.y, i.w, i.h, i.rotate, i.flip), (1.0, 2.0, 30.0, 40.0, 90, true));
-        assert_eq!(i.kind, Kind::Media(Media { src: PathBuf::from(r"C:\pl\sources/x.png"), smooth: true, fill: Fill::Mirror }));
+        assert_eq!(i.kind, Kind::Media(Media { src: PathBuf::from(r"C:\pl\sources/x.png"), smooth: true, fill: Fill::Mirror, keep_aspect: false, tint: None }));
         assert_eq!(s.layers[0].objects[1].rotate, 0); // 45 isn't a quarter turn
         let Kind::Shape(sh) = &s.layers[0].objects[2].kind else { panic!() };
         assert_eq!((sh.shape, sh.crisp), (ShapeKind::Ellipse, true));
@@ -678,7 +739,7 @@ mod tests {
         assert_eq!((p.scenes[1].id.as_str(), p.scenes[1].seconds, p.scenes[1].background.as_str()), ("s1", 10.0, "#000000"));
         // the global layer's live text carries the layer's opacity
         assert_eq!(p.global.len(), 1);
-        let live: Vec<Widget> = p.global[0].live().collect();
+        let live: Vec<Text> = p.global[0].live().collect();
         assert_eq!((live.len(), live[0].opacity), (1, 0.25));
     }
 
@@ -708,7 +769,7 @@ mod tests {
         let art = &s.layers[0].objects[0];
         // turned 90: 50x100 file pixels, 2 per art pixel, at 3x: 75x150
         assert_eq!((art.x, art.y, art.w, art.h, art.rotate, art.flip), (-7.0, 8.0, 75.0, 150.0, 90, true));
-        assert_eq!(art.kind, Kind::Media(Media { src: dir.join("sources/ab.png"), smooth: true, fill: Fill::Extend }));
+        assert_eq!(art.kind, Kind::Media(Media { src: dir.join("sources/ab.png"), smooth: true, fill: Fill::Extend, keep_aspect: false, tint: None }));
         let Kind::Text(w) = &s.layers[1].objects[0].kind else { panic!() };
         assert_eq!(w.text, "hello");
         // no original kept: the piece itself, filling the screen; a missing original likewise
@@ -749,7 +810,7 @@ mod tests {
     }
 
     #[test]
-    fn live_widgets() {
+    fn live_texts() {
         let p = read_json(r#"{ "version": 2, "global": { "layers": [ { "objects": [ { "id": "o", "type": "text", "text": "{time}" } ] } ] },
             "scenes": [ { "layers": [ { "objects": [ { "id": "l", "type": "text", "text": "CPU {pc.cpu.load:d}%" },
                                                     { "id": "s", "type": "text", "text": "{{not live}}" } ] } ] } ] }"#);
@@ -769,3 +830,60 @@ mod tests {
         assert_eq!(fitted((3200, 720)), (0, 180, 1600, 360));
     }
 }
+
+/// Reading widgets and expanding copies (docs/widgets.md). Owned by work package P1.
+#[cfg(test)]
+mod expand_tests {
+    use super::*;
+
+    /// A scene without copies is the same JSON as before widgets (so the same cache keys, but for
+    /// scene::VERSION): no clip, groups, keep_aspect or tint is written for it.
+    #[test]
+    fn no_widgets_same_json() {
+        let json = br##"{ "version": 2, "global": { "layers": [ { "id": "g", "name": "Top", "opacity": 0.5, "objects": [
+                { "id": "clock", "type": "text", "text": "{time}", "x": 10, "y": 20 } ] } ] },
+            "scenes": [ { "id": "a", "name": "one", "seconds": 5, "background": "#102030", "layers": [
+                { "id": "l1", "name": "Art", "objects": [
+                    { "id": "i", "type": "image", "src": "sources/x.png", "x": 1.5, "y": -2, "w": 30, "h": 40, "rotate": 90, "flip": true,
+                      "fill": "tile", "smooth": true, "opacity": 0.75, "locked": true, "name": "Pic" },
+                    { "id": "v", "type": "video", "src": "sources/v.mp4" },
+                    { "id": "s", "type": "shape", "x": 2, "y": 3, "w": 10, "h": 5, "radius": 4, "crisp": true,
+                      "fill": { "type": "linear", "angle": 45, "stops": [ { "at": 0, "color": "#000000" }, { "at": 1, "color": "#ffffff" } ] },
+                      "stroke": { "color": "#ff0000", "width": 2 } },
+                    { "id": "n", "type": "shape", "shape": "line", "fill": null, "stroke": { "width": 3 } },
+                    { "id": "t", "type": "text", "text": "a {{b}}", "font": "fonts/p.ttf", "size": 30, "color": "#abcdef", "x": 5, "y": 6,
+                      "align": "center", "valign": "middle", "line_height": 1.5, "outline": { "color": "#00ff00", "width": 2 }, "crisp": true,
+                      "opacity": 0.5 } ] },
+                { "id": "l2", "name": "Hidden", "visible": false, "objects": [ { "id": "e", "type": "sticker" } ] } ] } ] }"##;
+        let p = parse(json, Path::new(r"C:\pl"), 30.0, Path::new("ffmpeg")).unwrap();
+        let scene = concat!(
+            r##"{"id":"a","name":"one","seconds":5.0,"background":"#102030","layers":[{"id":"l1","name":"Art","visible":true,"opacity":1.0,"objects":["##,
+            r##"{"id":"i","visible":true,"opacity":0.75,"x":1.5,"y":-2.0,"w":30.0,"h":40.0,"rotate":90,"flip":true,"##,
+            r##""kind":{"src":"C:\\pl\\sources/x.png","smooth":true,"fill":"tile"}},"##,
+            r##"{"id":"v","visible":true,"opacity":1.0,"x":0.0,"y":0.0,"w":0.0,"h":0.0,"rotate":0,"flip":false,"##,
+            r##""kind":{"src":"C:\\pl\\sources/v.mp4","smooth":false,"fill":"none"}},"##,
+            r##"{"id":"s","visible":true,"opacity":1.0,"x":2.0,"y":3.0,"w":10.0,"h":5.0,"rotate":0,"flip":false,"##,
+            r##""kind":{"shape":"rect","radius":4.0,"fill":{"type":"linear","angle":45.0,"stops":[{"at":0.0,"color":"#000000"},"##,
+            r##"{"at":1.0,"color":"#ffffff"}]},"stroke":{"color":"#ff0000","width":2.0},"crisp":true}},"##,
+            r##"{"id":"n","visible":true,"opacity":1.0,"x":0.0,"y":0.0,"w":0.0,"h":0.0,"rotate":0,"flip":false,"##,
+            r##""kind":{"shape":"line","radius":0.0,"fill":null,"stroke":{"color":"#000000","width":3.0},"crisp":false}},"##,
+            r##"{"id":"t","visible":true,"opacity":0.5,"x":5.0,"y":6.0,"w":0.0,"h":0.0,"rotate":0,"flip":false,"##,
+            r##""kind":{"id":"t","type":"text","text":"a {b}","font":"C:\\pl\\fonts/p.ttf","size":30.0,"color":"#abcdef","opacity":0.5,"##,
+            r##""x":5.0,"y":6.0,"align":"center","valign":"middle","line_height":1.5,"outline":{"color":"#00ff00","width":2.0},"crisp":true}}]},"##,
+            r##"{"id":"l2","name":"Hidden","visible":false,"opacity":1.0,"objects":[]}]}"##,
+        );
+        assert_eq!(serde_json::to_string(&p.scenes[0]).unwrap(), scene);
+        let global = concat!(
+            r##"[{"id":"g","name":"Top","visible":true,"opacity":0.5,"objects":["##,
+            r##"{"id":"clock","visible":true,"opacity":1.0,"x":10.0,"y":20.0,"w":0.0,"h":0.0,"rotate":0,"flip":false,"##,
+            r##""kind":{"id":"clock","type":"text","text":"{time}","font":"C:\\Windows\\Fonts\\segoeui.ttf","size":48.0,"color":"#ffffff","##,
+            r##""opacity":1.0,"x":10.0,"y":20.0,"align":"left","valign":"top","line_height":1.2,"outline":{"color":"#000000","width":0.0},"##,
+            r##""crisp":false}}]}]"##,
+        );
+        assert_eq!(serde_json::to_string(&p.global).unwrap(), global);
+    }
+}
+
+/// Live text in drawing order (docs/widgets.md, Live text). Owned by work package P3.
+#[cfg(test)]
+mod live_tests {}
