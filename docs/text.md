@@ -1,4 +1,4 @@
-# Text widgets and the global layer (spec)
+# Text objects (spec)
 
 Text drawn over the art: per playlist piece, plus a **global layer** drawn over every piece. The player
 renders it (so text can later come from outside sources while playing); the studio edits it and shows a
@@ -9,9 +9,9 @@ close preview.
 ```json
 {
   "seconds": 30,
-  "overlay": [ <widget>, ... ],
+  "overlay": [ <text object>, ... ],
   "items": [
-    { "file": "city.png", "seconds": 20, "widgets": [ <widget>, ... ], "name": "...", "source": "...", "layout": {...} }
+    { "file": "city.png", "seconds": 20, "widgets": [ <text object>, ... ], "name": "...", "source": "...", "layout": {...} }
   ]
 }
 ```
@@ -21,7 +21,7 @@ close preview.
 - Draw order: the piece's pixels, then its `widgets` in list order, then `overlay` in list order.
 - Anything that rewrites playlist.json must keep keys it doesn't know about (`overlay`, `widgets`, and future ones).
 
-## A widget
+## A text object
 
 ```json
 {
@@ -46,8 +46,8 @@ close preview.
 |---|---|---|
 | `id` | unique within its list; stable, so outside sources can target it later | required |
 | `type` | only `"text"` for now; renderers skip types they don't know | required |
-| `text` | the text; `\n` starts a new line. `{name}` placeholders are reserved for injected values later: for now they're drawn as written | `""` |
-| `font` | absolute path to a `.ttf` or `.otf` file. If it's missing or unreadable, use `C:\Windows\Fonts\segoeui.ttf`, and if that fails, skip the widget | Segoe UI |
+| `text` | the text; `\n` starts a new line. `{key}` placeholders are filled with live values (data.md), and inside a widget, `{$id}` with one of its inputs (widgets.md) | `""` |
+| `font` | absolute path to a `.ttf` or `.otf` file. If it's missing or unreadable, use `C:\Windows\Fonts\segoeui.ttf`, and if that fails, skip the text object | Segoe UI |
 | `size` | em size in panel pixels (the 1600x720 space) | 48 |
 | `color` | `#rrggbb` | `#ffffff` |
 | `opacity` | 0..1, applies to fill and outline | 1 |
@@ -78,16 +78,16 @@ close preview.
 ## The player (player/)
 
 - It reads `overlay` and `items[].widgets` from playlist.json.
-- When it prepares a piece's frames, it renders the piece's widgets plus the global layer once into a
-  1600x720 RGBA layer. It composites that onto every frame (only the layer's bounding box), then rotates
+- When it prepares a piece's frames, it renders the piece's text objects plus the global layer once into
+  a 1600x720 RGBA layer. It composites that onto every frame (only the layer's bounding box), then rotates
   and JPEG-encodes as before. Static text costs nothing extra while playing.
-- The prepared-frames caches (in-memory and on disk) are keyed on the widgets, the overlay and the font
-  files' size and modified time, so editing text re-prepares the piece. Changing the global layer
+- The prepared-frames caches (in-memory and on disk) are keyed on the text objects, the overlay and the
+  font files' size and modified time, so editing text re-prepares the piece. Changing the global layer
   re-prepares every piece as it comes up.
 - `wvplay render <playlist.json> <item index> <out.png> [--frame N]` writes one composited frame, upright,
   as a PNG, for checking text without the cooler.
-- Later, for injected text: the same layer renderer will run while playing, for widgets whose text has
-  placeholders. Keep the renderer callable on its own (frame in, layer out); don't bake assumptions
+- Later, for injected text: the same layer renderer will run while playing, for text objects whose text
+  has placeholders. Keep the renderer callable on its own (frame in, layer out); don't bake assumptions
   that it only runs at prepare time.
 
 ## The studio
@@ -96,19 +96,19 @@ close preview.
   `%LOCALAPPDATA%\Microsoft\Windows\Fonts` (fonts installed per user) and the project's `fonts/` folder.
   Names come from Pillow, and the list is cached.
 - `GET /api/font?path=...` serves a font file, only if it's in that list.
-- A "Text" section edits widgets in one of two layers at a time, **This piece** or **On top of
+- A "Text" section edits text objects in one of two layers at a time, **This piece** or **On top of
   everything** (the global layer):
-  - Add, select or remove widgets.
+  - Add, select or remove text objects.
   - Edit the properties above: a font picker filterable by name, size, colour, opacity, align, valign,
     line height, outline colour and width, crisp.
-  - Click a widget's text on the preview to select it, and drag to move it, with the same edge and
+  - Click a text object on the preview to select it, and drag to move it, with the same edge and
     curve-line snapping as art.
-- The preview draws widgets on the screen canvas: the art, then this piece's widgets, then the global
-  layer, which always shows. It loads each font with the FontFace API from `/api/font`.
+- The preview draws text objects on the screen canvas: the art, then this piece's text objects, then the
+  global layer, which always shows. It loads each font with the FontFace API from `/api/font`.
 - Saving:
   - The global layer saves to playlist.json's `overlay` as you edit (debounced).
-  - This piece's widgets travel with the layout. Add/Update in playlist stores them as the item's
+  - This piece's text objects travel with the layout. Add/Update in playlist stores them as the item's
     `widgets`.
-  - While editing a piece that's already in the playlist, widget edits also save to that item as you go,
+  - While editing a piece that's already in the playlist, text edits also save to that item as you go,
     without recomposing its art. Text changes don't need a video re-encode.
   - The player picks either change up within about a second.

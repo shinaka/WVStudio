@@ -35,6 +35,26 @@ const M = 140;  // off-screen margin shown around the screen, in screen px
 const FRONT = () => ({ x: SAFE.left, y: SAFE.top, w: W - SAFE.left - SAFE.right, h: H - SAFE.top - SAFE.bottom });
 const WHOLE = () => ({ x: 0, y: 0, w: W, h: H });
 
+// Reusable widgets (docs/widgets.md) come from widgets.js (the model, `WV`), library.js and copies.js, loaded around
+// this file. They're used only while `widgetsOn`: when the studio server has widgets too and all three scripts loaded.
+// While it's false the page works exactly as without them, and nothing here calls into those files.
+let widgetsOn = false;
+
+/** Offers an event to the widget scripts first (`WV.hooks[kind]`: key, drop, dblclick, props), each function in
+ *  turn. True once one returns true: it has handled the event, and the editor leaves it alone. Props hooks never
+ *  stop the others: each fills its own rows. A hook that throws is logged and passed over. */
+function offerHooks(kind, ...args) {
+  if (!widgetsOn) return false;
+  for (const fn of WV.hooks[kind]) {
+    try {
+      if (fn(...args) === true && kind !== "props") return true;
+    } catch (err) {
+      console.error(err);
+    }
+  }
+  return false;
+}
+
 // --- The document and the selection ------------------------------------------------------
 //
 // `doc` is playlist.json as the page holds it. Everything in it is reached by id, never by held references: undo
@@ -54,6 +74,9 @@ function sceneById(id) { return doc.scenes.find((s) => s.id === id) || null; }
 /** What's being edited: a scene, or the global pseudo-scene. */
 function holder() { return sel.scene === "global" ? doc.global : sceneById(sel.scene); }
 function isGlobal() { return sel.scene === "global"; }
+/** Whether a widget is open in the editor (`sel.scene` is "widget:<id>"), and its id. Never while widgets are off. */
+function isWidgetHolder() { return widgetsOn && typeof sel.scene === "string" && sel.scene.startsWith("widget:"); }
+function holderWidgetId() { return isWidgetHolder() ? sel.scene.slice("widget:".length) : null; }
 function layersOf(h = holder()) { return (h && Array.isArray(h.layers)) ? h.layers : []; }
 function layerById(id, h = holder()) { return layersOf(h).find((l) => l.id === id) || null; }
 /** {layer, obj, index} for an object id in the current holder, or null. */
@@ -230,7 +253,7 @@ function drawObject(ctx, o, t) {
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.globalAlpha = op;
   if (isMedia(o)) drawMedia(ctx, o, t);
-  else if (o.type === "text") drawWidget(ctx, o);
+  else if (o.type === "text") drawText(ctx, o);
   else if (o.type === "shape") drawShape(ctx, o);
   ctx.globalAlpha = 1;
 }
@@ -417,13 +440,13 @@ function drawShape(ctx, o) {
   ctx.drawImage(shapeCv, x0, y0);  // as one group, at the object's opacity
 }
 
-// --- Text (docs/widgets.md), laid out as the player does ----------------------------------------
+// --- Text (docs/text.md), laid out as the player does -------------------------------------------
 
 let fontList = [];       // [{path, family, style}]: the fonts the picker offers
 const fonts = new Map(); // font path (lower case) -> {family, state}: a FontFace per file, loaded when first used
 let fontsArrived = 0;    // counts loads finished, so the text is drawn again
 const textCtx = document.createElement("canvas").getContext("2d");  // for measuring
-// one widget at a time: outline (or everything), and the fill on its own for crisp text
+// one text at a time: outline (or everything), and the fill on its own for crisp text
 const glyphs = [0, 1].map(() => document.createElement("canvas").getContext("2d", { willReadFrequently: true }));
 
 /** A font file as a CSS family, loaded from the studio the first time it's asked for. */
@@ -440,9 +463,9 @@ function fontFace(path) {
   return f;
 }
 
-/** A widget's font family; Segoe UI when its own can't be read, as in the player. Null while it loads, or when
- *  neither font will do (then the widget isn't drawn). */
-function widgetFamily(w) {
+/** A text's font family; Segoe UI when its own can't be read, as in the player. Null while it loads, or when
+ *  neither font will do (then the text isn't drawn). */
+function textFamily(w) {
   for (const path of [typeof w.font === "string" && w.font ? w.font : DEFAULT_FONT, DEFAULT_FONT]) {
     const f = fontFace(path);
     if (f.state !== "failed") return f.state === "ready" ? f.family : null;
@@ -450,10 +473,10 @@ function widgetFamily(w) {
   return null;
 }
 
-/** A text widget laid out (docs/widgets.md, Geometry): each line's text, start, width and baseline, the block's
+/** A text object laid out (docs/text.md, Geometry): each line's text, start, width and baseline, the block's
  *  box, and the font's ascent and descent. Null for other kinds of object, and until the font has loaded. */
 function textLayout(w) {
-  const family = w.type === "text" && widgetFamily(w);
+  const family = w.type === "text" && textFamily(w);
   if (!family) return null;
   const g = textCtx, size = Math.max(1, num(w.size, 48)), step = size * num(w.line_height, 1.2);
   const font = `${size}px "${family}"`;
@@ -485,7 +508,7 @@ function threshold(g, x, y, w, h, colour) {
 
 /** Draws one text object onto `out`: the outline (the glyphs grown by its width) under the fill. The object's
  *  opacity is `out`'s globalAlpha, set by the caller. */
-function drawWidget(out, w) {
+function drawText(out, w) {
   const lay = textLayout(w);
   if (!lay) return;
   const o = Math.max(0, num(w.outline?.width, 0)), colour = hex(w.color, "#ffffff");
@@ -1057,8 +1080,8 @@ stage.addEventListener("pointerdown", (e) => {
     const o = addObject(newText(Math.round(px), Math.round(py)));
     setTool("select");
     showProps();
-    $("wText").focus();
-    $("wText").select();
+    $("tText").focus();
+    $("tText").select();
     return;
   }
   if (tool.name === "shape") {
@@ -1206,8 +1229,9 @@ $("stageWrap").addEventListener("wheel", (e) => {
 // --- Keys ----------------------------------------------------------------------------------------
 
 window.addEventListener("keydown", (e) => {
-  if ($("sourcesDlg").open) return;  // the window has its own keys, and Esc closes it
+  if (document.querySelector("dialog[open]")) return;  // a window has its own keys, and Esc closes it
   const typing = e.target.closest?.("input:not([type=checkbox]):not([type=range]), select, textarea");
+  if (offerHooks("key", e, typing || null)) return;  // widgets' keys (W, Ctrl+G, Enter) first
   if (e.key === "Escape") {
     if (view.picking) return setPicking(null);
     if (typing) return e.target.blur();
@@ -1254,11 +1278,13 @@ window.addEventListener("dragleave", (e) => { if (!e.relatedTarget) document.bod
 window.addEventListener("drop", (e) => {
   e.preventDefault();
   document.body.classList.remove("dragover");
+  if (offerHooks("drop", e)) return;  // widgets first: a widget's card, a .zip to import
   const f = e.dataTransfer.files[0];
   if (!f) return;
   const onStage = e.target.closest("#stage"), at = onStage ? screenPoint(e, true) : null;
   uploadFile(f, at && at[0] >= 0 && at[0] < W && at[1] >= 0 && at[1] < H ? at : null);
 });
+stage.addEventListener("dblclick", (e) => { offerHooks("dblclick", e); });  // widgets: a copy opens its widget
 window.addEventListener("paste", (e) => {
   if (e.target.closest?.("input, textarea")) return;
   const f = [...e.clipboardData.files][0];
@@ -1453,16 +1479,25 @@ $("deleteLayer").addEventListener("click", () => {
 const set = (id, v) => { if (document.activeElement !== $(id)) $(id).value = v; };
 const seg = (id, value) => { for (const b of $(id).children) b.setAttribute("aria-pressed", b.dataset.value === String(value)); };
 
+/** The properties panel: the sections for the selection (or the scene, widget or layer), filled in. Then the widget
+ *  scripts' props hooks, which fill their own rows in those sections. */
 function showProps() {
+  fillProps();
+  offerHooks("props", primary());
+}
+
+function fillProps() {
   const h = holder(), p = primary(), layer = !p && selectedLayer();
-  $("pScene").hidden = !(h && !isGlobal() && !p && !layer);
+  $("pScene").hidden = !(h && !isGlobal() && !isWidgetHolder() && !p && !layer);
   $("pGlobal").hidden = !(isGlobal() && !p && !layer);
+  $("pWidget").hidden = !(isWidgetHolder() && !p && !layer);
   $("pLayer").hidden = !layer;
   $("pObject").hidden = !p;
   $("pMedia").hidden = !(p && isMedia(p));
   $("pText").hidden = !(p && p.type === "text");
   $("pShape").hidden = !(p && p.type === "shape");
-  $("pExport").hidden = !(h && !isGlobal() && !p && !layer);
+  $("pCopy").hidden = !(widgetsOn && p?.type === "widget");
+  $("pExport").hidden = !(h && !isGlobal() && !isWidgetHolder() && !p && !layer);
   if (!h) return;
   if (!$("pScene").hidden) {
     set("sName", h.name || "");
@@ -1476,6 +1511,7 @@ function showProps() {
     set("lOpacity", Math.round(100 * clamp01(layer.opacity)));
     set("lOpacityR", Math.round(100 * clamp01(layer.opacity)));
   }
+  if (!$("pWidget").hidden) showWidgetProps(holderWidgetId());
   if (!p) return;
   $("oKind").textContent = { image: "Image", video: "Video", text: "Text", shape: "Shape" }[p.type] || p.type;
   set("oName", p.name || "");
@@ -1487,8 +1523,10 @@ function showProps() {
   $("oTurnRow").hidden = !isMedia(p);
   seg("oRotate", num(p.rotate, 0) % 360);
   $("oFlip").checked = !!p.flip;
+  $("oWidgetRow").hidden = !widgetsOn;
   if (isMedia(p)) showMediaProps(p);
   else if (p.type === "text") showTextProps(p);
+  else if (widgetsOn && p.type === "widget") showCopyProps(p);
   else showShapeProps(p);
 }
 
@@ -1513,15 +1551,15 @@ function showMediaProps(p) {
 }
 
 function showTextProps(w) {
-  set("wText", String(w.text ?? ""));
-  set("wSize", num(w.size, 48));
-  set("wColor", hex(w.color, "#ffffff"));
-  set("wLineHeight", num(w.line_height, 1.2));
-  set("wOutlineColor", hex(w.outline?.color, "#000000"));
-  set("wOutlineWidth", num(w.outline?.width, 0));
-  $("wCrisp").checked = !!w.crisp;
-  seg("wAlign", w.align || "left");
-  seg("wValign", w.valign || "top");
+  set("tText", String(w.text ?? ""));
+  set("tSize", num(w.size, 48));
+  set("tColor", hex(w.color, "#ffffff"));
+  set("tLineHeight", num(w.line_height, 1.2));
+  set("tOutlineColor", hex(w.outline?.color, "#000000"));
+  set("tOutlineWidth", num(w.outline?.width, 0));
+  $("tCrisp").checked = !!w.crisp;
+  seg("tAlign", w.align || "left");
+  seg("tValign", w.valign || "top");
   showFonts(w);
   const top = liveOnTop(w);
   $("liveNote").hidden = !top;
@@ -1549,9 +1587,9 @@ function showShapeProps(o) {
 }
 
 let fontsShown = "";
-/** The font picker: the fonts whose names have every word typed in the filter, plus the widget's own. */
+/** The font picker: the fonts whose names have every word typed in the filter, plus the text's own. */
 function showFonts(w) {
-  const words = $("wFontFilter").value.toLowerCase().split(/\s+/).filter(Boolean);
+  const words = $("tFontFilter").value.toLowerCase().split(/\s+/).filter(Boolean);
   const current = typeof w.font === "string" && w.font ? w.font : DEFAULT_FONT;
   const key = JSON.stringify([words, current, fontList.length]);
   if (key === fontsShown) return;  // rebuilt only when it changes, so the list keeps its scroll position
@@ -1567,7 +1605,7 @@ function showFonts(w) {
     options.unshift(new Option(known ? label(known) : fontList.length ? `${file} (not listed: previewed in Segoe UI)` : file,
                                current, false, true));
   }
-  $("wFont").replaceChildren(...options);
+  $("tFont").replaceChildren(...options);
 }
 
 // Wiring the controls: each changes the selection through `edit`, looked up fresh by id.
@@ -1595,6 +1633,7 @@ for (const b of $("oRotate").children) b.addEventListener("click", () => {
     o.rotate = to;
   });
 });
+$("oFromSelection").addEventListener("click", () => { if (widgetsOn) WV.fromSelection(); });
 // layer and scene
 const layerControl = (id, apply, event = "input") => $(id).addEventListener(event, () => {
   const l = !primary() && selectedLayer();
@@ -1631,16 +1670,16 @@ objControl("fillHeight", (o) => {
 }, "click");
 for (const b of $("mFill").children) b.addEventListener("click", () => { const p = primary(); if (p) edit(() => { find(p.id).obj.fill = b.dataset.value; }); });
 // text
-objControl("wText", (o, el) => { o.text = el.value; }, "input", "wText");
-$("wFontFilter").addEventListener("input", () => { const w = primary(); if (w?.type === "text") showFonts(w); });
-objControl("wFont", (o, el) => { o.font = el.value; }, "change");
-objControl("wSize", (o, el) => { const v = number(el, (v) => v > 0); if (v === null) return false; o.size = v; });
-objControl("wColor", (o, el) => { o.color = el.value; });
-objControl("wLineHeight", (o, el) => { const v = number(el, (v) => v > 0); if (v === null) return false; o.line_height = v; });
-objControl("wOutlineColor", (o, el) => { o.outline = { width: 0, ...o.outline, color: el.value }; });
-objControl("wOutlineWidth", (o, el) => { const v = number(el, (v) => v >= 0); if (v === null) return false; o.outline = { color: "#000000", ...o.outline, width: v }; });
-objControl("wCrisp", (o, el) => { o.crisp = el.checked; }, "change");
-for (const [group, key] of [["wAlign", "align"], ["wValign", "valign"]]) {
+objControl("tText", (o, el) => { o.text = el.value; }, "input", "tText");
+$("tFontFilter").addEventListener("input", () => { const w = primary(); if (w?.type === "text") showFonts(w); });
+objControl("tFont", (o, el) => { o.font = el.value; }, "change");
+objControl("tSize", (o, el) => { const v = number(el, (v) => v > 0); if (v === null) return false; o.size = v; });
+objControl("tColor", (o, el) => { o.color = el.value; });
+objControl("tLineHeight", (o, el) => { const v = number(el, (v) => v > 0); if (v === null) return false; o.line_height = v; });
+objControl("tOutlineColor", (o, el) => { o.outline = { width: 0, ...o.outline, color: el.value }; });
+objControl("tOutlineWidth", (o, el) => { const v = number(el, (v) => v >= 0); if (v === null) return false; o.outline = { color: "#000000", ...o.outline, width: v }; });
+objControl("tCrisp", (o, el) => { o.crisp = el.checked; }, "change");
+for (const [group, key] of [["tAlign", "align"], ["tValign", "valign"]]) {
   for (const b of $(group).children) b.addEventListener("click", () => { const p = primary(); if (p) edit(() => { find(p.id).obj[key] = b.dataset.value; }); });
 }
 // shapes
@@ -1915,7 +1954,7 @@ async function refreshValues() {
 }
 /** Puts {key} into the selected text where its cursor is: at the end when it hasn't been in it. */
 function insertKey(key) {
-  const w = primary(), el = $("wText");
+  const w = primary(), el = $("tText");
   if (!w || w.type !== "text") return message("Select a text first: the value goes into it.", "warn");
   const text = String(w.text ?? ""), put = `{${key}}`;
   if (el.value !== text) el.value = text;
@@ -2310,7 +2349,7 @@ function acKeys() {
   return [...seen.values()];
 }
 function acUpdate() {
-  const el = $("wText"), ctx = document.activeElement === el ? acContext(el) : null;
+  const el = $("tText"), ctx = document.activeElement === el ? acContext(el) : null;
   if (!ctx) return acClose();
   const q = ctx.query.toLowerCase();
   let items;
@@ -2338,7 +2377,7 @@ function sampleFormat(v, f) {
     "%a": d.toLocaleDateString([], { weekday: "short" }), "%b": d.toLocaleDateString([], { month: "short" }) })[c]);
 }
 function acRender() {
-  const pop = $("acPop"), el = $("wText");
+  const pop = $("acPop"), el = $("tText");
   pop.replaceChildren(...ac.items.map((it, i) => {
     const d = make("div", "ac-item");
     d.setAttribute("role", "option");
@@ -2378,19 +2417,19 @@ function acClose() {
   $("acPop").hidden = true;
 }
 function acAccept(i = ac.index) {
-  const it = ac.items[i], el = $("wText"), w = primary();
+  const it = ac.items[i], el = $("tText"), w = primary();
   if (!it) return acClose();
   const text = el.value, closed = text[ac.to] === "}", put = it.insert + (closed ? "" : "}");
   el.value = text.slice(0, ac.from) + put + text.slice(ac.to);
   const pos = ac.from + put.length + (closed ? 1 : 0);
   el.setSelectionRange(pos, pos);
-  if (w?.type === "text") { const v = el.value; edit(() => { find(w.id).obj.text = v; }, "wText"); }
+  if (w?.type === "text") { const v = el.value; edit(() => { find(w.id).obj.text = v; }, "tText"); }
   acClose();
 }
-$("wText").addEventListener("input", acUpdate);
-$("wText").addEventListener("click", () => { if (ac.open) acUpdate(); });
-$("wText").addEventListener("blur", acClose);
-$("wText").addEventListener("keydown", (e) => {
+$("tText").addEventListener("input", acUpdate);
+$("tText").addEventListener("click", () => { if (ac.open) acUpdate(); });
+$("tText").addEventListener("blur", acClose);
+$("tText").addEventListener("keydown", (e) => {
   if (!ac.open) return;
   if (e.key === "ArrowDown" || e.key === "ArrowUp") {
     ac.index = (ac.index + (e.key === "ArrowDown" ? 1 : ac.items.length - 1)) % ac.items.length;

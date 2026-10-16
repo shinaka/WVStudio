@@ -116,7 +116,7 @@ default settings.
     - its settings form, built from the manifest, with its interval;
     - a **Test** button;
     - a **Provides** table: each key with its label, unit and live value. Clicking a key inserts `{key}` into
-      the selected text widget, if there is one, and otherwise copies it.
+      the selected text, if there is one, and otherwise copies it.
   - **At the bottom:** where the plugins folder is, plus **Rescan**.
   - Changes save as you make them, as now.
 - **Autocomplete in the text box:**

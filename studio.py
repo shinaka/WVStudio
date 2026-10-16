@@ -32,6 +32,8 @@ import wv
 
 PAGE = wv.ROOT / "studio" / "index.html"
 SCRIPT = PAGE.with_name("studio.js")  # the page's code, served at /studio.js
+# the page's code for widgets (docs/widgets.md), each served at /<name>: these three names only
+WIDGET_SCRIPTS = {name: PAGE.with_name(name) for name in ("widgets.js", "library.js", "copies.js")}
 UPLOADS = wv.ROOT / ".cache" / "studio"
 KEY = np.array([1 << 16, 1 << 8, 1], np.uint32)
 VIDEO_TYPES = {".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi"}
@@ -190,6 +192,22 @@ def source_name(path):
     return f"sources/{Path(path).name}"
 
 
+# Reusable widgets (docs/widgets.md) live next to the playlist's folder, as plugins/ does. Functions, not constants,
+# so a harness that moves PLAYLIST_DIR moves them too.
+def widgets_dir():
+    return PLAYLIST_DIR.parent / "widgets"
+
+
+def trash_dir():
+    """Deleted widgets, kept so they can be restored."""
+    return widgets_dir() / ".deleted"
+
+
+def inputs_dir():
+    """The pictures chosen for copies' image inputs, in a scene or the global layer."""
+    return PLAYLIST_DIR / "inputs"
+
+
 def keep_file(path, data=None):
     """Keeps a media file in sources/ under its content hash (a hard link where possible: no extra space).
     Returns (kept path, src)."""
@@ -275,7 +293,7 @@ def convert_v1(data):
 
 
 def text_object(w):
-    """A version 1 text widget as a text object: the widget's keys plus the common ones."""
+    """A version 1 text (an entry of `widgets` or `overlay`) as a text object: its keys plus the common ones."""
     return {"name": str(w.get("text", "")).split("\n")[0][:40] or "Text", "visible": True, "locked": False, "opacity": 1.0,
             "w": 0, "h": 0, "rotate": 0, "flip": False, **w, "type": "text", "id": str(w.get("id", "w"))}
 
@@ -498,7 +516,7 @@ def stop_player():
     return player_state()
 
 
-# --- Fonts, for text widgets ------------------------------------------------------------
+# --- Fonts, for text --------------------------------------------------------------------
 
 FONT_DIRS = [Path(r"C:\Windows\Fonts"),
              Path(os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\Windows\Fonts")),  # fonts installed per user
@@ -951,6 +969,12 @@ class Handler(BaseHTTPRequestHandler):
             self.json(player_state())
         elif url.path == "/studio.js":
             self.send(200, SCRIPT.read_bytes(), "text/javascript; charset=utf-8")
+        elif url.path[1:] in WIDGET_SCRIPTS:
+            try:
+                script = WIDGET_SCRIPTS[url.path[1:]].read_bytes()
+            except OSError:
+                return self.send(404, b"not found", "text/plain")
+            self.send(200, script, "text/javascript; charset=utf-8")
         elif (m := re.fullmatch(r"/api/media/([\w.-]+)", url.path)):
             try:
                 self.json(open_kept(m[1]))

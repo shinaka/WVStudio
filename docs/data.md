@@ -1,6 +1,6 @@
 # Live data in text (spec)
 
-Text widgets (see widgets.md) can contain placeholders that the player fills with live values:
+Text objects (see text.md) can contain placeholders that the player fills with live values:
 Claude usage, PC sensors, Home Assistant entities and the time. Sources are set up in the studio; the
 player polls them and draws the text.
 
@@ -26,7 +26,7 @@ player polls them and draws the text.
   - `.Nf`: N decimals.
   - Strftime-style patterns (`%H:%M`, `%a %d %b`, ...) for times.
   - A numeric format on text, or a time format on a number, is ignored.
-- A widget whose text has at least one placeholder is **live**. Anything else is static, as before.
+- A text object whose text has at least one placeholder is **live**. Anything else is static, as before.
 
 ## Sources: `playlist/data.json`
 
@@ -293,16 +293,16 @@ hours.
   - `POST /test {"source": {...}}` runs one source config once, without saving it, and returns
     `{"values": {...}}` or `{"error": "..."}`.
 - **Drawing live text:**
-  - Static widgets are drawn into the prepared frames as now.
-  - Live widgets are drawn into a separate live layer, while playing, over the prepared frames. Live text
+  - Static text is drawn into the prepared frames as now.
+  - Live text is drawn into a separate live layer, while playing, over the prepared frames. Live text
     always draws above static text: the one difference from list order.
-  - **When to redraw:** the live layer is redrawn only when some live widget's resolved text changes. For
+  - **When to redraw:** the live layer is redrawn only when some live text object's resolved text changes. For
     the time, that's checked when the minute changes or values update.
   - **Building frames:** each frame is the cached JPEG decoded, the live layer blended over it, then
     re-encoded, rotated as before.
   - **Caching:** results are kept per text version, so an animation is re-encoded once per change, not
     every loop, and a still is re-encoded once.
-  - **No live widgets:** exactly today's path, with zero extra cost.
+  - **No live text:** exactly today's path, with zero extra cost.
 
 ## The studio
 
@@ -320,8 +320,8 @@ hours.
     skipped (LHM not answering, say).
   - Changes save to data.json.
 - **A live values table:** key and current value, filterable, with stale ones greyed out. Clicking a key
-  inserts `{key}` into the selected widget's text at the cursor.
-- **Preview:** widgets show their resolved text, via the player's `/resolve`. It refreshes when the text
+  inserts `{key}` into the selected text object's text at the cursor.
+- **Preview:** text objects show their resolved text, via the player's `/resolve`. It refreshes when the text
   changes and about every 10 s. If the player isn't running, the raw placeholders show, and a note says so.
 - **Endpoints:**
   - `GET/POST /api/data/config`: the GET leaves each password out (`token`, `lhm_password`) and gives
