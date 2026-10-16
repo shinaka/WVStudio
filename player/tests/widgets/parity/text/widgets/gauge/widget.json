@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "name": "Gauge",
+  "description": "",
+  "w": 120,
+  "h": 40,
+  "background": "#202830",
+  "fonts": {},
+  "inputs": [
+    {
+      "id": "label",
+      "name": "Label",
+      "type": "text",
+      "default": "CPU"
+    },
+    {
+      "id": "value",
+      "name": "Value",
+      "type": "text",
+      "default": "{wv.none|42}°C"
+    },
+    {
+      "id": "accent",
+      "name": "Accent",
+      "type": "color",
+      "default": "#ff7a1a"
+    }
+  ],
+  "layers": [
+    {
+      "id": "l1",
+      "name": "l1",
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "objects": [
+        {
+          "id": "panel",
+          "type": "shape",
+          "shape": "rect",
+          "x": 2,
+          "y": 2,
+          "w": 116,
+          "h": 36,
+          "crisp": true,
+          "fill": {
+            "type": "solid",
+            "color": "#304050"
+          }
+        },
+        {
+          "id": "lab",
+          "type": "text",
+          "text": "{$label}",
+          "size": 14,
+          "color": "#a0b0c0",
+          "x": 6,
+          "y": 4
+        },
+        {
+          "id": "val",
+          "type": "text",
+          "text": "{$value}",
+          "size": 20,
+          "color": "{$accent}",
+          "x": 114,
+          "y": 36,
+          "align": "right",
+          "valign": "bottom"
+        }
+      ]
+    }
+  ]
+}

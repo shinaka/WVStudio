@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "name": "Label",
+  "description": "",
+  "w": 20,
+  "h": 10,
+  "background": null,
+  "fonts": {},
+  "inputs": [
+    {
+      "id": "text",
+      "name": "Text",
+      "type": "text",
+      "default": "?"
+    },
+    {
+      "id": "ink",
+      "name": "Ink",
+      "type": "color",
+      "default": "#ffffff"
+    },
+    {
+      "id": "pic",
+      "name": "Picture",
+      "type": "image",
+      "default": "media/dot-cf4c29ec.png"
+    }
+  ],
+  "layers": [
+    {
+      "id": "l1",
+      "name": "l1",
+      "visible": true,
+      "locked": false,
+      "opacity": 0.5,
+      "objects": [
+        {
+          "id": "bg",
+          "type": "shape",
+          "shape": "rect",
+          "x": 0,
+          "y": 0,
+          "w": 20,
+          "h": 10,
+          "fill": {
+            "type": "solid",
+            "color": "{$ink}"
+          }
+        },
+        {
+          "id": "tx",
+          "type": "text",
+          "text": "{$text}",
+          "size": 8,
+          "color": "{$ink}",
+          "x": 1,
+          "y": 1
+        },
+        {
+          "id": "pi",
+          "type": "image",
+          "src": "{$pic}",
+          "x": 12,
+          "y": 1,
+          "w": 8,
+          "h": 8
+        }
+      ]
+    }
+  ]
+}

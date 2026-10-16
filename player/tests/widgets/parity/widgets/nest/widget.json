@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "name": "Nest",
+  "description": "",
+  "w": 24,
+  "h": 16,
+  "background": null,
+  "fonts": {},
+  "inputs": [],
+  "layers": [
+    {
+      "id": "l",
+      "name": "l",
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "objects": [
+        {
+          "id": "c1",
+          "type": "widget",
+          "visible": true,
+          "locked": false,
+          "opacity": 0.5,
+          "x": 1,
+          "y": 1,
+          "scale": 2,
+          "widget": "pix"
+        },
+        {
+          "id": "c2",
+          "type": "widget",
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "x": 12,
+          "y": 2,
+          "scale": 1,
+          "widget": "grp"
+        },
+        {
+          "id": "c3",
+          "type": "widget",
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "x": 20,
+          "y": 10,
+          "scale": 1,
+          "widget": "pix"
+        }
+      ]
+    }
+  ]
+}

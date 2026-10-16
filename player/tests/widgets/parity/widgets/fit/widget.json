@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "name": "Fit",
+  "description": "",
+  "w": 34,
+  "h": 16,
+  "background": null,
+  "fonts": {},
+  "inputs": [],
+  "layers": [
+    {
+      "id": "l",
+      "name": "l",
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "objects": [
+        {
+          "id": "a",
+          "type": "image",
+          "src": "media/px3x2-0506d5b2.png",
+          "x": 0,
+          "y": 0,
+          "w": 16,
+          "h": 16,
+          "smooth": false,
+          "fill": "tile",
+          "keep_aspect": true
+        },
+        {
+          "id": "b",
+          "type": "image",
+          "src": "media/px3x2-0506d5b2.png",
+          "x": 18,
+          "y": 0,
+          "w": 16,
+          "h": 16,
+          "smooth": false,
+          "fill": "none",
+          "keep_aspect": true
+        }
+      ]
+    }
+  ]
+}

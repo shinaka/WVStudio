@@ -1,0 +1,98 @@
+{
+  "version": 1,
+  "name": "Card",
+  "description": "",
+  "w": 40,
+  "h": 30,
+  "background": "#222222",
+  "fonts": {},
+  "inputs": [
+    {
+      "id": "name",
+      "name": "Name",
+      "type": "text",
+      "default": "Card"
+    },
+    {
+      "id": "accent",
+      "name": "Accent",
+      "type": "color",
+      "default": "#ff0000"
+    },
+    {
+      "id": "icon",
+      "name": "Icon",
+      "type": "image",
+      "default": "media/star-0e174c91.png"
+    }
+  ],
+  "layers": [
+    {
+      "id": "base",
+      "name": "base",
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "objects": [
+        {
+          "id": "frame",
+          "type": "shape",
+          "shape": "rect",
+          "x": 0,
+          "y": 0,
+          "w": 40,
+          "h": 30,
+          "fill": null,
+          "stroke": {
+            "color": "{$accent}",
+            "width": 1
+          }
+        }
+      ]
+    },
+    {
+      "id": "top",
+      "name": "top",
+      "visible": true,
+      "locked": false,
+      "opacity": 0.8,
+      "objects": [
+        {
+          "id": "lb",
+          "type": "widget",
+          "visible": true,
+          "locked": false,
+          "opacity": 0.5,
+          "x": 3,
+          "y": 3,
+          "w": 30,
+          "h": 15,
+          "scale": 1.5,
+          "inputs": {
+            "text": "[{$name}]",
+            "ink": "{$accent}",
+            "pic": "{$icon}"
+          },
+          "widget": "label"
+        },
+        {
+          "id": "lc",
+          "type": "widget",
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "x": 30,
+          "y": 20,
+          "w": 20,
+          "h": 10,
+          "scale": 1,
+          "inputs": {
+            "text": "{$name}",
+            "pic": "media/star-0e174c91.png"
+          },
+          "widget": "label"
+        }
+      ]
+    }
+  ]
+}

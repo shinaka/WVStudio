@@ -1,0 +1,151 @@
+{
+  "version": 1,
+  "name": "Ten hidden",
+  "description": "",
+  "w": 10,
+  "h": 10,
+  "background": null,
+  "fonts": {},
+  "inputs": [],
+  "layers": [
+    {
+      "id": "l",
+      "name": "l",
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "objects": [
+        {
+          "id": "h0",
+          "type": "widget",
+          "visible": false,
+          "locked": false,
+          "opacity": 1.0,
+          "x": 0,
+          "y": 0,
+          "w": 1,
+          "h": 1,
+          "scale": 1,
+          "widget": "dot1"
+        },
+        {
+          "id": "h1",
+          "type": "widget",
+          "visible": false,
+          "locked": false,
+          "opacity": 1.0,
+          "x": 0,
+          "y": 0,
+          "w": 1,
+          "h": 1,
+          "scale": 1,
+          "widget": "dot1"
+        },
+        {
+          "id": "h2",
+          "type": "widget",
+          "visible": false,
+          "locked": false,
+          "opacity": 1.0,
+          "x": 0,
+          "y": 0,
+          "w": 1,
+          "h": 1,
+          "scale": 1,
+          "widget": "dot1"
+        },
+        {
+          "id": "h3",
+          "type": "widget",
+          "visible": false,
+          "locked": false,
+          "opacity": 1.0,
+          "x": 0,
+          "y": 0,
+          "w": 1,
+          "h": 1,
+          "scale": 1,
+          "widget": "dot1"
+        },
+        {
+          "id": "h4",
+          "type": "widget",
+          "visible": false,
+          "locked": false,
+          "opacity": 1.0,
+          "x": 0,
+          "y": 0,
+          "w": 1,
+          "h": 1,
+          "scale": 1,
+          "widget": "dot1"
+        },
+        {
+          "id": "h5",
+          "type": "widget",
+          "visible": false,
+          "locked": false,
+          "opacity": 1.0,
+          "x": 0,
+          "y": 0,
+          "w": 1,
+          "h": 1,
+          "scale": 1,
+          "widget": "dot1"
+        },
+        {
+          "id": "h6",
+          "type": "widget",
+          "visible": false,
+          "locked": false,
+          "opacity": 1.0,
+          "x": 0,
+          "y": 0,
+          "w": 1,
+          "h": 1,
+          "scale": 1,
+          "widget": "dot1"
+        },
+        {
+          "id": "h7",
+          "type": "widget",
+          "visible": false,
+          "locked": false,
+          "opacity": 1.0,
+          "x": 0,
+          "y": 0,
+          "w": 1,
+          "h": 1,
+          "scale": 1,
+          "widget": "dot1"
+        },
+        {
+          "id": "h8",
+          "type": "widget",
+          "visible": false,
+          "locked": false,
+          "opacity": 1.0,
+          "x": 0,
+          "y": 0,
+          "w": 1,
+          "h": 1,
+          "scale": 1,
+          "widget": "dot1"
+        },
+        {
+          "id": "h9",
+          "type": "widget",
+          "visible": false,
+          "locked": false,
+          "opacity": 1.0,
+          "x": 0,
+          "y": 0,
+          "w": 1,
+          "h": 1,
+          "scale": 1,
+          "widget": "dot1"
+        }
+      ]
+    }
+  ]
+}

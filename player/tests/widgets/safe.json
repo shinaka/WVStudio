@@ -1,0 +1,148 @@
+[
+  {
+    "value": "x{",
+    "safe": "x{{"
+  },
+  {
+    "value": "5}",
+    "safe": "5}}"
+  },
+  {
+    "value": "{ }",
+    "safe": "{{ }}"
+  },
+  {
+    "value": "{{",
+    "safe": "{{"
+  },
+  {
+    "value": "}}}",
+    "safe": "}}}}"
+  },
+  {
+    "value": "{$x}",
+    "safe": "{{$x}}"
+  },
+  {
+    "value": "{a\nb}",
+    "safe": "{{a\nb}}"
+  },
+  {
+    "value": "{pc.cpu.temp:d|?}°C",
+    "safe": "{pc.cpu.temp:d|?}°C"
+  },
+  {
+    "value": "{{{}}}",
+    "safe": "{{{{}}}}"
+  },
+  {
+    "value": "}{",
+    "safe": "}}{{"
+  },
+  {
+    "value": "{}",
+    "safe": "{{}}"
+  },
+  {
+    "value": "{",
+    "safe": "{{"
+  },
+  {
+    "value": "}",
+    "safe": "}}"
+  },
+  {
+    "value": "{{}",
+    "safe": "{{}}"
+  },
+  {
+    "value": "",
+    "safe": ""
+  },
+  {
+    "value": "plain",
+    "safe": "plain"
+  },
+  {
+    "value": "{ pc.cpu.temp }",
+    "safe": "{ pc.cpu.temp }"
+  },
+  {
+    "value": "{:d}",
+    "safe": "{{:d}}"
+  },
+  {
+    "value": "{|x}",
+    "safe": "{{|x}}"
+  },
+  {
+    "value": "{ :d}",
+    "safe": "{{ :d}}"
+  },
+  {
+    "value": "{x}}",
+    "safe": "{x}}}"
+  },
+  {
+    "value": "{x}{y}",
+    "safe": "{x}{y}"
+  },
+  {
+    "value": "{a|b:c}",
+    "safe": "{a|b:c}"
+  },
+  {
+    "value": "{a{b}",
+    "safe": "{{a{b}"
+  },
+  {
+    "value": "a}b{c",
+    "safe": "a}}b{{c"
+  },
+  {
+    "value": "{{pc.cpu.temp}}",
+    "safe": "{{pc.cpu.temp}}"
+  },
+  {
+    "value": "100% {{ok}}",
+    "safe": "100% {{ok}}"
+  },
+  {
+    "value": "{{$label}}",
+    "safe": "{{$label}}"
+  },
+  {
+    "value": "{$label:d}",
+    "safe": "{{$label:d}}"
+  },
+  {
+    "value": "{$a",
+    "safe": "{{$a"
+  },
+  {
+    "value": "{$a\rb}",
+    "safe": "{{$a\rb}}"
+  },
+  {
+    "value": "{$}",
+    "safe": "{{$}}"
+  },
+  {
+    "value": "{{{$x}}}",
+    "safe": "{{{{$x}}}}"
+  },
+  {
+    "value": "{$x}{pc.cpu.temp}",
+    "safe": "{{$x}}{pc.cpu.temp}"
+  },
+  {
+    "value": "{\ufeff}",
+    "safe": "{\ufeff}",
+    "note": "data.rs trims keys with Rust's str::trim, which keeps U+FEFF: a placeholder"
+  },
+  {
+    "value": "{\u0085}",
+    "safe": "{{\u0085}}",
+    "note": "Rust's str::trim removes U+0085: a blank key, so literal braces"
+  }
+]

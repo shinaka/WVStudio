@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "name": "Shapes",
+  "description": "",
+  "w": 20,
+  "h": 12,
+  "background": null,
+  "fonts": {},
+  "inputs": [],
+  "layers": [
+    {
+      "id": "l",
+      "name": "l",
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "objects": [
+        {
+          "id": "s1",
+          "type": "shape",
+          "shape": "rect",
+          "x": 1,
+          "y": 1,
+          "w": 8,
+          "h": 6,
+          "crisp": true,
+          "fill": {
+            "type": "solid",
+            "color": "#e0c020"
+          }
+        },
+        {
+          "id": "s2",
+          "type": "shape",
+          "shape": "rect",
+          "x": 10,
+          "y": 1,
+          "w": 9,
+          "h": 7,
+          "crisp": true,
+          "fill": {
+            "type": "solid",
+            "color": "#20c0e0"
+          },
+          "radius": 3,
+          "stroke": {
+            "color": "#ffffff",
+            "width": 1
+          }
+        },
+        {
+          "id": "s3",
+          "type": "shape",
+          "shape": "ellipse",
+          "x": 2,
+          "y": 7,
+          "w": 7,
+          "h": 4,
+          "crisp": true,
+          "fill": {
+            "type": "solid",
+            "color": "#c040c0"
+          }
+        }
+      ]
+    }
+  ]
+}

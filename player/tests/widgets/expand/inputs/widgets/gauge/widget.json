@@ -1,0 +1,180 @@
+{
+  "version": 1,
+  "name": "Gauge",
+  "description": "",
+  "w": 100,
+  "h": 40,
+  "background": "{$tone}",
+  "fonts": {},
+  "inputs": [
+    {
+      "id": "label",
+      "name": "Label",
+      "type": "text",
+      "default": "CPU"
+    },
+    {
+      "id": "value",
+      "name": "Value",
+      "type": "text",
+      "default": "{pc.cpu.temp:d}°C"
+    },
+    {
+      "id": "sensor",
+      "name": "Sensor",
+      "type": "text",
+      "default": "cpu"
+    },
+    {
+      "id": "note",
+      "name": "Note",
+      "type": "text"
+    },
+    {
+      "id": "accent",
+      "name": "Accent",
+      "type": "color",
+      "default": "#ff7a1a"
+    },
+    {
+      "id": "tone",
+      "name": "Tone",
+      "type": "color",
+      "default": "#00FF00"
+    },
+    {
+      "id": "shade",
+      "name": "Shade",
+      "type": "color",
+      "default": "orange"
+    },
+    {
+      "id": "icon",
+      "name": "Icon",
+      "type": "image",
+      "default": "media/icon-33faa789.png"
+    },
+    {
+      "id": "photo",
+      "name": "Photo",
+      "type": "image",
+      "default": "media/photo-01f61b9c.png"
+    }
+  ],
+  "layers": [
+    {
+      "id": "l1",
+      "name": "l1",
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "objects": [
+        {
+          "id": "p",
+          "type": "shape",
+          "shape": "rect",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 40,
+          "fill": {
+            "type": "solid",
+            "color": "{$accent}"
+          },
+          "radius": 4,
+          "stroke": {
+            "color": "{$tone}",
+            "width": 2
+          }
+        },
+        {
+          "id": "q",
+          "type": "shape",
+          "shape": "rect",
+          "x": 0,
+          "y": 0,
+          "w": 10,
+          "h": 10,
+          "fill": {
+            "type": "solid",
+            "color": "aé123"
+          },
+          "stroke": {
+            "color": "{$label}",
+            "width": 1
+          }
+        },
+        {
+          "id": "t1",
+          "type": "text",
+          "text": "{$label}: {$value}",
+          "font": "bahnschrift.ttf",
+          "size": 12,
+          "color": "{$accent}",
+          "outline": {
+            "color": "blue",
+            "width": 1
+          },
+          "x": 4,
+          "y": 4
+        },
+        {
+          "id": "t2",
+          "type": "text",
+          "text": "{{$label}} {$nope} {$accent}",
+          "size": 10,
+          "color": "{$nope}",
+          "x": 4,
+          "y": 20
+        },
+        {
+          "id": "t3",
+          "type": "text",
+          "text": "{pc.{$sensor}.temp:d}",
+          "size": 10,
+          "color": "{$shade}",
+          "x": 50,
+          "y": 4
+        },
+        {
+          "id": "t4",
+          "type": "text",
+          "text": "{$note}{pc.cpu.temp}",
+          "size": 10,
+          "x": 50,
+          "y": 20
+        },
+        {
+          "id": "i1",
+          "type": "image",
+          "src": "{$icon}",
+          "x": 80,
+          "y": 0,
+          "w": 20,
+          "h": 20,
+          "keep_aspect": true,
+          "tint": "{$accent}"
+        },
+        {
+          "id": "i2",
+          "type": "image",
+          "src": "{$photo}",
+          "x": 80,
+          "y": 20,
+          "w": 20,
+          "h": 20,
+          "tint": "{$label}"
+        },
+        {
+          "id": "i3",
+          "type": "image",
+          "src": "{$label}",
+          "x": 0,
+          "y": 20,
+          "w": 10,
+          "h": 10
+        }
+      ]
+    }
+  ]
+}

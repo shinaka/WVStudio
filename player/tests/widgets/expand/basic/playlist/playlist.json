@@ -1,0 +1,79 @@
+{
+  "version": 2,
+  "seconds": 30,
+  "global": {
+    "layers": []
+  },
+  "scenes": [
+    {
+      "id": "s1",
+      "name": "s1",
+      "seconds": 30,
+      "background": "#000000",
+      "layers": [
+        {
+          "id": "l1",
+          "name": "l1",
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "objects": [
+            {
+              "id": "c",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 0.5,
+              "x": 10,
+              "y": 20,
+              "w": 15,
+              "h": 15,
+              "scale": 1.5,
+              "inputs": {},
+              "widget": "badge"
+            },
+            {
+              "id": "d",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": -3,
+              "y": 0,
+              "w": 15,
+              "h": 15,
+              "scale": 1.5,
+              "widget": "badge"
+            },
+            {
+              "id": "e",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 2.5,
+              "y": 60,
+              "w": 2,
+              "h": 2,
+              "scale": 1,
+              "widget": "dot"
+            },
+            {
+              "id": "f",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 0,
+              "y": 40,
+              "w": 10,
+              "h": 10,
+              "scale": 5,
+              "widget": "dot"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "name": "Ping",
+  "description": "",
+  "w": 10,
+  "h": 10,
+  "background": null,
+  "fonts": {},
+  "inputs": [],
+  "layers": [
+    {
+      "id": "l",
+      "name": "l",
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "objects": [
+        {
+          "id": "r",
+          "type": "shape",
+          "shape": "rect",
+          "x": 0,
+          "y": 0,
+          "w": 4,
+          "h": 4,
+          "fill": {
+            "type": "solid",
+            "color": "#00ff00"
+          }
+        },
+        {
+          "id": "to",
+          "type": "widget",
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "x": 5,
+          "y": 5,
+          "w": 5,
+          "h": 5,
+          "scale": 1,
+          "widget": "pong"
+        }
+      ]
+    }
+  ]
+}

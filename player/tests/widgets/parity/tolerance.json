@@ -1,0 +1,9 @@
+{
+  "note": "Pixels inside these rects may differ by at most 2 per channel; everywhere else they must be equal. Rects are [left, top, right, bottom], right and bottom exclusive. global applies to every scene.",
+  "scenes": [
+    {"index": 0, "id": "media", "rects": [[308, 10, 316, 18], [332, 10, 344, 22], [354, 10, 358, 14]]},
+    {"index": 1, "id": "groups", "rects": [[10, 10, 34, 34], [40, 10, 58, 28], [82, 12, 106, 36], [104, 14, 128, 38],
+                                           [140, 13, 176, 37], [0, 714, 7, 720], [1594, 0, 1600, 6]]}
+  ],
+  "global": [[1438, 600, 1446, 608], [1460, 600, 1484, 624], [1402, 642, 1426, 666], [1424, 644, 1448, 668]]
+}

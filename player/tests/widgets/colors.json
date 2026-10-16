@@ -1,0 +1,128 @@
+[
+  {
+    "value": "#AbCdEf",
+    "color": "#abcdef"
+  },
+  {
+    "value": "#fff",
+    "color": "#ffffff"
+  },
+  {
+    "value": " #fff ",
+    "color": "#ffffff"
+  },
+  {
+    "value": "fff",
+    "color": null
+  },
+  {
+    "value": "red",
+    "color": null
+  },
+  {
+    "value": "#ff",
+    "color": null
+  },
+  {
+    "value": "#ff00001",
+    "color": null
+  },
+  {
+    "value": "aé123",
+    "color": null
+  },
+  {
+    "value": "éa",
+    "color": null
+  },
+  {
+    "value": "#éa",
+    "color": null
+  },
+  {
+    "value": "\ufeff#fff",
+    "color": null,
+    "note": "only U+0020 is trimmed"
+  },
+  {
+    "value": "",
+    "color": null
+  },
+  {
+    "value": "#ABC",
+    "color": "#aabbcc"
+  },
+  {
+    "value": "#000000",
+    "color": "#000000"
+  },
+  {
+    "value": "#FFFFFF",
+    "color": "#ffffff"
+  },
+  {
+    "value": "  #12aB9f  ",
+    "color": "#12ab9f"
+  },
+  {
+    "value": "\t#fff",
+    "color": null
+  },
+  {
+    "value": "#fff\n",
+    "color": null
+  },
+  {
+    "value": "#fff\ufeff",
+    "color": null
+  },
+  {
+    "value": "\u00a0#fff",
+    "color": null
+  },
+  {
+    "value": "#ggg",
+    "color": null
+  },
+  {
+    "value": "# fff",
+    "color": null
+  },
+  {
+    "value": "#12345",
+    "color": null
+  },
+  {
+    "value": "#1234",
+    "color": null
+  },
+  {
+    "value": "#",
+    "color": null
+  },
+  {
+    "value": " ",
+    "color": null
+  },
+  {
+    "value": "{$accent}",
+    "color": null
+  },
+  {
+    "value": "#１２３",
+    "color": null,
+    "note": "fullwidth digits aren't hex digits"
+  },
+  {
+    "value": "#aé1",
+    "color": null
+  },
+  {
+    "value": "#aé123",
+    "color": null
+  },
+  {
+    "value": "#é12345",
+    "color": null
+  }
+]
