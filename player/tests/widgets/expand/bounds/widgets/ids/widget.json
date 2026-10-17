@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "name": "Ids",
+  "description": "",
+  "w": 20,
+  "h": 20,
+  "background": null,
+  "fonts": {},
+  "inputs": [],
+  "layers": [
+    {
+      "id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx😀yyy",
+      "name": "l1",
+      "visible": true,
+      "locked": false,
+      "opacity": 0.5,
+      "objects": [
+        {
+          "id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+          "type": "shape",
+          "shape": "rect",
+          "x": 0,
+          "y": 0,
+          "w": 4,
+          "h": 4,
+          "fill": {
+            "type": "solid",
+            "color": "#ff0000"
+          }
+        },
+        {
+          "id": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",
+          "type": "widget",
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "x": 0,
+          "y": 5,
+          "w": 100,
+          "h": 20,
+          "scale": 1,
+          "inputs": {
+            "v": "n"
+          },
+          "widget": "label"
+        }
+      ]
+    }
+  ]
+}

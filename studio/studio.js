@@ -326,11 +326,12 @@ function widgetView(id, preview = id === holderWidgetId() ? view.preview : null)
   const key = `${docEpoch}|${libEpoch}|${W}x${H}|${JSON.stringify([...scope.text, ...scope.color, ...scope.image])}`;
   const hit = widgetViews.get(id);
   if (hit?.key === key) return hit.out;
-  const copy = { id, type: "widget", widget: id, visible: true, opacity: 1, x: 0, y: 0, scale: 1,
-                 inputs: Object.fromEntries(def.inputs.map((i) => [i.id, `{$${i.id}}`])) };  // the preview's values
+  // the copy takes the preview's values as they are, so it draws exactly what the copy they're from (or a copy left at
+  // the defaults) draws
+  const copy = { id, type: "widget", widget: id, visible: true, opacity: 1, x: 0, y: 0, scale: 1 };
   const holderLib = content === lib.get(id) ? lib : new Map([...lib, [id, content]]);
   const out = WV.expandLayers([{ id: "editor", visible: true, opacity: 1, objects: [copy] }],
-                              { lib: holderLib, folder: "", canvas: [W, H], scope, markDepth: 1 });
+                              { lib: holderLib, folder: "", canvas: [W, H], preview: { copy, scope }, markDepth: 1 });
   if (widgetViews.size > 200) widgetViews.clear();
   widgetViews.set(id, { key, out });
   return out;
@@ -396,7 +397,6 @@ function cutOffInputs(key = sel.scene, copyId = null) {
   const copy = copyId === null ? null : findCopy(key, copyId);
   const wid = copy ? copy.widget : holderWidgetId(key), def = wid && lib.has(wid) ? WV.readDef(wid, lib.get(wid)) : null;
   if (!def || def.problem) return out;
-  const at = copy ? (isWidgetHolder(key) ? 2 : 1) : 1;  // where the widget's own object sits in a leaf's id path
   const texts = new Set(def.inputs.filter((i) => i.type === "text").map((i) => i.id));
   for (const e of view) {
     for (const l of e.leaves) {
@@ -411,7 +411,7 @@ function cutOffInputs(key = sel.scene, copyId = null) {
           || line.baseline - m.actualBoundingBoxAscent < l.clip[1] || line.baseline + m.actualBoundingBoxDescent > l.clip[3];
       });
       if (!past) continue;
-      const o = find(l.id.split("/")[at], def)?.obj;  // the widget's text, or the copy inside it that made the leaf
+      const o = find(copy ? l.part : l.top, def)?.obj;  // the widget's text, or the copy inside it that made the leaf
       for (const v of o?.type === "text" ? [o.text] : Object.values(o?.inputs || {})) {
         if (typeof v === "string") WV.replaceRefs(v, (b) => { if (texts.has(b)) out.add(b); return null; });
       }
