@@ -16,7 +16,8 @@ const WV = {
 window.WV = WV;
 
 (() => {
-  const MAX_DEPTH = 8, BUDGET = 4000, MAX_INPUTS = 32, MAX_PLACED = [6400, 2880], MAX_TEXT = 2000;
+  const MAX_DEPTH = 8, BUDGET = 4000, MAX_INPUTS = 32, MAX_PLACED = [6400, 2880];
+  const MAX_TEXT = 2000, MAX_LEAF_TEXT = 4000, MAX_ID = 64;  // code points: a value, a copy's text, an id in a path
   const ID_RE = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
   const INPUT_ID_RE = /^[a-z][a-z0-9_]{0,31}$/;
   const PART_RE = /^[A-Za-z0-9_](?:[A-Za-z0-9_.-]{0,98}[A-Za-z0-9_-])?$/;
@@ -34,7 +35,14 @@ window.WV = WV;
   const num = (v, fallback) => (typeof v === "number" && Number.isFinite(v) ? v : fallback);
   const unit = (v) => Math.min(1, Math.max(0, num(v, 1)));  // an opacity, as the player reads it
   const idOf = (o) => (typeof o.id === "string" ? o.id : "");  // as the player reads an id: one that isn't text is ""
-  const cut = (s) => (s.length > MAX_TEXT ? [...s].slice(0, MAX_TEXT).join("") : s);  // code points: never half an emoji
+  /** The first `n` code points of `s` ([...s].slice(0, n), without making the array): never half an emoji. */
+  function cut(s, n = MAX_TEXT) {
+    if (s.length <= n) return s;
+    let i = 0;
+    for (let k = 0; k < n && i < s.length; k++) i += s.codePointAt(i) > 0xffff ? 2 : 1;
+    return s.slice(0, i);
+  }
+  const cutId = (s) => cut(s, MAX_ID);  // a copy's, layer's or object's id, as it goes into leaf and group ids
 
   const idOk = (id) => typeof id === "string" && ID_RE.test(id) && !RESERVED.has(id);
   const stem = (name) => name.split(".")[0].toLowerCase();
@@ -113,11 +121,12 @@ window.WV = WV;
     : () => undefined);
 
   /** The text pass's tokens: {{ and }} copied as they are, and each reference `{$body}` (ended by `}`, before any
-   *  other brace or line break) replaced by `each(body)` when that's a string, else kept. */
-  function references(text, each) {
+   *  other brace or line break) replaced by `each(body)` when that's a string, else kept. With `limit`, it stops once
+   *  it has made more than `limit` UTF-16 units: the start of what it made is then final. */
+  function references(text, each, limit = Infinity) {
     const s = String(text ?? "");
     let out = "", i = 0;
-    while (i < s.length) {
+    while (i < s.length && out.length <= limit) {
       if (s.startsWith("{{", i) || s.startsWith("}}", i)) {
         out += s.slice(i, i + 2);
         i += 2;
@@ -140,14 +149,19 @@ window.WV = WV;
   }
 
   /** The text pass: each `{$id}` of a text input (`input(id)` gives its value, undefined for anything else)
-   *  replaced by that value made safe; any other reference escaped to `{{$id}}`, so it shows as written. */
-  function substitute(text, input) {
+   *  replaced by that value made safe; any other reference escaped to `{{$id}}`, so it shows as written. (`limit`
+   *  is substituteCut's, below.) */
+  function substitute(text, input, limit = Infinity) {
     const value = lookupOf(input);
     return references(text, (body) => {
       const v = value(body);
       return typeof v === "string" ? makeSafe(v) : `{{$${body}}}`;
-    });
+    }, limit);
   }
+  /** The text pass, its result cut to `n` code points (docs/widgets.md, Limits), as a copy's values and the text of
+   *  what it draws are. The pass stops early, once what it adds can't be in the cut: n code points take at most 2n
+   *  units, so the same n come out, without making a text that's far longer first. */
+  const substituteCut = (text, input, n) => cut(substitute(text, input, 2 * n), n);
 
   /** A value made safe to insert: the text pass with no inputs, then written out canonically (each placeholder as
    *  `{` + its body + `}`, every other brace doubled), so it can't join with the text around it. */
@@ -206,7 +220,8 @@ window.WV = WV;
     for (const input of def.inputs || []) {
       const v = Object.hasOwn(own, input.id) && typeof own[input.id] === "string" ? own[input.id] : null;
       if (input.type === "text") {
-        scope.text.set(input.id, v !== null ? substitute(cut(v), outer.text) : cut(input.default));
+        // a value is cut before its text pass, and again after it, so a value at any depth stays within 2000
+        scope.text.set(input.id, v !== null ? substituteCut(cut(v), outer.text, MAX_TEXT) : cut(input.default));
       } else if (input.type === "color") {
         const ref = v === null ? null : refOf(v);
         const c = v === null ? null : ref !== null ? outer.color.get(ref) ?? null : color(v);
@@ -241,6 +256,9 @@ window.WV = WV;
   const meet = (a, b) => [Math.max(a[0], b[0]), Math.max(a[1], b[1]), Math.min(a[2], b[2]), Math.min(a[3], b[3])];
   const FALLBACK = { fill: "#ffffff", stroke: "#ffffff", text: "#ffffff", outline: "#000000" };
   const plainObject = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+  // A scene's or Global's own layer's opacity as the player reads it, a 32-bit float: 0.99999999 is 1 there, and
+  // 1e-46 is 0. A widget's layers and copies are read as 64-bit numbers, in both.
+  const holderOpacity = (layer) => Math.fround(unit(layer?.opacity));
 
   class Expander {
     constructor(ctx) {
@@ -250,8 +268,9 @@ window.WV = WV;
       this.left = BUDGET;
       this.defs = new Map();
       this.markDepth = ctx.markDepth ?? 0;  // where the holder's own objects sit: 1 inside the editor's copy
+      this.preview = ctx.preview ?? null;   // {copy, scope}: a copy that draws with these values, as they are
       this.top = { folder: ctx.folder || "", scope: asScope(ctx.scope), s: 1, ox: 0, oy: 0, clip: null, groups: [],
-                   stack: [], depth: 0, path: "", wid: null, top: undefined };
+                   stack: [], depth: 0, path: "", wid: null, top: undefined, part: undefined };
     }
     /** One step of the budget, or false once it's spent (and from then on). */
     step() {
@@ -268,7 +287,7 @@ window.WV = WV;
       return layers.map((layer) => {
         const entry = { layer, leaves: [], marks: [] };
         if (!plainObject(layer) || layer.visible === false) return entry;
-        const reached = unit(layer.opacity) > 0;  // a copy in a layer at 0 isn't reached: it costs nothing
+        const reached = holderOpacity(layer) > 0;  // a copy in a layer at 0 isn't reached: it costs nothing
         for (const o of Array.isArray(layer.objects) ? layer.objects : []) {
           if (!plainObject(o)) continue;
           if (o.type === "widget") { if (reached) this.copy(o, this.top, entry.leaves, entry.marks); }
@@ -302,23 +321,25 @@ window.WV = WV;
       const box = [L, T, L + Math.max(1, rnd(S * def.w)), T + Math.max(1, rnd(S * def.h))];
       const clip = frame.clip ? meet(box, frame.clip) : box;
       if (clip[2] <= clip[0] || clip[3] <= clip[1]) return;
-      const scope = scopeOf(def, o.inputs, frame.scope, frame.folder);
-      const id = idOf(o), path = frame.path + id + "/";
+      const scope = o === this.preview?.copy ? asScope(this.preview.scope) : scopeOf(def, o.inputs, frame.scope, frame.folder);
+      const id = cutId(idOf(o)), path = frame.path + id + "/";
       const groups = opacity < 1 ? [...frame.groups, { id: frame.path + id, opacity, rect: meet(clip, this.panel) }] : frame.groups;
-      const top = frame.top ?? (frame.depth === this.markDepth ? o.id ?? "" : undefined);  // the page's own object, as it is
+      // the page's own objects, as they are: the holder's (`top`), and the one inside its widget (`part`)
+      const top = frame.top ?? (frame.depth === this.markDepth ? o.id ?? "" : undefined);
+      const part = frame.part ?? (frame.depth === this.markDepth + 1 ? o.id ?? "" : undefined);
       const ref = refOf(def.background), bg = ref !== null ? scope.color.get(ref) ?? null : color(def.background);
       if (bg) {
         if (!this.step()) return;
         out.push(this.made({ id: path + "background", type: "shape", visible: true, opacity: 1, x: box[0], y: box[1],
                              w: box[2] - box[0], h: box[3] - box[1], rotate: 0, flip: false, shape: "rect", radius: 0,
-                             fill: { type: "solid", color: bg }, stroke: null, crisp: true, clip, groups, top }));
+                             fill: { type: "solid", color: bg }, stroke: null, crisp: true, clip, groups, top, part }));
       }
       for (let li = 0; li < def.layers.length; li++) {
         const layer = def.layers[li];
         if (!plainObject(layer) || layer.visible === false || unit(layer.opacity) <= 0) continue;
-        const lop = unit(layer.opacity), lid = typeof layer.id === "string" && layer.id ? layer.id : `l${li}`;
+        const lop = unit(layer.opacity), lid = cutId(typeof layer.id === "string" && layer.id ? layer.id : `l${li}`);
         const child = { folder: def.folder, scope, s: S, ox: L, oy: T, clip, stack: [...frame.stack, wid],
-                        depth: frame.depth + 1, path, wid, top,
+                        depth: frame.depth + 1, path, wid, top, part,
                         groups: lop < 1 ? [...groups, { id: path + lid, opacity: lop, rect: meet(clip, this.panel) }] : groups };
         for (const x of Array.isArray(layer.objects) ? layer.objects : []) {
           if (!plainObject(x)) continue;  // not an object at all: nothing, no step
@@ -344,7 +365,7 @@ window.WV = WV;
     leaf(o, f) {
       const type = o.type;
       if (type !== "image" && type !== "video" && type !== "text" && type !== "shape") return null;
-      const S = f.s, oid = idOf(o);
+      const S = f.s, oid = cutId(idOf(o));
       const x = num(o.x, 0), y = num(o.y, 0), w = num(o.w, 0), h = num(o.h, 0);
       // a bindable colour: `{$id}` of a colour input takes its value; then anything that isn't a colour falls back
       const paint = (v, fallback) => (refOf(v) !== null ? f.scope.color.get(refOf(v)) : color(v)) ?? fallback;
@@ -354,7 +375,8 @@ window.WV = WV;
       };
       const leaf = { id: f.path + oid, type, visible: true, opacity: unit(o.opacity), x: 0, y: 0, w: 0, h: 0,
                      rotate: [0, 90, 180, 270].includes(o.rotate) ? o.rotate : 0, flip: o.flip === true,
-                     clip: f.clip, groups: f.groups, top: f.top ?? o.id ?? "" };
+                     clip: f.clip, groups: f.groups, top: f.top ?? o.id ?? "",
+                     part: f.part ?? (f.depth === this.markDepth + 1 ? o.id ?? "" : undefined) };
       if (type === "image" || type === "video") {
         if (typeof o.src !== "string") return null;
         const raw = spaces(o.src), ref = refOf(raw), src = ref !== null ? f.scope.image.get(ref) ?? "" : pathOk(raw) ? f.folder + raw : "";
@@ -366,7 +388,8 @@ window.WV = WV;
         if (typeof o.pixel === "number") leaf.pixel = o.pixel;
         if (leaf.w > MAX_PLACED[0] || leaf.h > MAX_PLACED[1]) return null;
       } else if (type === "text") {
-        const text = substitute(typeof o.text === "string" ? o.text : "", f.scope.text);
+        // filled in, then cut (a copy's text, unlike a scene's own), and only then read for placeholders
+        const text = substituteCut(typeof o.text === "string" ? o.text : "", f.scope.text, MAX_LEAF_TEXT);
         // read leniently, as the player reads it: an outline whose width isn't a number is no outline at all
         const outline = plainObject(o.outline) && !("width" in o.outline && typeof o.outline.width !== "number") ? o.outline : {};
         Object.assign(leaf, { x: f.ox + rnd(S * x), y: f.oy + rnd(S * y), text, live: isLive(text),
@@ -406,11 +429,13 @@ window.WV = WV;
 
   /** A holder's layers with their copies expanded: [{layer, leaves, marks}], one per layer. `ctx` is {lib (id ->
    *  widget content), folder ("" for the playlist, "widgets/<id>/" for a widget), canvas [w, h], scope (what `{$id}`
-   *  means at the top: the widget editor's preview values, or null)}. A hidden layer has no leaves; the holder's
-   *  own objects come out as they are; each leaf a copy made is a fresh object in canvas pixels, with `src` a media
-   *  ref, `font` a font ref ("<widget>|<file>", or "" for Segoe UI), `clip`, `groups`, `live`, its id path, and
-   *  `top` (the holder's object it came from). `marks` lists the holder's copies that drew nothing, and why:
-   *  missing, newer, cycle, deep or budget. */
+   *  means at the top, or null), preview ({copy, scope}: one of the copies, drawn with `scope` as its values as they
+   *  are: the widget editor's), markDepth (where the holder's own objects sit: 1 inside the editor's copy)}. A hidden
+   *  layer has no leaves; the holder's own objects come out as they are; each leaf a copy made is a fresh object in
+   *  canvas pixels, with `src` a media ref, `font` a font ref ("<widget>|<file>", or "" for Segoe UI), `clip`,
+   *  `groups`, `live`, its id path, `top` (the id of the holder's object it came from) and `part` (that of the object
+   *  inside top's widget it came from). `marks` lists the holder's copies that drew nothing, and why: missing, newer,
+   *  cycle, deep or budget. */
   function expandLayers(layers, ctx = {}) {
     return new Expander(ctx || {}).holder(Array.isArray(layers) ? layers : []);
   }
@@ -427,13 +452,13 @@ window.WV = WV;
     layers.forEach((e, li) => e.leaves.forEach((l, i) => {
       if (!liveLeaf(l)) return;
       live.push(l);
-      fold.set(l, (l.groups || []).reduce((k, g) => k * g.opacity, unit(e.layer?.opacity)));
+      fold.set(l, (l.groups || []).reduce((k, g) => k * g.opacity, holderOpacity(e.layer)));
       p ||= { li, i, l };
     }));
     if (!p) return { onTop: false, cut: null, live, fold };
     const leaves = layers[p.li].leaves;
     let from = p.i, to = p.i + 1;  // S is leaves[from..to) of P's layer
-    if (unit(layers[p.li].layer?.opacity) < 1) [from, to] = [0, leaves.length];
+    if (holderOpacity(layers[p.li].layer) < 1) [from, to] = [0, leaves.length];
     else if (p.l.groups?.length) {
       const g = p.l.groups[0].id, inside = (l) => l.groups?.[0]?.id === g;
       while (from > 0 && inside(leaves[from - 1])) from--;
