@@ -74,10 +74,11 @@ def find_ffmpeg():
     """ffmpeg under another name: something on this PC (TRCC, it seems) kills any ffmpeg.exe it sees."""
     # winget installs aren't on PATH until a new shell is opened
     winget = Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WinGet"
+    alias = ROOT / ".cache" / "wv-ffmpeg.exe"
     for exe in [shutil.which("ffmpeg"), winget / "Links" / "ffmpeg.exe",
                 *winget.glob("Packages/*FFmpeg*/*/bin/ffmpeg.exe")]:
         if exe and Path(exe).exists():
-            real, alias = Path(exe).resolve(), ROOT / ".cache" / "wv-ffmpeg.exe"
+            real = Path(exe).resolve()
             if not (alias.exists() and alias.samefile(real)):
                 alias.parent.mkdir(exist_ok=True)
                 alias.unlink(missing_ok=True)
@@ -86,7 +87,8 @@ def find_ffmpeg():
                 except OSError:  # different drive
                     shutil.copy2(real, alias)
             return str(alias)
-    return None
+    # no ffmpeg installed, but the renamed copy is still here (kept from before Windows was reinstalled, say)
+    return str(alias) if alias.is_file() else None
 
 
 # --- Canvases ----------------------------------------------------------------
