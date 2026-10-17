@@ -133,6 +133,10 @@
           "text": "{pc.{$sensor}.temp:d}",
           "size": 10,
           "color": "{$shade}",
+          "outline": {
+            "color": "{$shade}",
+            "width": 1
+          },
           "x": 50,
           "y": 4
         },
