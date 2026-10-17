@@ -455,6 +455,25 @@
     e.stopPropagation();
     edit(() => setFillColour(find(p.id).obj, last, e.target.value), e.target.id);
   }, true);
+  // Switching a fill between Solid and Gradient, or turning a stroke on, keeps a bound colour as it keeps a plain one:
+  // the editor's own handlers take the colour through hex() or a hidden control, which turn {$id} white.
+  $("pShape").addEventListener("change", (e) => {
+    const id = e.target.id, p = primary();
+    if (!widgetsOn || !isWidgetHolder() || !p) return;
+    if (id === "shFillType") {
+      const ref = fillColour(p, false), t = e.target.value;
+      if (WV.refOf(ref) === null || (t !== "solid" && t !== "linear")) return;
+      e.stopPropagation();
+      edit(() => {
+        find(p.id).obj.fill = t === "solid" ? { type: "solid", color: ref }
+          : { type: "linear", angle: 0, stops: [{ at: 0, color: ref }, { at: 1, color: "#000000" }] };
+      }, id);
+    } else if (id === "shStrokeOn" && e.target.checked && WV.refOf(p.stroke?.color) !== null) {
+      e.stopPropagation();
+      const ref = p.stroke.color, width = Math.max(1, number($("shStrokeWidth"), (v) => v > 0) || 2);  // as the editor's
+      edit(() => { find(p.id).obj.stroke = { color: ref, width }; }, id);
+    }
+  }, true);
 
   // --- A copy in #pObject: its size sets its scale, and with no name of its own it goes by its widget's ------------
 
