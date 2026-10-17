@@ -2796,6 +2796,7 @@ function renderThumbs() {
     g.clearRect(0, 0, t.canvas.width, t.canvas.height);
     g.drawImage(thumbCv, 0, 0, t.canvas.width, t.canvas.height);
   }
+  if (widgetsOn) renderWidgetCards();  // the widgets' cards, drawn at their own sizes (library.js)
 }
 
 const sdnd = { id: null };
@@ -2854,6 +2855,7 @@ function showStrip() {
     cards.push(c);
   });
   $("scenes").replaceChildren(...cards, $("addScene"));  // the + sits after the last card
+  if (widgetsOn) showWidgetCards();  // the Scenes | Widgets tabs, and the widgets' cards (library.js)
   showTitle();
   document.body.classList.toggle("loaded", !!holder() && layersOf().some((l) => (l.objects || []).length));
   thumbsSoon();

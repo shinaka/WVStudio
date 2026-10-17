@@ -224,6 +224,70 @@
   #tFontOffer { margin-top: 4px; }
 
   /* widgets: library */
+  #stripTabs { flex: none; display: flex; flex-direction: column; gap: 4px; padding: 8px 0 8px 8px; }
+  #stripTabs[hidden], #widgetCards[hidden], #scenes[hidden] { display: none; }
+  #stripTabs button { flex: 1; padding: 0 9px; border-radius: 6px; font-size: 12px; }
+  #stripTabs button[aria-pressed="true"] { background: #3a2c0a; border-color: var(--accent); color: var(--accent); }
+  #widgetCards { display: flex; gap: 8px; padding: 8px 10px; overflow-x: auto; overflow-y: hidden; flex: 1; min-width: 0; align-items: flex-start; }
+  #wcFilter { flex: none; width: 120px; align-self: center; }
+  #wcList { display: contents; }
+  .wcard { flex: none; width: 164px; background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 3px;
+           cursor: pointer; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 4px; align-items: center; position: relative; }
+  .wcard:hover { border-color: #4a5058; }
+  .wcard.current { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .wcard canvas { grid-column: 1 / -1; width: 156px; height: 70px; border-radius: 4px; display: block;
+                  background: repeating-conic-gradient(#8a8f96 0% 25%, #5b6068 0% 50%) 0 0 / 10px 10px; }
+  .wcard .wc-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; padding-left: 3px; }
+  .wcard .wc-meta { display: flex; gap: 2px; align-items: center; color: var(--muted); font-size: 11px; }
+  .wcard .wc-meta button { padding: 0 3px; font-size: 11px; line-height: 18px; }
+  .wcard .wc-tag { position: absolute; left: 7px; top: 7px; font-size: 10px; padding: 0 5px; border-radius: 8px;
+                   background: rgba(13, 14, 16, .8); color: var(--muted); pointer-events: none; }
+  .wcard.problem { background: #1b1d20; cursor: default; color: var(--muted); }
+  .wcard.problem.openable { cursor: pointer; }
+  .wcard .wc-why { grid-column: 1 / -1; height: 70px; overflow: hidden; font-size: 11px; line-height: 1.3; padding: 4px 5px;
+                   border: 1px dashed #3a3f46; border-radius: 4px; overflow-wrap: anywhere; }
+  .wc-actions { flex: none; display: flex; flex-direction: column; gap: 3px; align-self: stretch; justify-content: center; }
+  .wc-actions button { padding: 1px 9px; font-size: 12px; }
+  .wc-pop { position: fixed; z-index: 40; background: var(--raised); border: 1px solid #4a5058; border-radius: 8px; padding: 4px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, .5); max-height: 50vh; overflow-y: auto; min-width: 180px; max-width: min(380px, 94vw); }
+  .wc-pop[hidden] { display: none; }
+  .wc-pop .wc-del { display: flex; gap: 8px; align-items: center; padding: 3px 6px; }
+  .wc-pop .wc-del span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .wc-pop button[role=menuitem] { display: block; width: 100%; text-align: left; border: 0; background: none; padding: 3px 10px; }
+  .wc-pop button[role=menuitem]:hover:not(:disabled) { background: #3a2c0a; }
+  #pWidget code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
+  #pWidget .row > .label { width: 86px; }
+  #wdDescription { flex: 1; width: auto; }
+  .wd-head { display: flex; align-items: center; gap: 4px; margin: 12px 0 4px; }
+  .wd-head h2 { flex: 1; margin: 0; }
+  .wd-head button { padding: 1px 7px; font-size: 12px; }
+  .wd-input { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto auto; gap: 3px 5px; align-items: center;
+              padding: 4px 0; border-top: 1px solid var(--line); }
+  .wd-input .wd-type { color: var(--muted); text-align: center; }
+  .wd-input .wd-iname { padding: 2px 5px; }
+  .wd-input .wd-chip { font: 11px ui-monospace, monospace; padding: 1px 5px; color: var(--info); }
+  .wd-input .wd-more { padding: 1px 7px; }
+  .wd-input .wd-default { grid-column: 2 / -1; min-width: 0; }
+  #wdNewRow input { flex: 1; width: auto; }
+  #wdUsedIn { display: inline-flex; flex-wrap: wrap; gap: 0 4px; align-items: center; min-width: 0; flex: 1; }
+  #wdUsedIn button.link { padding: 0; }
+  #wdPreview { flex: 1; min-width: 0; }
+  #widgetDlg, #deleteDlg, #conflictDlg { width: min(480px, 94vw); height: fit-content; max-height: 92vh; }
+  #exportDlg, #importDlg { width: min(680px, 96vw); height: fit-content; max-height: 92vh; }
+  #widgetDlg[open], #deleteDlg[open], #conflictDlg[open], #exportDlg[open], #importDlg[open] { display: flex; flex-direction: column; }
+  .dlg-body { padding: 10px 14px; overflow-y: auto; min-height: 0; flex: 1; }
+  .dlg-body p { margin: 4px 0 8px; overflow-wrap: anywhere; }
+  .dlg-body .row > .label { width: 84px; }
+  #wgFolderRow code, #exportDlg code { overflow-wrap: anywhere; }
+  .wi-item { display: grid; grid-template-columns: 128px minmax(0, 1fr); gap: 4px 12px; padding: 10px 0; border-top: 1px solid var(--line); }
+  .wi-item:first-child { border-top: 0; }
+  .wi-pic { width: 128px; height: 72px; border-radius: 4px; object-fit: contain; display: block;
+            background: repeating-conic-gradient(#8a8f96 0% 25%, #5b6068 0% 50%) 0 0 / 12px 12px; }
+  .wi-item h3 { margin: 0; font-size: 14px; overflow-wrap: anywhere; }
+  .wi-item .small { overflow-wrap: anywhere; }
+  .wi-item ul, .wx-fonts { margin: 4px 0; padding-left: 18px; }
+  .wi-item label { margin-right: 12px; }
+  .wx-fonts { list-style: none; padding-left: 0; }
 
   /* widgets: copies */
 
@@ -299,6 +363,35 @@
     </section>
     <section id="pWidget" hidden>
       <h2>Widget</h2>
+      <div class="row"><span class="label">Name</span><input id="wdName" type="text" spellcheck="false" style="width: auto; flex: 1"></div>
+      <div class="row"><span class="label">Folder</span><code id="wdFolder"></code></div>
+      <div class="row"><span class="label"></span><button id="wdReveal" title="Open the widget's folder">Show folder</button>
+        <button id="wdChange" title="Give the widget another folder name, and point every copy on this PC at it">Change…</button></div>
+      <div class="row"><span class="label">Size</span>
+        <label>W <input id="wdW" type="number" min="1" max="1600" step="1"></label>
+        <label>H <input id="wdH" type="number" min="1" max="720" step="1"></label>
+        <button id="wdFit" title="Make the widget the size of what's in it">Fit to content</button></div>
+      <div class="row"><span class="label">Background</span>
+        <label><input id="wdBgNone" type="radio" name="wdBg"> None</label>
+        <label title="A colour behind everything in the widget"><input id="wdBgOn" type="radio" name="wdBg"> <input id="wdBgColor" type="color"></label>
+        <span id="wdBgBind"></span></div>
+      <div class="row"><span class="label">Description</span><input id="wdDescription" type="text" spellcheck="false"
+        title="Shown on the widget's card, and to people you share it with"></div>
+      <div class="row"><span class="label">Backdrop</span><span class="seg" id="wdBackdrop">
+        <button data-value="checks">Checks</button><button data-value="black">Black</button><button data-value="white">White</button></span>
+        <span class="small muted">only in the editor</span></div>
+      <div class="wd-head"><h2>Inputs</h2>
+        <button id="wdAddText" title="A text each copy can change">+ Text</button>
+        <button id="wdAddColor" title="A colour each copy can change">+ Colour</button>
+        <button id="wdAddImage" title="A picture each copy can change">+ Image</button></div>
+      <div class="row" id="wdNewRow" hidden><span class="label" id="wdNewLabel">Name</span>
+        <input id="wdNewName" type="text" spellcheck="false" placeholder="Name, then Enter"></div>
+      <div id="wdInputs"></div>
+      <div id="wdNoInputs" class="small muted">No inputs: every copy shows the same. Add one for each thing a copy should change.</div>
+      <div class="row"><span class="label">Preview with</span><select id="wdPreview" title="The values the editor draws the widget with"></select></div>
+      <div id="wdCutNote" class="small warn" hidden></div>
+      <div class="row"><span class="label">Used in</span><span id="wdUsedIn"></span></div>
+      <div class="row"><button id="wdDuplicate">Duplicate…</button><button id="wdExport">Export…</button><button id="wdDelete">Delete…</button></div>
     </section>
     <section id="pLayer" hidden>
       <h2>Layer</h2>
@@ -413,10 +506,23 @@
 </div>
 
 <div id="strip">
-  <div id="stripTabs" hidden></div>
+  <div id="stripTabs" hidden>
+    <button data-tab="scenes" title="The playlist's scenes">Scenes</button>
+    <button data-tab="widgets" title="Your widgets: drag one onto the canvas to place a copy">Widgets</button>
+  </div>
   <div id="scenes"></div>
   <button id="addScene" title="Add a scene">+</button>
-  <div id="widgetCards" hidden></div>
+  <div id="widgetCards" hidden>
+    <input id="wcFilter" type="search" spellcheck="false" placeholder="Filter widgets" hidden>
+    <div id="wcList"></div>
+    <div class="wc-actions">
+      <button id="wcNew" title="Make a new, empty widget">+ New</button>
+      <button id="wcFromSel" title="Make a widget from the selected objects, and put a copy of it in their place (Ctrl+G)">From selection</button>
+      <button id="wcImport" title="Add the widgets in a .zip someone shared (or drop the .zip on the page)">Import…</button>
+      <button id="wcDeleted" hidden>Recently deleted</button>
+    </div>
+    <input id="wcFile" type="file" accept=".zip" hidden>
+  </div>
   <div id="playerBox">
     <div class="row">
       <button id="playerStart" class="primary">Play on cooler</button>
@@ -445,11 +551,61 @@
     <span id="srcMsg"></span>
   </div>
 </dialog>
-<dialog id="widgetDlg"></dialog>
-<dialog id="deleteDlg"></dialog>
-<dialog id="exportDlg"></dialog>
-<dialog id="importDlg"></dialog>
-<dialog id="conflictDlg"></dialog>
+<dialog id="widgetDlg" aria-labelledby="wgTitle">
+  <div class="dlg-head"><h2 id="wgTitle">New widget</h2></div>
+  <div class="dlg-body">
+    <div class="row"><span class="label">Name</span><input id="wgName" type="text" spellcheck="false" style="width: auto; flex: 1"></div>
+    <div class="row" id="wgFolderRow"><span class="label"></span><span class="small muted">Its folder: <code id="wgFolder"></code></span></div>
+    <div id="wgSize">
+      <div class="row"><span class="label">Size</span><select id="wgPreset" title="A size to start from">
+          <option value="360x120">Label 360 × 120</option><option value="600x100">Wide 600 × 100</option>
+          <option value="240x240">Square 240 × 240</option><option value="360x360">Gauge 360 × 360</option>
+          <option value="1600x720">Whole screen 1600 × 720</option><option value="">W × H</option></select></div>
+      <div class="row"><span class="label"></span>
+        <label>W <input id="wgW" type="number" min="1" max="1600" step="1"></label>
+        <label>H <input id="wgH" type="number" min="1" max="720" step="1"></label></div>
+      <div class="row"><span class="label">Background</span>
+        <label><input id="wgBgNone" type="radio" name="wgBg" checked> Transparent</label>
+        <label><input id="wgBgOn" type="radio" name="wgBg"> <input id="wgBgColor" type="color" value="#000000"></label></div>
+    </div>
+    <div class="row" id="wgReplaceRow"><label><input id="wgReplace" type="checkbox" checked> Replace the selection with a copy</label></div>
+    <div id="wgNote" class="small muted"></div>
+  </div>
+  <div class="dlg-foot"><span id="wgMsg" class="small warn"></span><span class="spacer"></span>
+    <button id="wgCancel">Cancel</button><button id="wgCreate" class="primary">Create</button></div>
+</dialog>
+<dialog id="deleteDlg" aria-labelledby="dlTitle">
+  <div class="dlg-head"><h2 id="dlTitle">Delete widget</h2></div>
+  <div class="dlg-body"><p id="dlText"></p>
+    <p class="small muted">Its folder moves to Recently deleted, in the Widgets tab. Ctrl+Z brings it back.</p></div>
+  <div class="dlg-foot"><span class="spacer"></span>
+    <button id="dlCancel">Cancel</button><button id="dlKeep" title="The copies stay, shown as missing until the widget comes back">Keep the copies</button>
+    <button id="dlAll" class="primary">Delete widget and copies</button></div>
+</dialog>
+<dialog id="exportDlg" aria-labelledby="wxTitle">
+  <div class="dlg-head"><h2 id="wxTitle">Export</h2></div>
+  <div class="dlg-body">
+    <p id="wxText"></p>
+    <div id="wxFontsBox"><p class="small">Fonts to include, so it looks the same on another PC (only if each font's licence lets you share it):</p>
+      <ul id="wxFonts" class="wx-fonts"></ul></div>
+    <ul id="wxNotes" class="small warn"></ul>
+  </div>
+  <div class="dlg-foot"><span id="wxMsg" class="small"></span><span class="spacer"></span>
+    <button id="wxCancel">Close</button><button id="wxGo" class="primary">Export</button></div>
+</dialog>
+<dialog id="importDlg" aria-labelledby="wiTitle">
+  <div class="dlg-head"><h2 id="wiTitle">Import widgets</h2></div>
+  <div class="dlg-body"><div id="wiList"></div><ul id="wiNotes" class="small muted"></ul></div>
+  <div class="dlg-foot"><span id="wiMsg" class="small warn"></span><span class="spacer"></span>
+    <button id="wiCancel">Cancel</button><button id="wiGo" class="primary">Import</button></div>
+</dialog>
+<dialog id="conflictDlg" aria-labelledby="wcfTitle">
+  <div class="dlg-head"><h2 id="wcfTitle">Changed in two places</h2></div>
+  <div class="dlg-body"><p id="wcfText"></p></div>
+  <div class="dlg-foot"><span class="spacer"></span>
+    <button id="wcfFile" title="Take in what's on disk now: your changes here are dropped">Use the file's version</button>
+    <button id="wcfMine" class="primary" title="Save this page's version over the file">Keep mine</button></div>
+</dialog>
 <div id="acPop" class="ac" role="listbox" hidden></div>
 
 <script src="/widgets.js"></script>
