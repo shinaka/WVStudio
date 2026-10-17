@@ -190,7 +190,12 @@
       g.clearRect(0, 0, cv.width, cv.height);
       if (!def) continue;
       if (thumbFull.width !== def.w || thumbFull.height !== def.h) [thumbFull.width, thumbFull.height] = [def.w, def.h];
-      withCanvasSize(def.w, def.h, () => renderWidget(thumbFull.getContext("2d"), id, 0, null));
+      try {
+        withCanvasSize(def.w, def.h, () => renderWidget(thumbFull.getContext("2d"), id, 0, null));
+      } catch (err) {  // a picture that can't be drawn: the widget can still be placed
+        console.error(err);
+        continue;
+      }
       const k = Math.min(cv.width / def.w, cv.height / def.h), w = def.w * k, h = def.h * k;
       g.imageSmoothingEnabled = true;
       g.imageSmoothingQuality = "high";
@@ -344,7 +349,7 @@
         WV.replaceRefs(typeof v === "string" ? v : "", () => { refers = true; return null; });
         items.push({ label: "New input from this text…", disabled: refers,
                      title: refers ? "This text already uses an input" : "A text input whose default is this text, put in its place",
-                     act: () => newInput("text", String(opts.name?.() || primary()?.name || "Text").slice(0, 60), typeof v === "string" ? v : "", set) });
+                     act: () => newInput("text", [...String(opts.name?.() || primary()?.name || "Text")].slice(0, 60).join(""), typeof v === "string" ? v : "", set) });
       } else if (kind === "color") {
         for (const i of def.inputs.filter((i) => i.type === "color")) items.push({ label: i.name, title: `{$${i.id}}`, pressed: ref === i.id, act: () => bindTo(i) });
         items.push({ label: "New colour input from this colour", title: "A colour input whose default is this colour, bound here",
