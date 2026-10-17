@@ -331,6 +331,44 @@ function copyScale(o, def) {
   if (typeof s !== "number" || !(s > 0)) s = typeof o.w === "number" && o.w > 0 ? o.w / def.w : 1;
   return Math.min(16, Math.max(0.01, s));
 }
+/** Brings the stored w and h of a holder's copies up to date with their scale and their widgets' containers. Older
+ *  tools and a missing widget's box use them; renderers don't. */
+function refreshCopySizes(h) {
+  for (const l of layersOf(h)) {
+    for (const o of l.objects || []) {
+      if (o?.type !== "widget" || !WV.idOk(o.widget) || !lib.has(o.widget)) continue;
+      const def = WV.readDef(o.widget, lib.get(o.widget));
+      if (def.problem) continue;
+      const s = copyScale(o, def), w = WV.rnd(s * def.w), hh = WV.rnd(s * def.h);
+      if (o.w !== w || o.h !== hh) [o.w, o.h] = [w, hh];
+    }
+  }
+}
+
+/** The text inputs whose text runs past the widget's edge as drawn now (docs/widgets.md, A copy's properties: "cut
+ *  off by the widget's edge"): for the copy `copyId` in holder `key`, or with no copy, for the open widget itself
+ *  (its defaults, or what it previews). The container always clips, so a long value loses its end. */
+function cutOffInputs(key = sel.scene, copyId = null) {
+  const out = new Set(), view = isWidgetHolder(key) ? widgetView(holderWidgetId(key)) : expanded(key === "global" ? doc.global : sceneById(key));
+  const copy = copyId === null ? null : findCopy(key, copyId);
+  const wid = copy ? copy.widget : holderWidgetId(key), def = wid && lib.has(wid) ? WV.readDef(wid, lib.get(wid)) : null;
+  if (!def || def.problem) return out;
+  const at = copy ? (isWidgetHolder(key) ? 2 : 1) : 1;  // where the widget's own object sits in a leaf's id path
+  const texts = new Set(def.inputs.filter((i) => i.type === "text").map((i) => i.id));
+  for (const e of view) {
+    for (const l of e.leaves) {
+      if (l.type !== "text" || !l.clip || (copy && l.top !== copy.id)) continue;
+      const box = textLayout(l)?.box;
+      if (!box || (box.x >= l.clip[0] && box.y >= l.clip[1] && box.x + box.w <= l.clip[2] && box.y + box.h <= l.clip[3])) continue;
+      const o = find(l.id.split("/")[at], def)?.obj;  // the widget's text, or the copy inside it that made the leaf
+      for (const v of o?.type === "text" ? [o.text] : Object.values(o?.inputs || {})) {
+        if (typeof v === "string") WV.replaceRefs(v, (b) => { if (texts.has(b)) out.add(b); return null; });
+      }
+    }
+  }
+  return out;
+}
+
 /** A copy's box in its holder (docs/widgets.md, Geometry), or its stored box when its widget can't be drawn. */
 function copyBox(o) {
   const def = WV.idOk(o.widget) && lib.has(o.widget) ? WV.readDef(o.widget, lib.get(o.widget)) : null;
@@ -1146,6 +1184,8 @@ function edit(fn, key = "") {
     changed({ save: false });
     return false;
   }
+  // an edit of a widget brings the stored sizes of the copies in it up to date (only then: see tidyDocument)
+  if (isWidgetHolder() && snapshot() !== before) refreshCopySizes(holder());
   const after = snapshot();
   if (after === before) return false;
   pushUndo(before, key);
@@ -3416,17 +3456,7 @@ function tidyDocument() {
   for (const s of doc.scenes) {
     if (typeof s.id === "string" && s.id.startsWith("widget:")) { s.id = uid("s", ids); ids.add(s.id); }
   }
-  for (const h of [doc.global, ...doc.scenes]) {
-    for (const l of layersOf(h)) {
-      for (const o of l.objects || []) {
-        if (o?.type !== "widget" || !WV.idOk(o.widget) || !lib.has(o.widget)) continue;
-        const def = WV.readDef(o.widget, lib.get(o.widget));
-        if (def.problem) continue;
-        const s = copyScale(o, def), [w, h] = [WV.rnd(s * def.w), WV.rnd(s * def.h)];
-        if (o.w !== w || o.h !== h) [o.w, o.h] = [w, h];
-      }
-    }
-  }
+  for (const h of [doc.global, ...doc.scenes]) refreshCopySizes(h);
 }
 const hasCopies = () => [doc.global, ...doc.scenes].some((h) => layersOf(h).some((l) => (l.objects || []).some((o) => o?.type === "widget")));
 // The player's version (docs/widgets.md, Compatibility): said once a session, and again when it changes.
