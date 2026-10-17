@@ -299,11 +299,15 @@ def too_deep(value):
     return False
 
 
-def write_atomic(path, data):
-    """Writes JSON all at once (indent 2, UTF-8 without a byte-order mark, Windows line ends as ever), so the player
-    never reads half a file."""
+def json_bytes(data):
+    """JSON as the studio writes it: indent 2, UTF-8 without a byte-order mark, Windows line ends as ever."""
     text = json.dumps(data, indent=2, ensure_ascii=False, allow_nan=False)
-    write_file(path, text.replace("\n", os.linesep).encode("utf-8"))  # a newline inside a string is written \n
+    return text.replace("\n", os.linesep).encode("utf-8")  # a newline inside a string is written \n
+
+
+def write_atomic(path, data):
+    """Writes JSON (json_bytes) all at once, so the player never reads half a file."""
+    write_file(path, json_bytes(data))
 
 
 def file_stamp(path):
@@ -361,12 +365,14 @@ def strings_in(value):
 
 def named_files(doc, folders):
     """{folder: {normcased file names}}: the files directly in each of `folders` (relative names like "sources" or
-    "media") that a document names anywhere, as `<folder>/<file>`, compared as Windows compares names."""
+    "media") that a document names anywhere, as `<folder>/<file>`, compared as Windows compares names: the folder
+    too, so Media/<file> names the file that Windows opens for it."""
     named = {f: set() for f in folders}
+    by_case = {os.path.normcase(f): f for f in folders}
     for s in strings_in(doc):
         parts = s.strip(" ").split("/")
-        if len(parts) == 2 and parts[0] in named and parts[1]:
-            named[parts[0]].add(os.path.normcase(parts[1]))
+        if len(parts) == 2 and parts[1] and (folder := by_case.get(os.path.normcase(parts[0]))):
+            named[folder].add(os.path.normcase(parts[1]))
     return named
 
 
@@ -594,13 +600,20 @@ def media_info(src):
 IMAGE_FORMATS = {".png": "PNG", ".apng": "PNG", ".gif": "GIF", ".webp": "WEBP", ".jpg": "JPEG", ".jpeg": "JPEG",
                  ".bmp": "BMP"}
 UPLOAD_TYPES = VIDEO_TYPES | set(IMAGE_FORMATS) | {".aseprite", ".ase"}  # what a scene takes
+# What a file coming into a widget (an upload, a copy, an import) or an input picture may be. A scene's own uploads
+# keep the studio's old rules: the file must open, nothing more.
 MAX_SIDE = 8192  # pixels, across or down: more than a 1600 x 720 panel ever needs
 MAX_DECODED = 1 << 30  # bytes of RGBA, all frames together
+# What the player itself opens (media.rs): a file already in a widget's folder, put there by hand, is drawn on the
+# cooler up to these, so the studio opens it too.
+PLAYER_SIDE = 16384
+PLAYER_DECODED = 2 << 30
 
 
 def upload(body, name, to=None):
     """A dropped or picked file: kept in sources/ by content hash (or, `to` "inputs", in inputs/: a picture for a
-    copy's image input), opened, and described for the page."""
+    copy's image input), opened, and described for the page. A scene takes what it always took; an input picture
+    is drawn inside a widget, so it follows a widget's rules (input_picture)."""
     if not body:
         raise ValueError("the file is empty")
     if to not in (None, "sources", "inputs"):
@@ -608,19 +621,15 @@ def upload(body, name, to=None):
     suffix = Path(name).suffix.lower()
     if suffix not in UPLOAD_TYPES:
         raise ValueError(f"{suffix or 'that'} isn't a kind of file the studio can open")
-    if to == "inputs":  # it's drawn inside a widget, so it follows a widget's rules
-        if suffix == ".avi":
-            raise ValueError(AVI_REFUSED)
-        if suffix in ASEPRITE_TYPES:
-            body, suffix = to_png(body), ".png"
-    check_media_bytes(body, suffix)
+    if to == "inputs":
+        body, suffix = input_picture(body, suffix)
     folder = to or "sources"
     path = PLAYLIST_DIR / folder / f"{hashlib.sha1(body).hexdigest()[:12]}{suffix}"
     fresh = not path.is_file()
     kept, src_name = keep_file(body, suffix, folder)
     try:
         return open_media(kept, src_name, name)
-    except Exception:
+    except BaseException:  # SystemExit too: wv.aseprite exits when Aseprite is missing
         if fresh:  # just written and unreadable: not worth keeping
             kept.unlink(missing_ok=True)
         raise
@@ -646,7 +655,7 @@ def open_media(path, ref, name=None):
             sources.move_to_end(key)
             return {**media_info(src), "src": ref}
     if not ref.startswith("sources/"):  # widget media and input pictures may come from anywhere: headers first
-        check_media_file(path)
+        check_media_file(path, PLAYER_SIDE, PLAYER_DECODED)
     src = Source(path, name or path.name, ref)
     with sources_lock:
         sources[key] = src
@@ -875,7 +884,7 @@ REF = re.compile(r"\{\$[a-z][a-z0-9_]{0,31}\}")  # a whole value that names one 
 INPUT_TYPES = ("text", "color", "image")
 MAX_INPUTS = 32
 MAX_OBJECTS = 2000
-MAX_WIDGET_JSON = 1 << 20
+MAX_WIDGET_JSON = 1 << 20  # bytes of widget.json as it's written: the listing and the player skip a bigger one
 TRASH_NAME = re.compile(r"(?P<id>.+)-(?P<when>\d{8}-\d{6})(?:-(?P<n>\d+))?")  # in .deleted: <id>-<yyyymmdd-hhmmss>[-n]
 DEFAULT_LAYER = {"id": "l1", "name": "Layer 1", "visible": True, "locked": False, "opacity": 1, "objects": []}
 EXAMPLES_READ_ONLY = "The examples are read-only: duplicate it to edit."
@@ -1063,13 +1072,18 @@ def newer(w):
 
 def read_widget(folder):
     """A widget folder's widget.json, as it is: (content, stamp, problem). The stamp is taken just before reading,
-    so a change that lands during the read shows up as one next time."""
+    so a change that lands during the read shows up as one next time. One over 1 MB is a problem: the player skips
+    it too, so the page never draws it."""
     path = folder / "widget.json"
     try:
         stamp = file_stamp(path)
         if not inside(path, folder):
             return None, None, "Its widget.json is a link, or not a file."
-        text = path.read_bytes().decode("utf-8")
+        with open(path, "rb") as f:
+            data = f.read(MAX_WIDGET_JSON + 1)  # never more than that
+        if len(data) > MAX_WIDGET_JSON:
+            return None, None, "Its widget.json is too big: more than 1 MB."
+        text = data.decode("utf-8")
     except FileNotFoundError:
         return None, None, "There's no widget.json in it."
     except UnicodeDecodeError:
@@ -1489,19 +1503,17 @@ def check_part(o, wid, types_of):
 def check_widget(w, wid=None, folder=None, types_of=None):
     """A widget as the page (or a zip) gives it, checked and normalised before it's written (docs/widgets.md,
     widget.json). A refused save loses an edit, so it refuses (ValueError) only what's unsafe or would be lost: a
-    newer version, more than 2000 objects or 1 MB, a path outside the folder, a font that isn't a file name, a copy
-    of itself. Everything else is normalised, so both renderers read the same thing: sizes, inputs, names, colours.
-    `wid` is its id; `folder` is where its fonts are looked up to keep `fonts` up to date (None: left as it is);
-    `types_of(id)` gives the input types of a widget it places, or None (default: the widgets here). Returns the
-    widget to write; unknown keys are kept."""
+    newer version, more than 2000 objects or 1 MB as it's written, a path outside the folder, a font that isn't a
+    file name, a copy of itself. Everything else is normalised, so both renderers read the same thing: sizes,
+    inputs, names, colours. `wid` is its id; `folder` is where its fonts are looked up to keep `fonts` up to date
+    (None: left as it is); `types_of(id)` gives the input types of a widget it places, or None (default: the widgets
+    here). Returns the widget to write; unknown keys are kept."""
     if not isinstance(w, dict):
         raise ValueError("A widget must be an object.")
     if newer(w):
         raise ValueError(f"This widget was made by a newer studio (version {w['version']}).")
     if too_deep(w):
         raise ValueError(f"This widget {TOO_DEEP}.")
-    if len(json.dumps(w, ensure_ascii=False).encode("utf-8")) > MAX_WIDGET_JSON:
-        raise ValueError("This widget is more than 1 MB as JSON.")
     w = copy.deepcopy(w)
     w["version"] = 1
     name = w.get("name").strip()[:80] if isinstance(w.get("name"), str) else ""
@@ -1531,7 +1543,19 @@ def check_widget(w, wid=None, folder=None, types_of=None):
         w["fonts"] = fonts_entry(w, folder)
     elif not isinstance(w.get("fonts"), dict):
         w["fonts"] = {}
+    check_size(w)
     return w
+
+
+def check_size(w):
+    """Refuses (ValueError) a widget whose widget.json, written as the studio writes it, would be more than 1 MB:
+    the listing and the player skip a file that big."""
+    try:
+        size = len(json_bytes(w))
+    except ValueError:  # NaN or Infinity, which JSON hasn't got
+        raise ValueError("This widget holds a number that isn't one (NaN or Infinity).") from None
+    if size > MAX_WIDGET_JSON:
+        raise ValueError("This widget would be more than 1 MB as saved.")
 
 
 # --- Saving, and the library's own moves
@@ -1689,6 +1713,7 @@ def duplicate_widget(req):
         if target is not None and target.casefold() in taken_ids():
             raise Refused(409, f"widgets\\{target} is taken, by a widget or one in Recently deleted: choose another name.")
         w["name"] = name or shown_name(w, wid)
+        check_size(w)  # it's written again, as the studio writes it
         new = target if target is not None else fresh_id(w["name"])
         staging = staging_folder("new")
         try:
@@ -1716,26 +1741,27 @@ def media_name(stem, data, suffix):
     return f"{s[:40].strip('-') or 'media'}-{digest}{suffix.lower()}"
 
 
-def check_image(f, suffix):
-    """Refuses (ValueError) an image that isn't the format its suffix names, or would decode too big. Only that
-    format's reader runs, and only on the headers."""
+def check_image(f, suffix, side=MAX_SIDE, decoded=MAX_DECODED):
+    """Refuses (ValueError) an image that isn't the format its suffix names, or is more than `side` pixels across
+    or down, or would take more than `decoded` bytes to show. Only that format's reader runs, and only on the
+    headers."""
     fmt = IMAGE_FORMATS[suffix]
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             with Image.open(f, formats=[fmt]) as im:
                 w, h = im.size
-                if w > MAX_SIDE or h > MAX_SIDE:
-                    raise ValueError(f"it's {w} × {h}: a picture can be at most {MAX_SIDE} pixels across and down")
+                if w > side or h > side:
+                    raise ValueError(f"it's {w} × {h}: a picture can be at most {side} pixels across and down")
                 frames = getattr(im, "n_frames", 1)
     except ValueError:
         raise
-    except Image.DecompressionBombError:
-        raise ValueError(f"it's too big: a picture can be at most {MAX_SIDE} pixels across and down") from None
+    except Image.DecompressionBombError:  # Pillow opens at most about 179 million pixels
+        raise ValueError("it has more pixels than the studio can open") from None
     except Exception:
         raise ValueError(f"it isn't a {suffix[1:].upper()} file, whatever its name says") from None
-    if frames * w * h * 4 > MAX_DECODED:
-        raise ValueError(f"its {frames} frames of {w} × {h} would take more than 1 GB to show")
+    if frames * w * h * 4 > decoded:
+        raise ValueError(f"its {frames} frames of {w} × {h} would take more than {decoded >> 30} GB to show")
 
 
 def check_video(path):
@@ -1781,13 +1807,13 @@ def check_media_bytes(data, suffix):
         raise ValueError(f"{suffix or 'a file without an extension'} isn't a kind of media the studio takes")
 
 
-def check_media_file(path):
-    """check_media_bytes for an image already on disk, before it's decoded (a video is only ever read as its own
-    container anyway)."""
+def check_media_file(path, side, decoded):
+    """check_image for an image already on disk, before it's decoded, with the limits it's opened up to (a video
+    is only ever read as its own container anyway)."""
     suffix = path.suffix.lower()
     if suffix in IMAGE_FORMATS:
         with open(path, "rb") as f:
-            check_image(f, suffix)
+            check_image(f, suffix, side, decoded)
 
 
 def to_png(data):
@@ -1832,6 +1858,18 @@ def into_widget(path, label=None):
     else:
         check_media_bytes(data, suffix)
     return media_name(stem, data, suffix), data
+
+
+def input_picture(data, suffix):
+    """A file going into playlist/inputs/ as a picture for a copy's image input: it's drawn inside a widget, so a
+    widget's rules apply (an .avi is refused, an Aseprite file becomes a PNG, and it must be what its name says).
+    Returns (bytes, suffix) to keep."""
+    if suffix == ".avi":
+        raise ValueError(AVI_REFUSED)
+    if suffix in ASEPRITE_TYPES:
+        data, suffix = to_png(data), ".png"
+    check_media_bytes(data, suffix)
+    return data, suffix
 
 
 def put_media(folder, file, data):
@@ -1910,9 +1948,10 @@ def holder_file(wid, folder, ref):
     ref = ref.strip(" ")
     if wid is None:
         parts = ref.split("/")
-        if len(parts) != 2 or parts[0] not in ("sources", "inputs") or not PART.fullmatch(parts[1]):
+        kept = os.path.normcase(parts[0])  # in any letter case, as Windows opens it
+        if len(parts) != 2 or kept not in ("sources", "inputs") or not PART.fullmatch(parts[1]):
             return None
-        path, folder = PLAYLIST_DIR / parts[0] / parts[1], PLAYLIST_DIR / parts[0]
+        path, folder = PLAYLIST_DIR / kept / parts[1], PLAYLIST_DIR / kept
     elif widget_path_ok(ref) and os.path.splitext(ref)[1].lower() in MEDIA_TYPES:
         path = folder.joinpath(*ref.split("/"))  # only media: an Aseprite file put there by hand isn't run
     else:
@@ -1971,10 +2010,11 @@ def copy_media(req):
                 file, data = into_widget(path)
                 put_media(to_folder, file, data)
                 out["files"][ref] = f"media/{file}"
-            else:
-                data = path.read_bytes()
-                check_media_bytes(data, path.suffix)
-                out["files"][ref] = keep_file(data, path.suffix, "inputs" if req.get("as") == "input" else "sources")[1]
+            elif req.get("as") == "input":
+                data, suffix = input_picture(path.read_bytes(), path.suffix.lower())
+                out["files"][ref] = keep_file(data, suffix, "inputs")[1]
+            else:  # into a scene, which takes what it always took
+                out["files"][ref] = keep_file(path.read_bytes(), path.suffix, "sources")[1]
         except ValueError as e:
             out["missing"].append({"file": ref, "why": str(e)})
     for font in fonts:
@@ -2012,13 +2052,15 @@ def hold_media(req):
 
 
 def ref_file(ref):
-    """The file a page ref names (sources/<file>, inputs/<file> or widgets/<id>/media/<file>) if it's there, else None."""
+    """The file a page ref names (sources/<file>, inputs/<file> or widgets/<id>/media/<file>) if it's there, else
+    None. The folders' names in any letter case, as Windows opens them (the id is exact, as everywhere)."""
     if not isinstance(ref, str):
         return None
-    parts = ref.split("/")
-    if len(parts) == 2 and parts[0] in ("sources", "inputs") and PART.fullmatch(parts[1]):
-        folder = PLAYLIST_DIR / parts[0]
-    elif len(parts) == 4 and parts[0] == "widgets" and parts[2] == "media" and PART.fullmatch(parts[3]):
+    parts = ref.strip(" ").split("/")
+    low = [os.path.normcase(p) for p in parts]
+    if len(parts) == 2 and low[0] in ("sources", "inputs") and PART.fullmatch(parts[1]):
+        folder = PLAYLIST_DIR / low[0]
+    elif len(parts) == 4 and low[0] == "widgets" and low[2] == "media" and PART.fullmatch(parts[3]):
         try:
             folder = installed_folder(parts[1]) / "media"
         except (ValueError, Refused):
@@ -2571,20 +2613,27 @@ def import_widgets(body, mode, choices, zip_name):
                                 + ("both." if is_example(x["id"]) else "both or Replace.")})
             else:
                 plan.append((x, x["id"], False))
+        writes = []
+        for x, wid, _ in plan:
+            files = dict(x["files"])
+            w = x["widget"]
+            if any(o.get("type") == "widget" and o.get("widget") in renames for o in objects_of(w)):
+                w = copy.deepcopy(w)
+                for o in objects_of(w):
+                    if o.get("type") == "widget" and o.get("widget") in renames:
+                        o["widget"] = renames[o["widget"]]
+                try:
+                    check_size(w)  # it's written again, as the studio writes it
+                except ValueError as e:
+                    raise ValueError(f"{x['folder'] or x['id']}: {e} The import is refused.") from None
+                files["widget.json"] = json_bytes(w)
+            x["written"] = w
+            writes.append((wid, files))
         staging = staging_folder("import") if plan else None
         try:
-            for x, wid, _ in plan:
-                files = dict(x["files"])
-                w = x["widget"]
-                if any(o.get("type") == "widget" and o.get("widget") in renames for o in objects_of(w)):
-                    w = copy.deepcopy(w)
-                    for o in objects_of(w):
-                        if o.get("type") == "widget" and o.get("widget") in renames:
-                            o["widget"] = renames[o["widget"]]
-                    files["widget.json"] = json.dumps(w, indent=2, ensure_ascii=False).encode("utf-8")
+            for wid, files in writes:
                 for rel, data in files.items():
                     write_file(staging.joinpath(wid, *rel.split("/")), data)
-                x["written"] = w
             placed = place_imports(plan, staging, skipped)
         finally:
             if staging is not None:
