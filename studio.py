@@ -1840,6 +1840,8 @@ def media_get(rest):
             raise ValueError(f"{rel[:100]!r} isn't a path inside a widget's folder.")
     else:
         raise ValueError("That isn't a media file's name.")
+    if os.path.splitext(rel)[1].lower() not in MEDIA_TYPES:  # nothing else is opened: an Aseprite file would run Aseprite
+        raise ValueError(f"{rel[:100]!r} isn't a kind of media a widget holds.")
     path = folder.joinpath(*rel.split("/"))
     if not inside(path, folder):
         raise FileNotFoundError(f"{rest} isn't there")
@@ -1870,8 +1872,8 @@ def holder_file(wid, folder, ref):
         if len(parts) != 2 or parts[0] not in ("sources", "inputs") or not PART.fullmatch(parts[1]):
             return None
         path, folder = PLAYLIST_DIR / parts[0] / parts[1], PLAYLIST_DIR / parts[0]
-    elif widget_path_ok(ref):
-        path = folder.joinpath(*ref.split("/"))
+    elif widget_path_ok(ref) and os.path.splitext(ref)[1].lower() in MEDIA_TYPES:
+        path = folder.joinpath(*ref.split("/"))  # only media: an Aseprite file put there by hand isn't run
     else:
         return None
     return path if inside(path, folder) else None
@@ -2138,8 +2140,8 @@ def zip_files(folder, w, extra):
         if os.path.normcase(rel) not in found and inside(folder.joinpath(*rel.split("/")), folder):
             found[os.path.normcase(rel)] = rel
     for s in strings_in(w):
-        if widget_path_ok(s):
-            add(s.strip(" "))
+        if widget_path_ok(s) and os.path.splitext(s.strip(" "))[1].lower() in IMPORT_TYPES:
+            add(s.strip(" "))  # media only: an import takes nothing else from a widget's paths
     try:
         entries = sorted(e.name for e in os.scandir(folder))
         fonts = sorted(e.name for e in os.scandir(folder / "fonts")) if real_dir(folder / "fonts") else []
