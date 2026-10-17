@@ -382,8 +382,16 @@ function cutOffInputs(key = sel.scene, copyId = null) {
   for (const e of view) {
     for (const l of e.leaves) {
       if (l.type !== "text" || !l.clip || (copy && l.top !== copy.id)) continue;
-      const box = textLayout(l)?.box;
-      if (!box || (box.x >= l.clip[0] && box.y >= l.clip[1] && box.x + box.w <= l.clip[2] && box.y + box.h <= l.clip[3])) continue;
+      const lay = textLayout(l);
+      if (!lay) continue;
+      textCtx.font = lay.font;  // each line's ink, not its line box, against the clip
+      const past = lay.lines.some((line) => {
+        if (!line.text) return false;
+        const m = textCtx.measureText(line.text);
+        return line.x - m.actualBoundingBoxLeft < l.clip[0] || line.x + m.actualBoundingBoxRight > l.clip[2]
+          || line.baseline - m.actualBoundingBoxAscent < l.clip[1] || line.baseline + m.actualBoundingBoxDescent > l.clip[3];
+      });
+      if (!past) continue;
       const o = find(l.id.split("/")[at], def)?.obj;  // the widget's text, or the copy inside it that made the leaf
       for (const v of o?.type === "text" ? [o.text] : Object.values(o?.inputs || {})) {
         if (typeof v === "string") WV.replaceRefs(v, (b) => { if (texts.has(b)) out.add(b); return null; });
@@ -3452,12 +3460,12 @@ $("back").addEventListener("click", () => {  // back to where Edit widget came f
   select(top.ids.filter((id) => find(id)));
 });
 /** Duplicate to edit, for a read-only widget: library.js's window when it has one (its `duplicateWidget(id)`), else
- *  straight away, as "<name> copy", which then opens. */
+ *  straight away, as "Copy of <name>" (whose id can't start with example-), which then opens. */
 async function duplicateToEdit(id) {
   if (id === null) return;
   if (typeof duplicateWidget === "function") return duplicateWidget(id);
   try {
-    const out = await postJson("/api/widgets/duplicate", { id, name: `${widgetName(id)} copy` });
+    const out = await postJson("/api/widgets/duplicate", { id, name: `Copy of ${widgetName(id)}` });
     libAdd(out);
     openHolder(`widget:${out.id}`);
   } catch (err) {
