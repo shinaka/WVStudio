@@ -1645,6 +1645,7 @@ async function trashFolder(action) {
     return null;
   }
   libDrop(action.id);
+  afterSaves(() => refreshLibrary());  // the deleted list
   return action.trash;
 }
 /** Brings a deleted widget's folder back (undoing a delete). If its id is taken, says so and leaves its copies
