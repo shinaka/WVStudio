@@ -231,6 +231,23 @@ function turnedFrame(m, o, i) {
   return c;
 }
 
+/** Nearest neighbour exactly as docs/scenes.md has it: pixel u shows source pixel floor((2u + 1) * sw / (2 * w)), and
+ *  the same for rows. (The canvas's own nearest can pick the neighbour where that lands right on a pixel's edge, as
+ *  at 1.5x.) */
+function nearest(g, src, dw, dh) {
+  const sw = src.width, sh = src.height, s = src.getContext("2d").getImageData(0, 0, sw, sh).data;
+  const out = g.createImageData(dw, dh), d = out.data, xs = new Int32Array(dw);
+  for (let u = 0; u < dw; u++) xs[u] = Math.floor((2 * u + 1) * sw / (2 * dw)) * 4;
+  for (let v = 0, k = 0; v < dh; v++) {
+    const row = Math.floor((2 * v + 1) * sh / (2 * dh)) * sw * 4;
+    for (let u = 0; u < dw; u++, k += 4) {
+      const j = row + xs[u];
+      d[k] = s[j]; d[k + 1] = s[j + 1]; d[k + 2] = s[j + 2]; d[k + 3] = s[j + 3];
+    }
+  }
+  g.putImageData(out, 0, 0);
+}
+
 /** The frame scaled to the object's box: nearest neighbour unless smooth (the player's rule, pixel for pixel), once,
  *  from the file. With a tint, every pixel then takes the tint's colour and keeps its own alpha. */
 function scaledFrame(m, o, i) {
@@ -241,11 +258,14 @@ function scaledFrame(m, o, i) {
   if (c && !m.video) return c;
   if (!c) { if (m.scaled.size > 300) m.scaled.clear(); c = document.createElement("canvas"); m.scaled.set(key, c); }
   if (c.width !== dw || c.height !== dh) { c.width = dw; c.height = dh; }
-  const g = c.getContext("2d", tint ? { willReadFrequently: true } : undefined);
+  const g = c.getContext("2d", widgetsOn ? { willReadFrequently: true } : undefined);
   g.clearRect(0, 0, dw, dh);
-  g.imageSmoothingEnabled = !!o.smooth;
-  g.imageSmoothingQuality = "high";
-  g.drawImage(turnedFrame(m, o, i), 0, 0, dw, dh);
+  if (widgetsOn && !o.smooth && !m.video) nearest(g, turnedFrame(m, o, i), dw, dh);
+  else {
+    g.imageSmoothingEnabled = !!o.smooth;
+    g.imageSmoothingQuality = "high";
+    g.drawImage(turnedFrame(m, o, i), 0, 0, dw, dh);
+  }
   if (tint) {
     const img = g.getImageData(0, 0, dw, dh), d = img.data, [r, gr, b] = rgb(tint);
     for (let k = 0; k < d.length; k += 4) { d[k] = r; d[k + 1] = gr; d[k + 2] = b; }
@@ -2576,6 +2596,12 @@ function thumbsSoon() { clearTimeout(thumbTimer); thumbTimer = setTimeout(render
 function thumbKey(h) {
   const used = widgetsOn ? [...usedWidgets(h)].sort().map((id) => [id, lib.get(id) ?? null]) : [];
   return JSON.stringify([h, ...(used.length ? [used] : []), mediaVersion, fontsArrived, live.version, live.raw]);
+}
+/** What a widget's card shows depends on: its content, that of every widget it uses at any depth, the media and
+ *  fonts that have arrived, and the live values (drawn with its defaults: renderWidget(ctx, id, t, null)). */
+function widgetThumbKey(id) {
+  const used = [...usedWidgets(lib.get(id))].sort().map((w) => [w, lib.get(w) ?? null]);
+  return JSON.stringify([id, lib.get(id) ?? null, used, mediaVersion, fontsArrived, live.version, live.raw]);
 }
 /** The widgets a holder's copies use, at any depth (WV.closure, each widget walked once). */
 function usedWidgets(h) {
