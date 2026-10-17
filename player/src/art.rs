@@ -100,8 +100,7 @@ pub fn load(scene: &Scene, global: &[Layer], opts: &Options, save: bool) -> Resu
 /// Full-resolution colour keeps coloured pixel-art edges sharp; a scene with video doesn't need it. Only
 /// the scene's own layers count, a video inside one of its copies included: a video in the global layers
 /// alone leaves the scene's art at full colour.
-pub fn sampling(scene: &Scene, global: &[Layer]) -> SamplingFactor {
-    let _ = global;
+pub fn sampling(scene: &Scene) -> SamplingFactor {
     let video = scene.layers.iter().flat_map(|l| &l.objects).any(|o| matches!(&o.kind, Kind::Media(m) if crate::media::is_video(&m.src)));
     if video { SamplingFactor::R_4_2_0 } else { SamplingFactor::R_4_4_4 }
 }
@@ -110,12 +109,12 @@ pub fn sampling(scene: &Scene, global: &[Layer]) -> SamplingFactor {
 /// scene's prepared frames: baked once, then each frame is decoded, has it laid over (where it belongs on
 /// a turned frame) and is encoded again, on every core. A frame that won't decode or encode goes out as
 /// it was. With nothing to lay over, the frames are as they are.
-pub fn overlay(scene: &Scene, global: &[Layer], prepared: &Prepared, texts: &[Text], opts: &Options) -> Vec<Frame> {
+pub fn overlay(scene: &Scene, prepared: &Prepared, texts: &[Text], opts: &Options) -> Vec<Frame> {
     let baked = bake(&prepared.over, texts);
     if baked.is_empty() {
         return prepared.frames.clone();
     }
-    let sampling = sampling(scene, global); // as prepare chose it: the global layers don't count
+    let sampling = sampling(scene); // as prepare chose it
     let redraw = |frame: &Frame| {
         let jpeg = image::load_from_memory_with_format(&frame.jpeg, ImageFormat::Jpeg).ok().and_then(|im| {
             let mut rgb = im.into_rgb8();
@@ -241,6 +240,6 @@ mod tests {
         let prepared = Prepared { frames: vec![Frame { jpeg: vec![1, 2, 3], duration: Duration::from_millis(40) }], over: Vec::new() };
         let opts = Options { rotate180: true, quality: 90, ffmpeg: PathBuf::from("ffmpeg") };
         let scene = Scene { id: "s".into(), name: "s".into(), seconds: 1.0, background: "#000000".into(), layers: Vec::new() };
-        assert_eq!(overlay(&scene, &[], &prepared, &texts, &opts)[0].jpeg, [1, 2, 3]);
+        assert_eq!(overlay(&scene, &prepared, &texts, &opts)[0].jpeg, [1, 2, 3]);
     }
 }

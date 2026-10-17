@@ -423,7 +423,7 @@ fn filled(playlist: &Playlist, index: usize) -> Vec<Text> {
 /// The frames with `texts` drawn in their over list and laid over them; the same frames when that draws
 /// nothing.
 fn overlay(playlist: &Playlist, index: usize, prepared: &art::Prepared, texts: &[Text], opts: &art::Options) -> Arc<Vec<art::Frame>> {
-    Arc::new(art::overlay(&playlist.scenes[index], &playlist.global, prepared, texts, opts))
+    Arc::new(art::overlay(&playlist.scenes[index], prepared, texts, opts))
 }
 
 /// `overlay`, with when it started and the work it took: its time on each of the threads it ran on.

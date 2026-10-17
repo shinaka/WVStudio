@@ -957,7 +957,7 @@ pub fn prepare(scene: &Scene, global: &[Layer], opts: &Options) -> Result<Prepar
             i = end;
         }
     }
-    let sampling = art::sampling(scene, global);
+    let sampling = art::sampling(scene);
     let mut frames = Vec::with_capacity(times.len());
     let mut batch: Vec<Composite> = Vec::with_capacity(BATCH);
     for (t, duration) in times {
@@ -1622,16 +1622,16 @@ mod drawing_tests {
         let still = (1.0, vec![image("a.png", 0.0, 0.0, 10.0, 10.0)]);
         let video = (1.0, vec![json!({ "id": "v", "type": "video", "src": "v.mp4", "w": 10, "h": 10 })]);
         let p = s.playlist(&[&[still.clone()]], &[]);
-        assert_eq!(art::sampling(&p.scenes[0], &p.global), SamplingFactor::R_4_4_4);
+        assert_eq!(art::sampling(&p.scenes[0]), SamplingFactor::R_4_4_4);
         let mut p = s.playlist(&[&[still.clone()]], &[video.clone()]);
-        assert_eq!(art::sampling(&p.scenes[0], &p.global), SamplingFactor::R_4_4_4);
+        assert_eq!(art::sampling(&p.scenes[0]), SamplingFactor::R_4_4_4);
         leaves(&mut p.global[0].objects, [0, 0, 10, 10], &[("c", 0.5, [0, 0, 10, 10])]);
-        assert_eq!(art::sampling(&p.scenes[0], &p.global), SamplingFactor::R_4_4_4);
+        assert_eq!(art::sampling(&p.scenes[0]), SamplingFactor::R_4_4_4);
         let p = s.playlist(&[&[still.clone(), video.clone()]], &[]);
-        assert_eq!(art::sampling(&p.scenes[0], &p.global), SamplingFactor::R_4_2_0);
+        assert_eq!(art::sampling(&p.scenes[0]), SamplingFactor::R_4_2_0);
         let mut p = s.playlist(&[&[still, video]], &[]);
         leaves(&mut p.scenes[0].layers[1].objects, [0, 0, 10, 10], &[("c", 0.5, [0, 0, 10, 10]), ("c/l1", 0.8, [0, 0, 10, 10])]);
-        assert_eq!(art::sampling(&p.scenes[0], &p.global), SamplingFactor::R_4_2_0);
+        assert_eq!(art::sampling(&p.scenes[0]), SamplingFactor::R_4_2_0);
     }
 
     /// The shared vectors: the box a file of its own size takes inside its placed box.
