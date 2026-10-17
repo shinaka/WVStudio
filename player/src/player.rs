@@ -153,7 +153,7 @@ impl Player {
                                   changing: None, settle: SETTLE, playlist, current, cache, next: None,
                                   want_next: false, reload: None, edited: None, quiet: QUIET, unsaved: None,
                                   composing: None, slow: HashSet::new() };
-        player.fingerprint = playlist::fingerprint(target, &player.playlist);
+        player.fingerprint = as_read(target, &player.playlist);
         player.prepare_next();
         Ok(player)
     }
@@ -302,10 +302,14 @@ impl Player {
                         self.reload = Some((self.current.frames.clone(), reload));
                     }
                 }
+                self.fingerprint = as_read(&self.target, &self.playlist);
             }
-            Err(e) => log(format_args!("couldn't read {}, carrying on: {e}", self.target.display())),
+            Err(e) => {
+                log(format_args!("couldn't read {}, carrying on: {e}", self.target.display()));
+                // as the files are now, so a broken file isn't read again until it changes
+                self.fingerprint = playlist::fingerprint(&self.target, &self.playlist);
+            }
         }
-        self.fingerprint = playlist::fingerprint(&self.target, &self.playlist);
         changed
     }
 
@@ -387,6 +391,13 @@ impl Player {
             sleep(due.min(ends).min(next_check).saturating_duration_since(Instant::now()));
         }
     }
+}
+
+/// The playlist and its files as the read that made `playlist` saw them: the stamps it took as it read
+/// each (Playlist.watch), so a save that lands during the read counts as a change. A read that took none
+/// is stamped now.
+fn as_read(target: &Path, playlist: &Playlist) -> Fingerprint {
+    if playlist.watch.is_empty() { playlist::fingerprint(target, playlist) } else { playlist.watch.clone() }
 }
 
 fn key(playlist: &Playlist, index: usize, opts: &art::Options) -> u64 {
