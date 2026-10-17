@@ -850,7 +850,9 @@
     if (jobs.length) {
       const groups = new Map(), missing = [];
       for (const j of jobs) {
-        if (!j.place) { j.lost(); continue; }
+        const gone = j.place && j.place[0] !== "playlist" && !lib.has(j.place[0].slice(7));  // copied in another studio
+        if (gone) missing.push(`widgets\\${j.place[0].slice(7)} isn't here`);
+        if (!j.place || gone) { j.lost(); continue; }
         const k = `${j.place[0]}|${j.as || ""}`;
         if (!groups.has(k)) groups.set(k, { from: j.place[0], as: j.as, files: new Set(), fonts: new Set(), jobs: [] });
         const g = groups.get(k);
@@ -875,8 +877,9 @@
       }
       if (sel.scene !== key) return message("Nothing was pasted: another scene or widget was opened while its files were copied.", "warn");
       list = list.filter((o) => !o.lost);
-      message(missing.length ? `Pasted without what couldn't be copied: ${missing.slice(0, 3).join("; ")}${missing.length > 3 ? "…" : ""}` : "",
-              missing.length ? "warn" : "");
+      const notes = [...new Set(missing)];
+      message(notes.length ? `Pasted without what couldn't be copied: ${notes.slice(0, 3).join("; ")}${notes.length > 3 ? "…" : ""}` : "",
+              notes.length ? "warn" : "");
     }
     if (!list.length) return any ? message("Nothing was pasted: the pictures it showed were empty.", "warn") : undefined;
     edit(() => {
