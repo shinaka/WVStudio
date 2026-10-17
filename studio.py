@@ -3252,8 +3252,11 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             if url.path == "/api/upload":
-                name = Path(query.get("name", ["upload.png"])[0]).name
-                self.json(upload(body, name, query.get("to", [None])[0]))
+                name, to = Path(query.get("name", ["upload.png"])[0]).name, query.get("to", [None])[0]
+                if to == "inputs":  # an input picture is new: refused as the widget routes refuse (400, a sentence)
+                    self.answer(upload, body, name, to)
+                else:  # a scene's upload answers as it always has
+                    self.json(upload(body, name, to))
             elif url.path == "/api/export":
                 self.json(export_scene(json.loads(body)))
             elif url.path == "/api/reveal":
