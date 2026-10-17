@@ -894,9 +894,8 @@ mod tests {
     }
 
     /// An edit to a widget adds a live text to its copy while the old frames are still showing (13.3's
-    /// form of the test above). Needs work package P1's reading of widgets.
+    /// form of the test above).
     #[test]
-    #[ignore = "until P1 merges"]
     fn widget_edit_adds_live_text_while_showing() {
         if !Path::new(text::DEFAULT_FONT).exists() {
             return;
@@ -1069,10 +1068,8 @@ mod tests {
     }
 
     /// Editing a widget.json while playing reads the playlist again: the scene using the widget is
-    /// prepared again, and the other comes from the cache, its key unchanged. Needs work package P1's
-    /// reading of widgets.
+    /// prepared again, and the other comes from the cache, its key unchanged.
     #[test]
-    #[ignore = "until P1 merges"]
     fn widget_edit_reprepares_users() {
         let root = std::env::temp_dir().join(format!("wvplay-test-widget-edit-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
