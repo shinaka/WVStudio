@@ -1218,6 +1218,47 @@ mod expand_tests {
         assert!(started.elapsed() < Duration::from_secs(5), "read in {:?}", started.elapsed());
     }
 
+    /// However values and ids grow through nested copies, each value stays within 2000 characters, each
+    /// text inside a copy within 4000, and each part of an id within 64 (docs/widgets.md, Limits).
+    #[test]
+    fn expansion_is_bounded() {
+        let root = Root::new("bounded");
+        // each widget shows its value 500 times over and passes it down 500 times over, three deep: whole,
+        // the deepest text would be 2000 × 500³ characters
+        let refs = "{$t}".repeat(500);
+        let inputs = json!([{ "id": "t", "type": "text" }]);
+        for (id, inner) in [("n1", Some("n2")), ("n2", Some("n3")), ("n3", None)] {
+            let mut objects = vec![json!({ "id": "t", "type": "text", "text": refs })];
+            if let Some(inner) = inner {
+                objects.push(json!({ "id": "w", "type": "widget", "widget": inner, "inputs": { "t": refs } }));
+            }
+            root.write(&format!("widgets/{id}/widget.json"), &json!({ "inputs": inputs, "layers": [{ "objects": objects }] }).to_string());
+        }
+        let started = std::time::Instant::now();
+        let p = root.read(&json!({ "id": "c", "type": "widget", "widget": "n1", "inputs": { "t": "x".repeat(2000) } }).to_string());
+        assert_eq!(ids(&p), ["c/t", "c/w/t", "c/w/w/t"]);
+        for o in leaves(&p) {
+            assert_eq!((text(o).text.as_str(), text(o).id.as_str()), ("x".repeat(4000).as_str(), o.id.as_str()));
+        }
+        assert!(started.elapsed() < Duration::from_secs(2), "read in {:?}", started.elapsed());
+
+        // ids of 100,000 characters, nested, each cut to 64 before it builds a path or a group
+        let huge = |c: char| c.to_string().repeat(100_000);
+        let unit = json!({ "type": "shape", "w": 1, "h": 1 });
+        let mut inner = unit.clone();
+        inner["id"] = json!(huge('p'));
+        root.write("widgets/i2/widget.json", &json!({ "layers": [{ "id": huge('M'), "objects": [inner] }] }).to_string());
+        let mut part = unit.clone();
+        part["id"] = json!(huge('o'));
+        let copy = json!({ "id": huge('w'), "type": "widget", "widget": "i2", "opacity": 0.5 });
+        root.write("widgets/i1/widget.json", &json!({ "layers": [{ "id": huge('L'), "opacity": 0.5, "objects": [part, copy] }] }).to_string());
+        let p = root.read(&json!({ "id": huge('c'), "type": "widget", "widget": "i1", "opacity": 0.5 }).to_string());
+        let n = |c: char| c.to_string().repeat(64);
+        assert_eq!(ids(&p), [format!("{}/{}", n('c'), n('o')), format!("{}/{}/{}", n('c'), n('w'), n('p'))]);
+        let groups: Vec<&str> = leaves(&p)[1].groups.iter().map(|g| g.id.as_str()).collect();
+        assert_eq!(groups, [n('c'), format!("{}/{}", n('c'), n('L')), format!("{}/{}", n('c'), n('w'))]);
+    }
+
     /// The leaf form of player/tests/widgets/README.md.
     fn leaf_form(o: &Object, case: &Path) -> Value {
         let rel = |p: &Path| match p.strip_prefix(case) {

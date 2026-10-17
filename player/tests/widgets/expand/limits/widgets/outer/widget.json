@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "name": "Outer",
+  "description": "",
+  "w": 100,
+  "h": 20,
+  "background": null,
+  "fonts": {},
+  "inputs": [
+    {
+      "id": "t",
+      "name": "Text",
+      "type": "text",
+      "default": ""
+    }
+  ],
+  "layers": [
+    {
+      "id": "l",
+      "name": "l",
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "objects": [
+        {
+          "id": "e",
+          "type": "widget",
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 20,
+          "scale": 1,
+          "widget": "echo",
+          "inputs": {
+            "v": "{$t}{$t}"
+          }
+        }
+      ]
+    }
+  ]
+}
