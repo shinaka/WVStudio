@@ -2185,9 +2185,9 @@ mod over_tests {
     }
 
     /// The expected leaves of a fixture case, in the layers of its playlist that hold them (a leaf belongs
-    /// where its top-level object, the first part of its id, is), as a scene's or the global layers would
-    /// be read. Only what placement looks at is filled in: ids, opacities, clips, groups, live text and
-    /// media files.
+    /// where its top-level object, the first part of its id, is; a copy's id there is cut to 64
+    /// characters), as a scene's or the global layers would be read. Only what placement looks at is
+    /// filled in: ids, opacities, clips, groups, live text and media files.
     fn fixture_layers(case: &Path, layers: &Value, leaves: &Value) -> Vec<Layer> {
         let mut out: Vec<Layer> = layers
             .as_array()
@@ -2206,7 +2206,7 @@ mod over_tests {
             let id = leaf["id"].as_str().unwrap().to_string();
             let top = id.split('/').next().unwrap();
             let at = layers.as_array().into_iter().flatten().position(|l| {
-                l["objects"].as_array().into_iter().flatten().any(|o| o["id"].as_str() == Some(top))
+                l["objects"].as_array().into_iter().flatten().any(|o| o["id"].as_str().is_some_and(|s| s == top || s.chars().take(64).eq(top.chars())))
             });
             let at = at.unwrap_or_else(|| panic!("{}: no layer holds {top}, for {id}", case.display()));
             let num = |k: &str| leaf[k].as_f64().unwrap_or(0.0);
