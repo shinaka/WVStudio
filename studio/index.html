@@ -245,7 +245,10 @@
   .wcard.problem { background: #1b1d20; cursor: default; color: var(--muted); }
   .wcard.problem.openable { cursor: pointer; }
   .wcard .wc-why { grid-column: 1 / -1; height: 70px; overflow: hidden; font-size: 11px; line-height: 1.3; padding: 4px 5px;
-                   border: 1px dashed #3a3f46; border-radius: 4px; overflow-wrap: anywhere; }
+                   border: 1px dashed #3a3f46; border-radius: 4px; overflow-wrap: anywhere; display: flex; flex-direction: column; }
+  .wcard .wc-why > span { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden; }
+  .wcard .wc-why > span:not(:last-child) { -webkit-line-clamp: 2; }  /* Show folder under it */
+  .wcard .wc-why > button { flex: none; align-self: flex-start; margin-top: 3px; padding: 0 6px; font-size: 11px; line-height: 16px; }
   .wc-actions { flex: none; display: flex; flex-direction: column; gap: 3px; align-self: stretch; justify-content: center; }
   .wc-actions button { padding: 1px 9px; font-size: 12px; }
   .wc-pop { position: fixed; z-index: 40; background: var(--raised); border: 1px solid #4a5058; border-radius: 8px; padding: 4px;

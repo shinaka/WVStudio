@@ -152,6 +152,16 @@
     }
   }
 
+  /** Puts widgets the server has just written ({id, widget, stamp}: New, From selection, Duplicate, Change folder name,
+   *  Import, Restore) into the library as content from outside the history (takeInWidget), whether the library has
+   *  their ids now or not: an undo step can still hold an older widget under the same id (one deleted earlier), and
+   *  undoing it must never write that over the new one. The open widget's canvas follows its new size. */
+  function takeIn(entries) {
+    const open = holderWidgetId(), was = open !== null && lib.has(open) ? containerSize(open) : null;
+    for (const e of entries) takeInWidget(e.id, e.widget, e.stamp);
+    if (open !== null && lib.has(open) && containerSize(open) !== was) useCanvas();
+  }
+
   // --- Small menus -----------------------------------------------------------------------------------------------
 
   let pop = null;
@@ -244,7 +254,10 @@
     const c = make("div", `wcard${id === current ? " current" : ""}${newer ? " problem openable" : ""}`);
     c.dataset.widget = id;
     c.title = description ? `${name}\n${description}` : name;
-    if (newer) c.append(make("div", "wc-why", "Made by a newer studio: it opens read-only. Update this studio to edit it."));
+    if (newer) {
+      c.title += "\nMade by a newer studio: it opens read-only. Update this studio to edit it.";
+      c.append(reason("Made by a newer studio: it opens read-only.", id));
+    }
     else {
       let t = strip.thumbs.get(id);
       if (!t) {
@@ -279,15 +292,21 @@
   function problemCard(p) {
     const folder = str(p.folder), c = make("div", "wcard problem");
     c.title = str(p.problem);
-    const meta = make("span", "wc-meta");
-    if (WV.idOk(folder)) {  // a folder named like an id can be asked for; one with any other name can't
+    // a folder named like an id can be asked for; one with any other name can't
+    c.append(reason(str(p.problem), WV.idOk(folder) ? folder : null), make("span", "wc-name", folder));
+    return c;
+  }
+  /** A grey card's reason, with Show folder under it for `folder` (when it isn't null). */
+  function reason(text, folder) {
+    const why = make("div", "wc-why");
+    why.append(make("span", "", text));
+    if (folder !== null) {
       const b = make("button", "", "Show folder");
       b.title = `Open widgets\\${folder}`;
       b.addEventListener("click", (e) => { e.stopPropagation(); showFolder(folder); });
-      meta.append(b);
+      why.append(b);
     }
-    c.append(make("div", "wc-why", str(p.problem)), make("span", "wc-name", folder), meta);
-    return c;
+    return why;
   }
 
   /** Draws the cards whose widget (or one it uses), media, fonts or live values changed (studio.js's renderThumbs
@@ -344,8 +363,7 @@
   async function restoreDeleted(d) {
     try {
       const out = await postJson("/api/widgets/restore", { trash: d.trash });
-      if (lib.has(out.id)) takeInWidget(out.id, out.widget, out.stamp);
-      else libAdd(out);
+      takeIn([out]);
       message(`${widgetName(out.id)} is back, in widgets\\${out.id}.`);
     } catch (err) {
       message(`Couldn't bring ${str(d.name) || str(d.id)} back: ${err.message}`, "warn");
@@ -486,7 +504,7 @@
 
   async function createNew(name, w, h, background) {
     const out = await postJson("/api/widgets/new", { name, w, h, background });
-    libAdd(out);
+    takeIn([out]);
     $("widgetDlg").close();
     openWidget(out.id);
     message(`Made ${widgetName(out.id)}, in widgets\\${out.id}.`);
@@ -514,7 +532,7 @@
     }
     const out = await postJson("/api/widgets/new", { name, w, h, background, inputs, layers: parts,
                                                      from: wid === null ? "playlist" : `widget:${wid}` });
-    libAdd(out);
+    takeIn([out]);
     $("widgetDlg").close();
     afterSaves(() => refreshLibrary());  // the fonts it was given
     const left = (Array.isArray(out.missing) ? out.missing : []).filter(plain).map((m) => `${str(m.file)} (${str(m.why)})`);
@@ -550,7 +568,7 @@
   async function duplicate(id, name) {
     await flushSave();  // so the copy has every edit
     const out = await postJson("/api/widgets/duplicate", { id, name });
-    libAdd(out);
+    takeIn([out]);
     $("widgetDlg").close();
     openWidget(out.id);
     afterSaves(() => refreshLibrary());  // its fonts
@@ -564,7 +582,7 @@
     if (folder === null) return say("That's its folder now.");
     await flushSave();
     const out = await postJson("/api/widgets/duplicate", { id, name, folder });
-    libAdd(out);
+    takeIn([out]);
     $("widgetDlg").close();
     const action = { action: "delete", id, trash: null }, before = snapshot();
     if (!(await trashFolder(action))) {
@@ -821,10 +839,7 @@
     importing.file = null;
     $("importDlg").close();
     const done = (Array.isArray(out.imported) ? out.imported : []).filter((e) => plain(e) && typeof e.id === "string");
-    for (const e of done) {
-      if (lib.has(e.id)) takeInWidget(e.id, e.widget, e.stamp);  // Replace: every copy of it uses the new one
-      else libAdd(e);
-    }
+    takeIn(done);  // a Replace: every copy of it uses the new one
     const fonts = done.filter((e) => swaps.has(str(e.from)) && !isReadOnly(e.id));
     if (fonts.length) {  // Use the installed …: one undoable step
       edit(() => {
