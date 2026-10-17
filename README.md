@@ -85,7 +85,7 @@ each one provides, with live values (click a key to insert it):
   To write your own, follow the guide in [docs/plugins.md](docs/plugins.md).
 
 Each source has its own interval (default 60 s). Write a placeholder as `{key}`, `{key:d}`, `{key:.1f}`,
-`{time:%H:%M}` or `{key|fallback}`. The full spec is in `docs/data.md`, `docs/sources.md` and `docs/text.md`. Settings are
+`{time:%H:%M}` or `{key|fallback}`. The full spec is in `docs/data.md`, `docs/sources.md` and `docs/text.md`, and widgets in `docs/widgets.md`. Settings are
 in `playlist/data.json`.
 
 ## Widgets
