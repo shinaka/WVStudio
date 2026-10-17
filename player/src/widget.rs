@@ -471,6 +471,50 @@ impl Frame {
     }
 }
 
+/// The input values a copy draws with (docs/widgets.md, A copy's values and Passing inputs down): what it
+/// sets, in its holder's terms, and the widget's defaults for the rest.
+fn values(copy: &Value, frame: &Frame, def: &Def) -> Scope {
+    let set_here = copy.get("inputs").and_then(Value::as_object);
+    let mut scope = Scope::default();
+    for input in &def.inputs {
+        let set = set_here.and_then(|v| v.get(&input.id)).and_then(Value::as_str);
+        match input.kind {
+            InputKind::Text => {
+                let text = match set {
+                    Some(v) => substitute(&cut(v, MAX_TEXT), &|id| frame.scope.text.get(id).cloned()),
+                    None => cut(&input.default, MAX_TEXT),
+                };
+                scope.text.insert(input.id.clone(), text);
+            }
+            InputKind::Color => {
+                let set = set.and_then(|v| match reference(v) {
+                    Some(id) => frame.scope.color.get(id).cloned(),
+                    None => color(v),
+                });
+                let value = set.or_else(|| color(&input.default)).unwrap_or_else(|| "#ffffff".into());
+                scope.color.insert(input.id.clone(), value);
+            }
+            InputKind::Image => {
+                // a file, "" for none, or the holder's own image input; anything else isn't set
+                let set = set.and_then(|v| {
+                    let v = v.trim_matches(' ');
+                    match reference(v) {
+                        Some(id) => frame.scope.image.get(id).cloned(),
+                        None if v.is_empty() => Some(PathBuf::new()),
+                        None => path_ok(v).then(|| frame.folder.join(v)),
+                    }
+                });
+                let value = set.unwrap_or_else(|| {
+                    let d = input.default.trim_matches(' ');
+                    if path_ok(d) { def.folder.join(d) } else { PathBuf::new() }
+                });
+                scope.image.insert(input.id.clone(), value);
+            }
+        }
+    }
+    scope
+}
+
 /// Expands the copies of one stack of layers (a scene's, or the global ones) within one budget.
 pub struct Expander<'a> {
     lib: &'a mut Library,
@@ -552,7 +596,7 @@ impl Expander<'_> {
             return;
         }
 
-        let scope = Rc::new(self.scope(&value, frame, &def));
+        let scope = Rc::new(values(&value, frame, &def));
         let path = format!("{}{id}/", frame.path);
         let mut groups = frame.groups.clone();
         if opacity < 1.0 {
@@ -624,49 +668,6 @@ impl Expander<'_> {
                 }
             }
         }
-    }
-
-    /// The input values a copy draws with (docs/widgets.md, A copy's values and Passing inputs down): what
-    /// it sets, in its holder's terms, and the widget's defaults for the rest.
-    fn scope(&self, value: &Value, frame: &Frame, def: &Def) -> Scope {
-        let values = value.get("inputs").and_then(Value::as_object);
-        let mut scope = Scope::default();
-        for input in &def.inputs {
-            let set = values.and_then(|v| v.get(&input.id)).and_then(Value::as_str);
-            match input.kind {
-                InputKind::Text => {
-                    let text = match set {
-                        Some(v) => substitute(&cut(v, MAX_TEXT), &|id| frame.scope.text.get(id).cloned()),
-                        None => cut(&input.default, MAX_TEXT),
-                    };
-                    scope.text.insert(input.id.clone(), text);
-                }
-                InputKind::Color => {
-                    let set = set.and_then(|v| match reference(v) {
-                        Some(id) => frame.scope.color.get(id).cloned(),
-                        None => color(v),
-                    });
-                    let value = set.or_else(|| color(&input.default)).unwrap_or_else(|| "#ffffff".into());
-                    scope.color.insert(input.id.clone(), value);
-                }
-                InputKind::Image => {
-                    let set = set.and_then(|v| {
-                        let v = v.trim_matches(' ');
-                        match reference(v) {
-                            Some(id) => frame.scope.image.get(id).cloned(),
-                            None if v.is_empty() => Some(PathBuf::new()),
-                            None => path_ok(v).then(|| frame.folder.join(v)),
-                        }
-                    });
-                    let value = set.unwrap_or_else(|| {
-                        let d = input.default.trim_matches(' ');
-                        if path_ok(d) { def.folder.join(d) } else { PathBuf::new() }
-                    });
-                    scope.image.insert(input.id.clone(), value);
-                }
-            }
-        }
-        scope
     }
 
     /// One object of `def` (not a copy) with the copy's values filled in, read as a scene's objects are, then
