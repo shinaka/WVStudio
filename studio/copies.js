@@ -502,6 +502,8 @@
     const field = make("span", "field"), tools = make("span", "tools"), note = make("div", "note small muted");
     row.append(label, field, tools, note);
     let show, ref = opts.ref;
+    // a value set by a button (↺, None, the 🔗 menu) shows at once: a field being typed in would keep its own
+    const put = (v) => { if (row.contains(document.activeElement)) document.activeElement.blur(); onChange(v); };
     if (input.type === "text") {
       const ta = make("textarea");
       [ta.rows, ta.spellcheck] = [1, false];
@@ -537,7 +539,7 @@
       const take = async (file) => { if (file) { const src = await uploadPicture(file); if (src !== null) onChange(src); } };
       pick.addEventListener("change", () => { const f = pick.files[0]; pick.value = ""; take(f); });
       choose.addEventListener("click", () => pick.click());
-      none.addEventListener("click", () => onChange(""));
+      none.addEventListener("click", () => put(""));
       thumb.addEventListener("dragover", (e) => { if (e.dataTransfer?.types.includes("Files")) e.preventDefault(); });
       thumb.addEventListener("drop", (e) => {  // here, not the canvas: the window's own drop would place it as an image
         e.preventDefault();
@@ -559,7 +561,7 @@
       link.title = "Pass down one of this widget's inputs";
       link.addEventListener("click", () => {
         const mine = (openDef()?.inputs || []).filter((i) => i.type === input.type);
-        openPop(link, mine.length ? mine.map((i) => ({ label: i.name, title: `{$${i.id}}`, pressed: WV.refOf(row.value) === i.id, act: () => onChange(`{$${i.id}}`) }))
+        openPop(link, mine.length ? mine.map((i) => ({ label: i.name, title: `{$${i.id}}`, pressed: WV.refOf(row.value) === i.id, act: () => put(`{$${i.id}}`) }))
           : [{ label: `This widget has no ${{ text: "text", color: "colour", image: "image" }[input.type]} inputs`, disabled: true, act: () => {} }]);
       });
       tools.append(link);
@@ -568,7 +570,7 @@
     if (opts.reset) {
       reset = make("button", "", "↺");
       reset.title = "Back to the widget's default";
-      reset.addEventListener("click", () => onChange(null));
+      reset.addEventListener("click", () => put(null));
       tools.append(reset);
     }
     row.update = (v, dflt, r) => {
