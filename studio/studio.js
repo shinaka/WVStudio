@@ -233,19 +233,31 @@ function turnedFrame(m, o, i) {
 
 /** Nearest neighbour exactly as docs/scenes.md has it: pixel u shows source pixel floor((2u + 1) * sw / (2 * w)), and
  *  the same for rows. (The canvas's own nearest can pick the neighbour where that lands right on a pixel's edge, as
- *  at 1.5x.) */
+ *  at 1.5x.) Drawn in runs, columns then rows: each run of pixels that shows one source column (or row) is that
+ *  column stretched, which copies it exactly. No pixels are read back, so a video can do it every frame. */
+const nearestCv = document.createElement("canvas");
 function nearest(g, src, dw, dh) {
-  const sw = src.width, sh = src.height, s = src.getContext("2d").getImageData(0, 0, sw, sh).data;
-  const out = g.createImageData(dw, dh), d = out.data, xs = new Int32Array(dw);
-  for (let u = 0; u < dw; u++) xs[u] = Math.floor((2 * u + 1) * sw / (2 * dw)) * 4;
-  for (let v = 0, k = 0; v < dh; v++) {
-    const row = Math.floor((2 * v + 1) * sh / (2 * dh)) * sw * 4;
-    for (let u = 0; u < dw; u++, k += 4) {
-      const j = row + xs[u];
-      d[k] = s[j]; d[k + 1] = s[j + 1]; d[k + 2] = s[j + 2]; d[k + 3] = s[j + 3];
-    }
+  const sw = src.width, sh = src.height;
+  g.imageSmoothingEnabled = false;
+  if (sw === dw && sh === dh) {
+    g.drawImage(src, 0, 0);
+    return;
   }
-  g.putImageData(out, 0, 0);
+  const runs = (n, size) => {  // [[source pixel, first pixel, count]]
+    const out = [];
+    for (let u = 0; u < n; u++) {
+      const s = Math.floor((2 * u + 1) * size / (2 * n)), last = out[out.length - 1];
+      if (last?.[0] === s) last[2]++; else out.push([s, u, 1]);
+    }
+    return out;
+  };
+  if (nearestCv.width !== dw || nearestCv.height !== sh) { nearestCv.width = dw; nearestCv.height = sh; }
+  const mid = nearestCv.getContext("2d");
+  mid.setTransform(1, 0, 0, 1, 0, 0);
+  mid.clearRect(0, 0, dw, sh);
+  mid.imageSmoothingEnabled = false;
+  for (const [s, u, n] of runs(dw, sw)) mid.drawImage(src, s, 0, 1, sh, u, 0, n, sh);
+  for (const [s, v, n] of runs(dh, sh)) g.drawImage(nearestCv, 0, s, dw, 1, 0, v, dw, n);
 }
 
 /** The frame scaled to the object's box: nearest neighbour unless smooth (the player's rule, pixel for pixel), once,
@@ -258,9 +270,9 @@ function scaledFrame(m, o, i) {
   if (c && !m.video) return c;
   if (!c) { if (m.scaled.size > 300) m.scaled.clear(); c = document.createElement("canvas"); m.scaled.set(key, c); }
   if (c.width !== dw || c.height !== dh) { c.width = dw; c.height = dh; }
-  const g = c.getContext("2d", widgetsOn ? { willReadFrequently: true } : undefined);
+  const g = c.getContext("2d", tint ? { willReadFrequently: true } : undefined);
   g.clearRect(0, 0, dw, dh);
-  if (widgetsOn && !o.smooth && !m.video) nearest(g, turnedFrame(m, o, i), dw, dh);
+  if (widgetsOn && !o.smooth) nearest(g, turnedFrame(m, o, i), dw, dh);
   else {
     g.imageSmoothingEnabled = !!o.smooth;
     g.imageSmoothingQuality = "high";
@@ -725,6 +737,7 @@ function drawShape(ctx, o, area = [0, 0, W, H]) {
 
 // --- Text (docs/text.md), laid out as the player does -------------------------------------------
 
+const MAX_TEXT_SIZE = 2000, MAX_OUTLINE = 500;  // the player's limits (text.rs), on the scaled values in a copy
 let fontList = [];       // [{path, family, style}]: the fonts the picker offers
 const fonts = new Map(); // font path (lower case) -> {family, state}: a FontFace per file, loaded when first used
 let fontsArrived = 0;    // counts loads finished, so the text is drawn again
@@ -770,7 +783,8 @@ function textFamily(w) {
 function textLayout(w) {
   const family = w.type === "text" && textFamily(w);
   if (!family) return null;
-  const g = textCtx, size = Math.max(1, num(w.size, 48)), step = size * num(w.line_height, 1.2);
+  const cap = widgetsOn ? MAX_TEXT_SIZE : Infinity;  // with widgets on, the player's limit: a copy scales text up to 16x
+  const g = textCtx, size = Math.max(1, Math.min(cap, num(w.size, 48))), step = size * num(w.line_height, 1.2);
   const font = `${size}px "${family}"`;
   g.font = font;
   g.fontKerning = "normal";
@@ -801,10 +815,12 @@ function threshold(g, x, y, w, h, colour) {
 /** Draws one text object onto `out`: the outline (the glyphs grown by its width) under the fill. The object's
  *  opacity is `out`'s globalAlpha, set by the caller. */
 function drawText(out, w) {
+  if (widgetsOn && !(num(w.size, 48) > 0)) return;  // the player draws nothing at size 0 or less
   const lay = textLayout(w);
   if (!lay) return;
-  const o = Math.max(0, num(w.outline?.width, 0)), colour = hex(w.color, "#ffffff");
-  const outline = hex(w.outline?.color, "#000000"), pad = Math.ceil(o + lay.ascent + lay.descent);  // glyphs can overhang
+  const o = Math.max(0, Math.min(widgetsOn ? MAX_OUTLINE : Infinity, num(w.outline?.width, 0)));
+  const colour = hex(w.color, "#ffffff"), outline = hex(w.outline?.color, "#000000");
+  const pad = Math.ceil(o + lay.ascent + lay.descent);  // glyphs can overhang
   const x0 = Math.max(0, Math.floor(lay.box.x - pad)), y0 = Math.max(0, Math.floor(lay.box.y - pad));
   const x1 = Math.min(W, Math.ceil(lay.box.x + lay.box.w + pad)), y1 = Math.min(H, Math.ceil(lay.box.y + lay.box.h + pad));
   if (x1 <= x0 || y1 <= y0) return;  // all off the screen
