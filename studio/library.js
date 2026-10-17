@@ -46,15 +46,15 @@
     for (let n = 2; taken.has(id); n++) id = stem.slice(0, 40 - `-${n}`.length).replace(/-+$/, "") + `-${n}`;
     return id;
   }
-  /** A new input's id from its name (docs/widgets.md, Inputs and bind buttons): lowercase, each run of anything but
-   *  a-z and 0-9 one `_`, `i_` before one that doesn't start with a letter, cut to 32; `_2`, `_3` and so on while
-   *  `taken` has it. */
+  /** A new input's id from its name (docs/widgets.md, Inputs and bind buttons), as copies.js makes one: lowercase,
+   *  each run of anything but a-z and 0-9 one `_`, none at the ends, `i_` before one that doesn't start with a
+   *  letter, cut to 32; `_2`, `_3` and so on while `taken` has it. */
   function inputIdFrom(name, taken) {
-    let stem = slug(name, "_");
+    let stem = String(name ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
     if (!/^[a-z]/.test(stem)) stem = `i_${stem}`;
-    stem = stem.slice(0, 32).replace(/_+$/, "");
+    stem = stem.slice(0, 32);
     let id = stem;
-    for (let n = 2; taken.has(id); n++) id = stem.slice(0, 32 - `_${n}`.length).replace(/_+$/, "") + `_${n}`;
+    for (let n = 2; taken.has(id) || !WV.INPUT_ID_RE.test(id); n++) id = stem.slice(0, 32 - `_${n}`.length) + `_${n}`;
     return id;
   }
 
@@ -364,7 +364,11 @@
     $("wcFile").value = "";
     if (f) openImport(f);
   });
-  $("wcDeleted").addEventListener("click", () => showDeleted($("wcDeleted")));
+  $("wcDeleted").addEventListener("click", async () => {
+    await refreshDeleted();  // as it is now: an undo or redo may have moved folders since
+    showWidgetCards();
+    showDeleted($("wcDeleted"));
+  });
 
   // --- Making a widget: New, From selection, Duplicate, Change folder name (docs/widgets.md, Making a widget) -----
 
@@ -571,7 +575,7 @@
     pushUndo(before, "", action);
     changed();
     openWidget(out.id);
-    afterSaves(() => refreshLibrary());
+    afterSaves(() => refreshLibrary());  // its fonts, and Recently deleted
     message(`${widgetName(out.id)} is in widgets\\${out.id} now, and every copy here uses it.`);
   }
 
@@ -608,7 +612,13 @@
     if (!lib.has(id)) return;
     const name = widgetName(id);
     await flushSave();  // so its folder holds every edit, for Ctrl+Z or Restore
-    if (await deleteWidget(id, { copies })) message(`Deleted ${name}: it's in Recently deleted, and Ctrl+Z brings it back.`);
+    if (!(await deleteWidget(id, { copies }))) return;
+    message(`Deleted ${name}: it's in Recently deleted, and Ctrl+Z brings it back.`);
+    deletedChanged();
+  }
+  /** Reads Recently deleted again, after a folder moved there. */
+  function deletedChanged() {
+    afterSaves(async () => { await refreshDeleted(); showWidgetCards(); });
   }
   $("dlCancel").addEventListener("click", () => $("deleteDlg").close());
   $("dlKeep").addEventListener("click", () => runDelete(false));
@@ -893,12 +903,13 @@
     const shown = ref !== null ? WV.color(def.inputs.find((i) => i.id === ref && i.type === "color")?.default) ?? "#ffffff" : colour;
     if (shown) set("wdBgColor", shown);
     $("wdBgColor").disabled = locked || ref !== null;
-    const bindKey = JSON.stringify([id, bg ?? null, locked, def.inputs.filter((i) => i.type === "color")]);
-    if (bindKey !== wd.bindKey) {  // the 🔗 that binds the background to a colour input (copies.js's bindButton)
-      wd.bindKey = bindKey;
+    if (wd.bindKey !== id) {  // the 🔗 that binds the background to a colour input (copies.js's bindButton), which
+      wd.bindKey = id;        // follows the background by itself
       $("wdBgBind").replaceChildren(bindButton("color", () => lib.get(id)?.background ?? null,
-                                               (v) => { const w = lib.get(id); if (w) w.background = v; }));
+                                               (v) => { const w = lib.get(id); if (w) w.background = v; },
+                                               { control: $("wdBgColor"), fallback: null, name: () => "Background" }));
     }
+    $("wdBgBind").firstElementChild?.update?.();
     $("wdBgBind").inert = locked;
     set("wdDescription", str(content.description));
     seg("wdBackdrop", backdrop());
@@ -923,10 +934,14 @@
     for (const input of def.inputs) {
       const r = wd.rows.get(input.id);
       if (document.activeElement !== r.name) r.name.value = input.name;
-      if (r.shown !== input.default && !r.box.contains(document.activeElement)) {
-        r.shown = input.default;  // edited with the control a copy's value uses (copies.js's inputRow)
-        r.box.replaceChildren(inputRow(input, input.default, false, (v) => setDefault(input.id, v), { own: true }));
+      if (r.shown === input.default) continue;
+      if (r.row?.update) r.row.update(input.default, false);  // in place: a field being typed in is left as it is
+      else if (r.box.contains(document.activeElement)) continue;
+      else {  // edited with the control a copy's value uses (copies.js's inputRow)
+        r.row = inputRow(input, input.default, false, (v) => setDefault(input.id, v));
+        r.box.replaceChildren(r.row);
       }
+      r.shown = input.default;
     }
   }
   function inputEditor(input, locked) {
@@ -1119,10 +1134,12 @@
   /** Size: the container changes, anchored top-left; every copy keeps its scale, so it grows or shrinks to the right
    *  and down. One step, the copies' stored sizes included. */
   function setSize() {
-    const w = Number($("wdW").value), h = Number($("wdH").value);
+    const w = Number($("wdW").value), h = Number($("wdH").value), id = holderWidgetId();
+    if (id === null || !lib.has(id)) return;
     if (!Number.isInteger(w) || !Number.isInteger(h) || w < 1 || w > 1600 || h < 1 || h > 720) {
-      message("A widget is 1 to 1600 across and 1 to 720 down, in whole pixels.", "warn");
-      return showProps();
+      const def = defOf(id);
+      [$("wdW").value, $("wdH").value] = [def.w, def.h];
+      return message("A widget is 1 to 1600 across and 1 to 720 down, in whole pixels.", "warn");
     }
     editOpen((c, id) => {
       const before = defOf(id), copies = copiesOf(id, holders({ editable: true })).map(({ o }) => [o, copyScale(o, before)]);
