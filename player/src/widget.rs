@@ -273,7 +273,7 @@ pub struct Input {
     pub default: String,
 }
 
-/// A widget as read. Its layers stay JSON: they're expanded once per copy, with that copy's values.
+/// A widget as read. Its objects stay JSON: they're expanded once per copy, with that copy's values.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Def {
     pub id: String,
@@ -283,7 +283,20 @@ pub struct Def {
     /// As written: a colour, or `{$id}` of a colour input.
     pub background: Option<String>,
     pub inputs: Vec<Input>,
-    pub layers: Vec<Value>,
+    pub layers: Vec<DefLayer>,
+}
+
+/// One of a widget's layers, as every copy walks it: visible, above opacity 0, and holding only what costs
+/// a step (docs/widgets.md, Counting work). Whatever else the file holds draws nothing and costs nothing,
+/// so it's left out once, when the widget is read, rather than passed over again in every copy.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DefLayer {
+    /// As written, or `l<index>` (its place among the file's layers) when it has none.
+    pub id: String,
+    /// Above 0, at most 1.
+    pub opacity: f64,
+    /// Its copies, hidden or not, and its other objects that aren't hidden, bottom first.
+    pub objects: Vec<Value>,
 }
 
 /// The input values one copy draws with: text, `#rrggbb`, and absolute image paths (empty: no image).
@@ -405,7 +418,7 @@ impl Library {
             h: size("h", HEIGHT as i64, 120),
             background: keys.get("background").and_then(Value::as_str).map(str::to_string),
             inputs,
-            layers: keys.get("layers").and_then(Value::as_array).cloned().unwrap_or_default(),
+            layers: layers(keys.get("layers")),
         })
     }
 
@@ -441,6 +454,40 @@ impl Library {
         self.fonts.insert(key, found.clone());
         found
     }
+}
+
+/// A widget's `layers` as every copy walks them (`DefLayer`). Each is read as a scene's layers are: a key
+/// that makes no sense is left at its default.
+fn layers(list: Option<&Value>) -> Vec<DefLayer> {
+    let mut kept = Vec::new();
+    for (i, layer) in list.and_then(Value::as_array).into_iter().flatten().enumerate() {
+        let Some(keys) = layer.as_object() else { continue };
+        let opacity = keys.get("opacity").and_then(Value::as_f64).unwrap_or(1.0).clamp(0.0, 1.0);
+        if keys.get("visible").and_then(Value::as_bool) == Some(false) || opacity <= 0.0 {
+            continue;
+        }
+        // a copy costs its step even when it's hidden; nothing else hidden, and nothing that isn't an
+        // object, costs anything
+        let objects: Vec<Value> = keys
+            .get("objects")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|o| o.is_object() && (is_copy(o) || o.get("visible").and_then(Value::as_bool) != Some(false)))
+            .cloned()
+            .collect();
+        if objects.is_empty() {
+            continue;
+        }
+        let id = keys.get("id").and_then(Value::as_str).filter(|l| !l.is_empty()).map_or_else(|| format!("l{i}"), str::to_string);
+        kept.push(DefLayer { id, opacity, objects });
+    }
+    kept
+}
+
+/// Whether an object is a copy of a widget.
+fn is_copy(object: &Value) -> bool {
+    object.get("type").and_then(Value::as_str) == Some("widget")
 }
 
 /// Where a holder's objects are placed: docs/widgets.md, Geometry. The top frame is the playlist's.
@@ -543,6 +590,12 @@ impl Expander<'_> {
     /// Adds the objects the copy `value` (an object with "type": "widget") draws, placed in `frame`, to
     /// `out`: docs/widgets.md, sections 4 and 5.
     pub fn copy(&mut self, value: Value, frame: &Frame, out: &mut Vec<Object>) {
+        self.expand(&value, frame, out);
+    }
+
+    /// `copy`, for a copy that stays where it is: one inside a widget is expanded again in every copy of
+    /// that widget.
+    fn expand(&mut self, value: &Value, frame: &Frame, out: &mut Vec<Object>) {
         // every copy reached costs its step, whether it draws or not
         if !self.step() {
             return;
@@ -596,7 +649,7 @@ impl Expander<'_> {
             return;
         }
 
-        let scope = Rc::new(values(&value, frame, &def));
+        let scope = Rc::new(values(value, frame, &def));
         let path = format!("{}{id}/", frame.path);
         let mut groups = frame.groups.clone();
         if opacity < 1.0 {
@@ -628,30 +681,21 @@ impl Expander<'_> {
             });
         }
 
-        for (i, layer) in def.layers.iter().enumerate() {
-            // read as a scene's layers are: a key that makes no sense is left at its default
-            let Some(keys) = layer.as_object() else { continue };
-            let layer_opacity = keys.get("opacity").and_then(Value::as_f64).unwrap_or(1.0).clamp(0.0, 1.0);
-            if keys.get("visible").and_then(Value::as_bool) == Some(false) || layer_opacity <= 0.0 {
-                continue;
-            }
-            let layer_id = keys.get("id").and_then(Value::as_str).filter(|l| !l.is_empty()).map_or_else(|| format!("l{i}"), str::to_string);
+        // only the visible layers above opacity 0, each holding only what costs a step (DefLayer)
+        for layer in &def.layers {
             let mut layer_groups = groups.clone();
-            if layer_opacity < 1.0 {
-                layer_groups.push(Group { id: format!("{path}{layer_id}"), opacity: layer_opacity as f32, rect: meet(clip, PANEL) });
+            if layer.opacity < 1.0 {
+                layer_groups.push(Group { id: format!("{path}{}", layer.id), opacity: layer.opacity as f32, rect: meet(clip, PANEL) });
             }
-            for object in keys.get("objects").and_then(Value::as_array).into_iter().flatten() {
-                if !object.is_object() {
-                    continue;
-                }
-                if object.get("type").and_then(Value::as_str) == Some("widget") {
+            for object in &layer.objects {
+                if is_copy(object) {
                     // hidden or not: it takes its own step
                     let mut stack = frame.stack.clone();
                     stack.push(def.id.clone());
                     let inner = Frame { folder: def.folder.clone(), scope: scope.clone(), s, ox: left, oy: top, clip: Some(clip),
                                         groups: layer_groups.clone(), stack, depth: frame.depth + 1, path: path.clone() };
-                    self.copy(object.clone(), &inner, out);
-                } else if object.get("visible").and_then(Value::as_bool) != Some(false) {
+                    self.expand(object, &inner, out);
+                } else {
                     if !self.step() {
                         return;
                     }
@@ -675,12 +719,18 @@ impl Expander<'_> {
     fn leaf(&mut self, object: &Value, def: &Def, scope: &Scope, s: f64, (ox, oy): (i64, i64)) -> Option<Object> {
         let mut value = object.clone();
         let id = value.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
+        // a colour that's `{$id}` of a colour input takes its value. One that isn't a string (a number, null)
+        // isn't a colour either: it becomes "", so reading keeps its stroke or gradient, and it takes the
+        // fallback below like any other
         let bind = |field: Option<&mut Value>| {
-            if let Some(field) = field
-                && let Some(input) = field.as_str().and_then(reference)
-                && let Some(c) = scope.color.get(input)
-            {
-                *field = Value::String(c.clone());
+            let Some(field) = field else { return };
+            match field.as_str() {
+                Some(v) => {
+                    if let Some(c) = reference(v).and_then(|input| scope.color.get(input)) {
+                        *field = Value::String(c.clone());
+                    }
+                }
+                None => *field = Value::String(String::new()),
             }
         };
         let mut src = None;
@@ -722,7 +772,9 @@ impl Expander<'_> {
         let outline = value.get("outline").and_then(|o| o.get("width")).and_then(Value::as_f64);
         let font = value.get("font").and_then(Value::as_str).unwrap_or_default().to_string();
 
-        let mut o = playlist::object(value, &def.folder)?;
+        // a key that makes no sense is logged once per read, not once per copy
+        let lib = &mut *self.lib;
+        let mut o = playlist::object_to(value, &def.folder, &mut |line| lib.log(format!("widget {}: {line}", def.id)))?;
         let (x, y, w, h) = (o.x, o.y, o.w, o.h);
         // edges, not sizes, are rounded, so parts that touch in the widget touch in every copy
         let (x0, y0) = (ox.saturating_add(rnd(s * x)), oy.saturating_add(rnd(s * y)));
@@ -964,6 +1016,46 @@ mod tests {
         let mut lib = Library::new(scratch.dir.join("nowhere"));
         assert!(lib.get("ok").is_err());
         assert_eq!(lib.watch[0], (scratch.dir.join("nowhere"), None));
+    }
+
+    /// What draws nothing and costs no step is left out once, when the widget is read, so a copy passes
+    /// over none of it. A layer without an id keeps `l<index>`, counted among all the file's layers.
+    #[test]
+    fn layers_keep_only_what_costs_a_step() {
+        let scratch = Scratch::new("layers");
+        scratch.write("widgets/w/widget.json", r#"{ "layers": [
+            { "id": "hidden", "visible": false, "objects": [ { "id": "a", "type": "shape" } ] },
+            { "id": "clear", "opacity": 0, "objects": [ { "id": "b", "type": "widget", "widget": "x" } ] },
+            "junk",
+            { "opacity": 0.5, "visible": "no", "objects": [ 5, null, "x", { "id": "h", "type": "shape", "visible": false },
+                { "id": "hc", "type": "widget", "widget": "x", "visible": false }, { "id": "s", "type": "shape", "visible": 3 } ] },
+            { "id": "empty", "objects": [ { "id": "c", "type": "text", "visible": false } ] },
+            { "id": "", "opacity": "x", "objects": [ { "id": "u", "type": "sticker" } ] },
+            { "id": "list", "objects": "x" } ] }"#);
+        let mut lib = Library::new(scratch.dir.join("widgets"));
+        let def = lib.get("w").unwrap();
+        let kept: Vec<(&str, f64, Vec<&str>)> =
+            def.layers.iter().map(|l| (l.id.as_str(), l.opacity, l.objects.iter().map(|o| o["id"].as_str().unwrap()).collect())).collect();
+        // a hidden copy still costs its step, and an object of a type nobody draws costs one too
+        assert_eq!(kept, [("l3", 0.5, vec!["hc", "s"]), ("l5", 1.0, vec!["u"])]);
+    }
+
+    /// A key that makes no sense in a widget's object is logged once per read, however many copies read it.
+    #[test]
+    fn ignored_keys_are_logged_once() {
+        let scratch = Scratch::new("logged");
+        scratch.write("widgets/w/widget.json",
+                      r#"{ "layers": [ { "objects": [ { "id": "i", "type": "image", "src": "a.png", "keep_aspect": "yes" } ] } ] }"#);
+        let mut lib = Library::new(scratch.dir.join("widgets"));
+        let top = Frame::top(&scratch.dir.join("playlist"));
+        let mut out = Vec::new();
+        let mut expander = Expander::new(&mut lib, "scene s1");
+        for id in ["a", "b"] {
+            expander.copy(serde_json::json!({ "id": id, "type": "widget", "widget": "w" }), &top, &mut out);
+        }
+        assert_eq!(out.len(), 2);
+        // through the library's own log, which says each line once per read
+        assert!(lib.logged.contains(r#"widget w: ignoring a image's keep_aspect: "yes" doesn't make sense there"#), "{:?}", lib.logged);
     }
 
     #[test]

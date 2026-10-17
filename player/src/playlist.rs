@@ -623,12 +623,18 @@ fn layers(list: Option<&Value>, base: &Path, expander: &mut Expander) -> Vec<Lay
 }
 
 /// An object, or None for one of a type this player doesn't know (skipped, rather than stopping the
-/// whole playlist from playing). Also how a widget's objects are read, once its copy's values are in.
+/// whole playlist from playing).
 pub(crate) fn object(value: Value, base: &Path) -> Option<Object> {
-    let common: Common = lenient(value.clone(), "object")?;
+    object_to(value, base, &mut |line| crate::player::log(line))
+}
+
+/// `object`, telling `note` instead of the log about each key it ignores. It's how a widget's objects are
+/// read, once a copy's values are in: they're read again for every copy, but logged once per read.
+pub(crate) fn object_to(value: Value, base: &Path, note: &mut dyn FnMut(String)) -> Option<Object> {
+    let common: Common = lenient_to(value.clone(), "object", note)?;
     let kind = match common.kind.as_str() {
         "image" | "video" => {
-            let mut media: Media = lenient(value, "image")?;
+            let mut media: Media = lenient_to(value, "image", note)?;
             if media.src.as_os_str().is_empty() {
                 return None;
             }
@@ -637,7 +643,7 @@ pub(crate) fn object(value: Value, base: &Path) -> Option<Object> {
             Kind::Media(media)
         }
         "text" => {
-            let mut w: Text = lenient(value, "text")?;
+            let mut w: Text = lenient_to(value, "text", note)?;
             // a relative font is next to the playlist, like the pieces; no font at all means the default
             w.font = if w.font.as_os_str().is_empty() { PathBuf::from(DEFAULT_FONT) } else { base.join(&w.font) };
             w.live = crate::data::is_live(&w.text);
@@ -646,7 +652,7 @@ pub(crate) fn object(value: Value, base: &Path) -> Option<Object> {
             }
             Kind::Text(w)
         }
-        "shape" => Kind::Shape(lenient(value, "shape")?),
+        "shape" => Kind::Shape(lenient_to(value, "shape", note)?),
         _ => return None,
     };
     Some(Object {
@@ -668,12 +674,17 @@ pub(crate) fn object(value: Value, base: &Path) -> Option<Object> {
 /// `T` from a JSON object, with any value of the wrong kind (a size of "big", an align of "centre") left
 /// at its default, as the studio's preview does.
 fn lenient<T: serde::de::DeserializeOwned>(value: Value, what: &str) -> Option<T> {
+    lenient_to(value, what, &mut |line| crate::player::log(line))
+}
+
+/// `lenient`, telling `note` instead of the log about each value it leaves at its default.
+fn lenient_to<T: serde::de::DeserializeOwned>(value: Value, what: &str, note: &mut dyn FnMut(String)) -> Option<T> {
     let Value::Object(mut keys) = value else { return None };
     keys.retain(|key, value| {
         let alone = Value::Object([(key.clone(), value.clone())].into_iter().collect());
         let ok = serde_json::from_value::<T>(alone).is_ok();
         if !ok {
-            crate::player::log(format_args!("ignoring a {what}'s {key}: {value} doesn't make sense there"));
+            note(format!("ignoring a {what}'s {key}: {value} doesn't make sense there"));
         }
         ok
     });
@@ -1115,6 +1126,33 @@ mod expand_tests {
         assert_eq!(fingerprint(&target, &bare), found);
     }
 
+    /// Inside a widget, a colour that isn't a string isn't a colour: it's the fallback, and the stroke or
+    /// gradient it's in stays (docs/widgets.md, widget.json).
+    #[test]
+    fn colours_that_arent_strings() {
+        let root = Root::new("not-strings");
+        root.widget("w", r#""w": 10, "h": 10,"#,
+                    r##"{ "id": "a", "type": "shape", "stroke": { "color": 5, "width": 2 },
+                          "fill": { "type": "linear", "stops": [ { "at": 0, "color": null }, { "at": 1, "color": "#ABC" } ] } },
+                        { "id": "b", "type": "shape", "fill": { "type": "solid", "color": false }, "stroke": { "color": null } },
+                        { "id": "t", "type": "text", "text": "x", "color": [], "outline": { "color": {}, "width": 1 } },
+                        { "id": "i", "type": "image", "src": "a.png", "tint": 7 }"##);
+        let p = root.read(r#"{ "id": "c", "type": "widget", "widget": "w" }"#);
+        let l = leaves(&p);
+        assert_eq!(ids(&p), ["c/a", "c/b", "c/t", "c/i"]);
+        let white = |at: f64| Stop { at, color: "#ffffff".into() };
+        assert_eq!(shape(&l[0]).stroke, Some(Stroke { color: "#ffffff".into(), width: 2.0 }));
+        assert_eq!(shape(&l[0]).fill, Some(Paint::Linear { angle: 0.0, stops: vec![white(0.0), Stop { at: 1.0, color: "#aabbcc".into() }] }));
+        assert_eq!(shape(&l[1]).fill, Some(Paint::Solid { color: "#ffffff".into() }));
+        assert_eq!(shape(&l[1]).stroke, Some(Stroke { color: "#ffffff".into(), width: 1.0 }));
+        assert_eq!((text(&l[2]).color.as_str(), &text(&l[2]).outline), ("#ffffff", &Outline { color: "#000000".into(), width: 1.0 }));
+        assert_eq!(media(&l[3]).tint, None);
+
+        // a scene's own objects are read as they always were
+        let p = root.read(r#"{ "id": "s", "type": "shape", "stroke": { "color": 5, "width": 2 } }"#);
+        assert_eq!(shape(&leaves(&p)[0]).stroke, None);
+    }
+
     #[test]
     fn scene_tint_is_read() {
         let root = Root::new("tint");
@@ -1167,6 +1205,17 @@ mod expand_tests {
         assert!(leaves(&p).len() > 1000 && leaves(&p).len() < widget::BUDGET);
         assert_eq!(leaves(&p).last().unwrap().id, "after");
         assert!(started.elapsed() < Duration::from_secs(10));
+
+        // what costs no step is passed over once, not again in every copy: 20,000 hidden shapes and 20,000
+        // hidden layers under 3,999 copies
+        let hidden = vec![r#"{ "type": "shape", "visible": false }"#; 20_000].join(",");
+        let layers = vec![r#"{ "visible": false, "objects": [ { "type": "shape" } ] }"#; 20_000].join(",");
+        root.write("widgets/free/widget.json", &format!(r#"{{ "w": 4, "h": 4, "layers": [ {{ "objects": [{hidden}] }}, {layers} ] }}"#));
+        let copies: Vec<String> = (0..3999).map(|i| format!(r#"{{ "id": "c{i}", "type": "widget", "widget": "free" }}"#)).collect();
+        let started = std::time::Instant::now();
+        let p = root.read(&copies.join(","));
+        assert!(leaves(&p).is_empty());
+        assert!(started.elapsed() < Duration::from_secs(5), "read in {:?}", started.elapsed());
     }
 
     /// The leaf form of player/tests/widgets/README.md.

@@ -49,6 +49,19 @@
               "widget": "icon"
             },
             {
+              "id": "z",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 120,
+              "y": 0,
+              "w": 40,
+              "h": 40,
+              "scale": 2,
+              "widget": "paint"
+            },
+            {
               "id": "top",
               "type": "image",
               "src": "sources/3e036df57296.png",
