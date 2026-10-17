@@ -1,6 +1,6 @@
 //! Plays a playlist on the panel: each scene for its time, prepared ahead, reconnecting when needed.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fmt::Display;
 use std::fs::File;
@@ -12,7 +12,6 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crate::panel::Panel;
 use crate::playlist::{self, Playlist, Scene, Text};
-use crate::text::Layer;
 use crate::{art, cache, data, scene};
 
 /// A still picture is re-sent this often, so the screen comes back by itself after the panel resets.
@@ -40,12 +39,21 @@ pub fn log(msg: impl Display) {
 /// One scene of the playlist, ready to send.
 #[derive(Clone)]
 struct Loaded {
+    /// The read it was prepared for, and the scene's place in it: its live text is numbered as its over
+    /// list is only within the same read.
+    playlist: Arc<Playlist>,
     index: usize,
     frames: Arc<art::Prepared>,
     /// What it was prepared from (scene::key), so a changed version is told apart.
     key: u64,
     /// The frames with the live text on, when the scene has any.
     live: Option<Live>,
+}
+
+impl Loaded {
+    fn scene(&self) -> &Scene {
+        &self.playlist.scenes[self.index]
+    }
 }
 
 /// A scene's frames with its live text drawn over them (docs/data.md), kept until the text changes, so
@@ -55,13 +63,37 @@ struct Live {
     /// The live text with its placeholders filled in, as drawn.
     texts: Vec<Text>,
     frames: Arc<Vec<art::Frame>>,
+    /// When drawing them started, and the work it took: the next redraw waits on it (`redraw_wait`).
+    started: Instant,
+    cost: Duration,
 }
 
 /// New live frames being drawn in the background, over `base`, while the old ones carry on.
 struct Composing {
     base: Arc<art::Prepared>,
     texts: Vec<Text>,
-    job: JoinHandle<Arc<Vec<art::Frame>>>,
+    started: Instant,
+    /// The frames, and the work they took.
+    job: JoinHandle<(Arc<Vec<art::Frame>>, Duration)>,
+}
+
+/// The share of one processor core that redrawing live text over an animation takes, at most, on
+/// average (docs/widgets.md, Live text).
+const LIVE_SHARE: f64 = 0.02;
+/// Live text is redrawn at most this often: as often as it's looked at.
+const LIVE_EVERY: Duration = Duration::from_millis(500);
+
+/// How long after a redraw of live text started the next may start, when it took `cost` of work: over a
+/// still scene (one frame) every 0.5 s, as values are looked at; over an animation no sooner than
+/// max(0.5 s, cost ÷ LIVE_SHARE), so the redraws take about LIVE_SHARE of one core.
+fn redraw_wait(frames: usize, cost: Duration) -> Duration {
+    if frames <= 1 { LIVE_EVERY } else { LIVE_EVERY.max(cost.div_f64(LIVE_SHARE)) }
+}
+
+/// A wait as the log shows it: `45s`, `4m 15s`.
+fn span(d: Duration) -> String {
+    let s = d.as_secs_f64().round() as u64;
+    if s < 60 { format!("{s}s") } else { format!("{}m {}s", s / 60, s % 60) }
 }
 
 /// Prepared frames of recently played scenes, so switching back to one costs nothing. Pixel art is small
@@ -86,7 +118,8 @@ struct Player {
     target: PathBuf,
     opts: art::Options,
     seconds: f64,
-    playlist: Playlist,
+    /// The latest read. The scene showing keeps the read it was prepared for until its new version is.
+    playlist: Arc<Playlist>,
     /// What the playlist and its files were like when last read.
     fingerprint: Fingerprint,
     /// A different fingerprint seen since, and when: read once it has held still for `settle`.
@@ -98,33 +131,36 @@ struct Player {
     next: Option<JoinHandle<Option<Loaded>>>,
     /// Whether `next` still has to be started: it waits while the playlist is being edited.
     want_next: bool,
-    /// A new version of the scene at this index after an edit, being prepared in the background while
-    /// the old one plays. A newer edit replaces it, and the stale result is dropped.
-    reload: Option<(usize, JoinHandle<Option<Loaded>>)>,
+    /// A new version of the scene showing after an edit, being prepared in the background while the old
+    /// one plays, with the frames it replaces. A newer edit replaces it, and the stale result is dropped.
+    reload: Option<(Arc<art::Prepared>, JoinHandle<Option<Loaded>>)>,
     /// When an edit was last read.
     edited: Option<Instant>,
     quiet: Duration,
     /// The newest re-prepared version that isn't in the disk cache yet.
     unsaved: Option<Loaded>,
     composing: Option<Composing>,
+    /// The versions of scenes (by key) whose slow live text has been logged.
+    slow: HashSet<u64>,
 }
 
 impl Player {
     fn new(target: &Path, opts: art::Options, seconds: f64) -> Result<Player, Box<dyn Error>> {
-        let playlist = playlist::read(target, seconds, &opts.ffmpeg)?;
+        let playlist = Arc::new(playlist::read(target, seconds, &opts.ffmpeg)?);
         let cache = Cache::default();
         let current = load_from(&playlist, 0, &opts, &cache, true).ok_or("none of the scenes could be loaded")?;
         let mut player = Player { target: target.to_path_buf(), opts, seconds, fingerprint: Vec::new(),
                                   changing: None, settle: SETTLE, playlist, current, cache, next: None,
                                   want_next: false, reload: None, edited: None, quiet: QUIET, unsaved: None,
-                                  composing: None };
+                                  composing: None, slow: HashSet::new() };
         player.fingerprint = playlist::fingerprint(target, &player.playlist);
         player.prepare_next();
         Ok(player)
     }
 
+    /// The scene showing, as the read it was prepared for has it.
     fn scene(&self) -> &Scene {
-        &self.playlist.scenes[self.current.index]
+        self.current.scene()
     }
 
     /// The frames to send: with the live text on, when there is some.
@@ -133,16 +169,17 @@ impl Player {
     }
 
     /// Keeps the live text current: takes in finished redraws, and with `look`, starts one if the text
-    /// (filled in from the values as they are now) has changed. Cheap, and free for scenes without live
-    /// text. Returns whether the frames showing changed.
-    fn update_live(&mut self, look: bool) -> bool {
+    /// (filled in from the values as they are now) has changed and the redraw budget allows it (going by
+    /// `now`); else the change waits, and the redraw that starts later draws the values as they are then.
+    /// Cheap, and free for scenes without live text. Returns whether the frames showing changed.
+    fn update_live(&mut self, look: bool, now: Instant) -> bool {
         let mut changed = false;
         if self.composing.as_ref().is_some_and(|c| c.job.is_finished()) {
-            let Composing { base, texts, job } = self.composing.take().unwrap();
+            let Composing { base, texts, started, job } = self.composing.take().unwrap();
             // dropped if the scene has moved on meanwhile
-            if let Ok(frames) = job.join() {
+            if let Ok((frames, cost)) = job.join() {
                 if Arc::ptr_eq(&base, &self.current.frames) {
-                    self.current.live = Some(Live { texts, frames });
+                    self.current.live = Some(Live { texts, frames, started, cost });
                     changed = true;
                 }
             }
@@ -150,7 +187,8 @@ impl Player {
         if !look {
             return changed;
         }
-        let texts = filled(&self.playlist, self.current.index);
+        // the showing scene's own read: its texts and its over list are numbered alike
+        let texts = filled(&self.current.playlist, self.current.index);
         if texts.is_empty() {
             self.composing = None;
             return self.current.live.take().is_some() || changed;
@@ -158,12 +196,34 @@ impl Player {
         let base = &self.current.frames;
         let showing = self.current.live.as_ref().is_some_and(|l| l.texts == texts);
         let coming = self.composing.as_ref().is_some_and(|c| c.texts == texts && Arc::ptr_eq(&c.base, base));
-        if !showing && !coming {
-            let (scene, base, opts, drawn) = (self.scene().clone(), base.clone(), self.opts.clone(), texts.clone());
-            let job = std::thread::spawn(move || overlay(&scene, &base, &drawn, &opts));
-            self.composing = Some(Composing { base: self.current.frames.clone(), texts, job });
+        if !showing && !coming && self.may_redraw(now) {
+            let (playlist, index, base, opts, drawn) =
+                (self.current.playlist.clone(), self.current.index, self.current.frames.clone(), self.opts.clone(), texts.clone());
+            let job = std::thread::spawn(move || {
+                let (frames, _, cost) = timed_overlay(&playlist, index, &base, &drawn, &opts);
+                (frames, cost)
+            });
+            self.composing = Some(Composing { base: self.current.frames.clone(), texts, started: now, job });
         }
         changed
+    }
+
+    /// Whether a redraw of the live text may start at `now`: the last one started at least `redraw_wait`
+    /// ago (docs/widgets.md, Live text). A wait past 5 s is logged once per version of a scene.
+    fn may_redraw(&mut self, now: Instant) -> bool {
+        let Some(live) = &self.current.live else { return true };
+        // the last start: a redraw still on its way, else the one showing; the cost is the last known
+        let started = match &self.composing {
+            Some(c) if Arc::ptr_eq(&c.base, &self.current.frames) => c.started,
+            _ => live.started,
+        };
+        let frames = self.current.frames.frames.len();
+        let wait = redraw_wait(frames, live.cost);
+        if wait > Duration::from_secs(5) && self.slow.insert(self.current.key) {
+            log(format_args!("live text on {}: {frames} frames, {:.1} s of work: values update at most every {}",
+                             self.scene().name, live.cost.as_secs_f64(), span(wait)));
+        }
+        now.saturating_duration_since(started) >= wait
     }
 
     fn editing(&self) -> bool {
@@ -172,7 +232,9 @@ impl Player {
 
     fn prepare_next(&mut self) {
         if self.playlist.scenes.len() > 1 {
-            let (playlist, from) = (self.playlist.clone(), self.current.index + 1);
+            // after the scene showing, where the latest read has it
+            let at = self.playlist.scenes.iter().position(|s| s.id == self.scene().id).unwrap_or(self.current.index);
+            let (playlist, from) = (self.playlist.clone(), at + 1);
             let (opts, cache) = (self.opts.clone(), self.cache.clone());
             self.next = Some(std::thread::spawn(move || load_from(&playlist, from, &opts, &cache, true)));
         }
@@ -219,7 +281,7 @@ impl Player {
                 // carry on with the same scene if it's still listed
                 let id = self.scene().id.clone();
                 let at = playlist.scenes.iter().position(|s| s.id == id).unwrap_or(0);
-                self.playlist = playlist;
+                self.playlist = Arc::new(playlist);
                 // what comes next may have changed too: it's prepared again once the edits stop
                 self.next = None;
                 self.want_next = true;
@@ -233,11 +295,11 @@ impl Player {
                         }
                         self.current = loaded;
                     }
+                    // the old version, with its own read, carries on until this one is ready
                     None => {
-                        self.current.index = at;
                         let (playlist, opts, cache) = (self.playlist.clone(), self.opts.clone(), self.cache.clone());
                         let reload = std::thread::spawn(move || load_from(&playlist, at, &opts, &cache, false));
-                        self.reload = Some((at, reload));
+                        self.reload = Some((self.current.frames.clone(), reload));
                     }
                 }
             }
@@ -252,11 +314,11 @@ impl Player {
     fn tick(&mut self) -> bool {
         let mut changed = false;
         if self.reload.as_ref().is_some_and(|(_, h)| h.is_finished()) {
-            let (index, reload) = self.reload.take().unwrap();
+            let (replaces, reload) = self.reload.take().unwrap();
             if let Some(loaded) = reload.join().ok().flatten() {
                 self.unsaved = Some(loaded.clone());
-                // swapped in, unless the playlist has moved on to another scene meanwhile
-                if self.current.index == index {
+                // swapped in, with its own read, unless the playlist has moved on to another scene meanwhile
+                if Arc::ptr_eq(&replaces, &self.current.frames) {
                     self.current = loaded;
                     changed = true;
                 }
@@ -312,7 +374,7 @@ impl Player {
                 restart |= self.refresh(now);
             }
             restart |= self.tick();
-            if self.update_live(look) && !restart && self.showing().len() == 1 {
+            if self.update_live(look, now) && !restart && self.showing().len() == 1 {
                 due = Instant::now(); // a still shows its new text at once, an animation with its next frame
             }
             if restart {
@@ -332,66 +394,74 @@ fn key(playlist: &Playlist, index: usize, opts: &art::Options) -> u64 {
 }
 
 /// A scene, if it's in memory as it is now (its key covers its files' stamps).
-fn cached(cache: &Cache, playlist: &Playlist, index: usize, opts: &art::Options) -> Option<Loaded> {
+fn cached(cache: &Cache, playlist: &Arc<Playlist>, index: usize, opts: &art::Options) -> Option<Loaded> {
     let key = key(playlist, index, opts);
     let frames = cache.lock().unwrap().get(&key)?.clone();
-    Some(Loaded { index, frames, key, live: None })
+    Some(Loaded { playlist: playlist.clone(), index, frames, key, live: None })
 }
 
-/// A scene's live text (its own, then the global layers'), filled in from the values as they are now.
+/// A scene's live text (its own, then the global layers', in drawing order: the order its over list
+/// numbers them in), filled in from the values as they are now.
 fn filled(playlist: &Playlist, index: usize) -> Vec<Text> {
-    playlist.scenes[index]
-        .layers
-        .iter()
-        .chain(&playlist.global)
-        .flat_map(|l| l.live().collect::<Vec<_>>())
+    playlist::live_texts(&playlist.scenes[index], &playlist.global)
+        .into_iter()
         .map(|w| Text { text: data::resolve(&w.text), ..w })
         .collect()
 }
 
-/// The frames with `texts` drawn over them (and the still above them back on top); the same frames when
-/// that draws nothing.
-fn overlay(scene: &Scene, prepared: &Arc<art::Prepared>, texts: &[Text], opts: &art::Options) -> Arc<Vec<art::Frame>> {
-    let layer = Layer::render(texts);
-    if layer.is_empty() { Arc::new(prepared.frames.clone()) } else { Arc::new(art::overlay(scene, prepared, &layer, opts)) }
+/// The frames with `texts` drawn in their over list and laid over them; the same frames when that draws
+/// nothing.
+fn overlay(playlist: &Playlist, index: usize, prepared: &art::Prepared, texts: &[Text], opts: &art::Options) -> Arc<Vec<art::Frame>> {
+    Arc::new(art::overlay(&playlist.scenes[index], &playlist.global, prepared, texts, opts))
+}
+
+/// `overlay`, with when it started and the work it took: its time on each of the threads it ran on.
+fn timed_overlay(playlist: &Playlist, index: usize, prepared: &art::Prepared, texts: &[Text], opts: &art::Options)
+    -> (Arc<Vec<art::Frame>>, Instant, Duration) {
+    let started = Instant::now();
+    let frames = overlay(playlist, index, prepared, texts, opts);
+    (frames, started, started.elapsed() * art::workers(prepared.frames.len()) as u32)
 }
 
 /// Loads the first scene that works, starting at `from` and wrapping around, with its live text drawn on
-/// as the values are now. `save` keeps newly prepared scenes in the disk cache too.
-fn load_from(playlist: &Playlist, from: usize, opts: &art::Options, cache: &Cache, save: bool) -> Option<Loaded> {
+/// as the values are now (never held back by the redraw budget). `save` keeps newly prepared scenes in
+/// the disk cache too.
+fn load_from(playlist: &Arc<Playlist>, from: usize, opts: &art::Options, cache: &Cache, save: bool) -> Option<Loaded> {
     let n = playlist.scenes.len();
     (0..n).map(|k| (from + k) % n).find_map(|index| {
         let mut loaded = cached(cache, playlist, index, opts).or_else(|| prepare(playlist, index, opts, cache, save))?;
         let texts = filled(playlist, index);
         if !texts.is_empty() {
-            let frames = overlay(&playlist.scenes[index], &loaded.frames, &texts, opts);
-            loaded.live = Some(Live { texts, frames });
+            let (frames, started, cost) = timed_overlay(playlist, index, &loaded.frames, &texts, opts);
+            loaded.live = Some(Live { texts, frames, started, cost });
         }
         Some(loaded)
     })
 }
 
+/// Drops scenes other than `keep` from the in-memory cache until what it holds (frames and over lists)
+/// is within `cap`.
+fn trim(cache: &mut HashMap<u64, Arc<art::Prepared>>, keep: u64, cap: usize) {
+    while cache.values().map(|p| p.bytes()).sum::<usize>() > cap && cache.len() > 1 {
+        let victim = cache.keys().find(|k| **k != keep).copied().unwrap();
+        cache.remove(&victim);
+    }
+}
+
 /// Prepares a scene and keeps it in the in-memory cache.
-fn prepare(playlist: &Playlist, index: usize, opts: &art::Options, cache: &Cache, save: bool) -> Option<Loaded> {
+fn prepare(playlist: &Arc<Playlist>, index: usize, opts: &art::Options, cache: &Cache, save: bool) -> Option<Loaded> {
     let scene = &playlist.scenes[index];
     let key = key(playlist, index, opts);
     let start = Instant::now();
     match art::load(scene, &playlist.global, opts, save) {
         Ok(prepared) => {
-            let bytes = prepared.frames.iter().map(|f| f.jpeg.len()).sum::<usize>();
-            log(format_args!("ready: {} ({} frame(s), {} KB, {} ms)", scene.name, prepared.frames.len(), bytes / 1024,
+            log(format_args!("ready: {} ({} frame(s), {} KB, {} ms)", scene.name, prepared.frames.len(), prepared.bytes() / 1024,
                              start.elapsed().as_millis()));
             let frames = Arc::new(prepared);
             let mut cache = cache.lock().unwrap();
             cache.insert(key, frames.clone());
-            let size = |c: &HashMap<u64, Arc<art::Prepared>>| -> usize {
-                c.values().flat_map(|p| p.frames.iter()).map(|f| f.jpeg.len()).sum()
-            };
-            while size(&cache) > CACHE_BYTES && cache.len() > 1 {
-                let victim = cache.keys().find(|k| **k != key).copied().unwrap();
-                cache.remove(&victim);
-            }
-            Some(Loaded { index, frames, key, live: None })
+            trim(&mut cache, key, CACHE_BYTES);
+            Some(Loaded { playlist: playlist.clone(), index, frames, key, live: None })
         }
         Err(e) => {
             log(format_args!("skipping {}: {e}", scene.name));
@@ -500,6 +570,11 @@ mod tests {
             sleep(Duration::from_millis(10));
         }
         false
+    }
+
+    /// A time by which any redraw budget has long run out.
+    fn whenever() -> Instant {
+        Instant::now() + Duration::from_secs(24 * 3600)
     }
 
     /// Refreshes until the playlist as it is now has been read. Returns whether the frames changed.
@@ -618,26 +693,30 @@ mod tests {
 
         // the same text: nothing to draw, however often it looks
         for _ in 0..5 {
-            assert!(!p.update_live(true));
+            assert!(!p.update_live(true, whenever()));
             assert!(p.composing.is_none());
         }
         // a new value: drawn once, in the background, with the old frames showing meanwhile
         set(2.0);
-        assert!(!p.update_live(true));
+        assert!(!p.update_live(true, whenever()));
         assert!(p.composing.is_some());
-        assert!(!p.update_live(true)); // already on its way
+        assert!(!p.update_live(true, whenever())); // already on its way
         assert!(std::ptr::eq(p.showing().as_ptr(), first.frames.as_ptr()));
-        assert!(eventually(|| p.update_live(false)));
+        assert!(eventually(|| p.update_live(false, whenever())));
         let second = p.current.live.clone().unwrap();
         assert_eq!(second.texts[0].text, "n=2");
         assert!(!Arc::ptr_eq(&second.frames, &first.frames));
-        assert!(!p.update_live(true));
+        assert!(!p.update_live(true, whenever()));
         assert!(p.composing.is_none());
 
-        // the live text gone: back to the prepared frames as they are
+        // the live text gone: back to the prepared frames as they are, once that version is swapped in
         s.write("");
         read(&mut p);
-        p.update_live(true);
+        assert!(eventually(|| {
+            p.tick();
+            p.reload.is_none()
+        }));
+        p.update_live(true, whenever());
         assert!(p.current.live.is_none());
         assert!(std::ptr::eq(p.showing().as_ptr(), p.current.frames.frames.as_ptr()));
     }

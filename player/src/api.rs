@@ -71,6 +71,8 @@ fn handle(hub: &Arc<Hub>, mut request: Request) {
     let body: Json = serde_json::from_str(&body).unwrap_or(Json::Null);
     let path = request.url().split('?').next().unwrap_or("").to_string();
     match (request.method(), path.as_str()) {
+        // what this build can do: the studio asks to tell a running player built before widgets
+        (Method::Get, "/info") => respond(request, 200, json!({ "widgets": 1 })),
         (Method::Get, "/values") => respond(request, 200, values()),
         (Method::Get, "/catalog") => respond(request, 200, hub.catalog()),
         (Method::Post, "/catalog/rescan") => {
@@ -179,6 +181,8 @@ mod tests {
             let mut r = agent.post(url(path)).send(body.to_string()).unwrap();
             serde_json::from_str(&r.body_mut().read_to_string().unwrap()).unwrap()
         };
+        // GET /info says this player draws widgets (an older one answers 404)
+        assert_eq!(get("/info"), json!({ "widgets": 1 }));
         let catalog = get("/catalog");
         let sources = catalog["sources"].as_array().unwrap();
         let ids: Vec<&str> = sources.iter().map(|s| s["id"].as_str().unwrap()).collect();

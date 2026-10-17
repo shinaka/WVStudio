@@ -17,9 +17,9 @@ use std::time::Duration;
 
 use image::{RgbImage, RgbaImage};
 
-use crate::art::{self, HEIGHT, Options, Prepared, WIDTH};
+use crate::art::{self, HEIGHT, Options, Over, Prepared, WIDTH};
 use crate::media::{self, Cursor, Source, View};
-use crate::playlist::{Fill, Kind, Layer, Object, Scene, Shape, Text, stamp};
+use crate::playlist::{Fill, Kind, Layer, Object, Rect, Scene, Shape, Text, stamp};
 use crate::text::{self, DEFAULT_FONT};
 use crate::{player, shape};
 
@@ -352,12 +352,64 @@ fn draw_media(canvas: &mut RgbaImage, origin: (i64, i64), o: &Object, frame: &Rg
     Some((l, t, r, b))
 }
 
-/// The scene's layers and the global ones, ready to draw, sorted around the live text (docs/scenes.md):
-/// `below` goes into the prepared frames; `above` is what's kept as a still over the live text, when
-/// everything above it is static. Live text itself is left out of both.
+/// The scene's layers and the global ones, ready to draw, sorted around the live text (docs/widgets.md,
+/// Live text): `below` goes into the prepared frames; `over` is laid over them while playing, its stills
+/// not drawn yet. Live text itself is never in `below`.
 struct Plan<'a> {
     below: Vec<Slot<'a>>,
-    above: Option<Vec<Slot<'a>>>,
+    over: Vec<Node<'a>>,
+    placement: Option<Placement>,
+}
+
+/// Where a scene's live text is drawn (docs/widgets.md, Live text).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Placement {
+    /// Over everything, since something animated is drawn from S upward; else in place.
+    pub on_top: bool,
+    /// The id of S's first object: where the group that the first live text sits in starts.
+    pub cut: String,
+}
+
+/// Part of what's laid over the frames, before its stills are drawn.
+enum Node<'a> {
+    /// live_texts()[index], drawn at its own opacity × `fold`, inside its clip
+    Text { index: usize, fold: f32 },
+    /// an object that isn't live text
+    Obj(Obj<'a>),
+    /// a whole layer above S without live text, drawn (and cached) as any static layer is
+    Slot(Slot<'a>),
+    /// a translucent layer, copy or widget layer: its children drawn into a buffer of `rect`, laid over at
+    /// `opacity`; `depth` of its objects' groups are open inside it
+    Group { opacity: f32, rect: Rect, depth: usize, children: Vec<Node<'a>> },
+}
+
+impl<'a> Node<'a> {
+    fn live(&self) -> bool {
+        match self {
+            Node::Text { .. } => true,
+            Node::Group { children, .. } => children.iter().any(Node::live),
+            Node::Obj(_) | Node::Slot(_) => false,
+        }
+    }
+
+    /// The objects of a node without live text, in drawing order.
+    fn objects_into(self, out: &mut Vec<Obj<'a>>) {
+        match self {
+            Node::Obj(obj) => out.push(obj),
+            Node::Group { children, .. } => children.into_iter().for_each(|c| c.objects_into(out)),
+            Node::Slot(slot) => out.extend(slot.objects),
+            Node::Text { .. } => {}
+        }
+    }
+}
+
+/// The whole panel, as a group's rect.
+const PANEL: Rect = [0, 0, WIDTH as i64, HEIGHT as i64];
+
+/// Where two rects meet, or None when they don't.
+fn overlap(a: Rect, b: Rect) -> Option<Rect> {
+    let r = [a[0].max(b[0]), a[1].max(b[1]), a[2].min(b[2]), a[3].min(b[3])];
+    (r[0] < r[2] && r[1] < r[3]).then_some(r)
 }
 
 fn plan<'a>(scene: &'a Scene, global: &'a [Layer], opts: &Options) -> Plan<'a> {
@@ -401,42 +453,220 @@ fn slots<'a>(scene: &'a Scene, global: &'a [Layer], opts: &Options) -> Vec<Slot<
     slots
 }
 
-/// Sorts the slots around the live text, which is left out of them, and keys them for the buffer cache.
-fn split_live<'a>(slots: Vec<Slot<'a>>, opts: &Options) -> Plan<'a> {
-    // where each slot's live text is
-    let live: Vec<Vec<usize>> = slots.iter().map(|s| (0..s.objects.len()).filter(|j| s.objects[*j].live()).collect()).collect();
-    // the lowest live text, and whether only still things sit above it
-    let first_live = live.iter().position(|l| !l.is_empty());
-    let still_above = first_live.is_some_and(|p| slots[p..].iter().all(|s| !s.animated()));
-    let mut below = Vec::new();
-    let mut above = Vec::new();
-    for (i, (mut slot, live)) in slots.into_iter().zip(live).enumerate() {
-        let split = match first_live {
-            Some(p) if still_above && i == p => live[0],
-            _ => usize::MAX,
-        };
-        let mut upper = Vec::new();
-        let mut objects = Vec::new();
-        for (j, obj) in slot.objects.into_iter().enumerate() {
-            if live.contains(&j) {
-                continue;
-            }
-            if j > split { upper.push(obj) } else { objects.push(obj) }
+/// Sorts the slots around the live text (docs/widgets.md, Live text), and keys the ones drawn as layers
+/// for the buffer cache. Live texts are numbered in drawing order, as playlist::live_texts lists them.
+///
+/// P is the first live text, in slot `p`; S is where its group starts: the whole slot when the slot is
+/// translucent, else the run of the slot's objects in P's outermost group, else P alone. With nothing
+/// animated from S upward, every live text is drawn in place: what's below S goes into the frames, and
+/// the rest becomes a tree of stills, live texts and the translucent groups that hold live text. Otherwise
+/// every live text is drawn on top, at its opacity times its layer's and its groups'.
+fn split_live<'a>(mut slots: Vec<Slot<'a>>, opts: &Options) -> Plan<'a> {
+    let first = slots.iter().enumerate().find_map(|(i, s)| s.objects.iter().position(Obj::live).map(|j| (i, j)));
+    let Some((p, j)) = first else {
+        return keyed(Plan { below: slots, over: Vec::new(), placement: None }, opts);
+    };
+    let start = {
+        let objects = &slots[p].objects;
+        match objects[j].object.groups.first() {
+            _ if slots[p].opacity < 1.0 => 0,
+            // a copy's leaves are contiguous, so its group is the run around P
+            Some(g) => (0..j).rev().take_while(|k| objects[*k].object.groups.first().is_some_and(|h| h.id == g.id)).last().unwrap_or(j),
+            None => j,
         }
-        slot.objects = objects;
-        if first_live.is_some_and(|p| still_above && i > p) {
-            above.push(slot);
+    };
+    let on_top = slots[p].objects[start..].iter().any(Obj::animated) || slots[p + 1..].iter().any(Slot::animated);
+    let placement = Some(Placement { on_top, cut: slots[p].objects[start].object.id.clone() });
+    let mut over = Vec::new();
+    if on_top {
+        for slot in &mut slots {
+            for obj in std::mem::take(&mut slot.objects) {
+                if obj.live() {
+                    let fold = obj.object.groups.iter().fold(slot.opacity, |f, g| f * g.opacity);
+                    over.push(Node::Text { index: over.len(), fold });
+                } else {
+                    slot.objects.push(obj);
+                }
+            }
+        }
+        return keyed(Plan { below: slots, over, placement }, opts);
+    }
+    let later = slots.split_off(p + 1);
+    let mut slot = slots.pop().unwrap();
+    let upper = slot.objects.split_off(start);
+    let mut index = 0;
+    if slot.opacity < 1.0 {
+        over.push(Node::Group { opacity: slot.opacity, rect: PANEL, depth: 0, children: nodes(upper, 0, &mut index) });
+    } else {
+        if !slot.objects.is_empty() {
+            slots.push(slot); // what's below S, at the layer's opacity of 1
+        }
+        over.extend(nodes(upper, 0, &mut index));
+    }
+    for slot in later {
+        if !slot.objects.iter().any(Obj::live) {
+            over.push(Node::Slot(slot));
+        } else if slot.opacity < 1.0 {
+            over.push(Node::Group { opacity: slot.opacity, rect: PANEL, depth: 0, children: nodes(slot.objects, 0, &mut index) });
         } else {
-            below.push(slot);
-            if split != usize::MAX {
-                above.push(Slot { opacity: below.last().unwrap().opacity, objects: upper, key: 0 });
+            over.extend(nodes(slot.objects, 0, &mut index));
+        }
+    }
+    keyed(Plan { below: slots, over, placement }, opts)
+}
+
+/// The plan with its layers keyed for the buffer cache.
+fn keyed<'a>(mut plan: Plan<'a>, opts: &Options) -> Plan<'a> {
+    fn key_slots(nodes: &mut [Node], opts: &Options) {
+        for node in nodes {
+            match node {
+                Node::Slot(slot) => slot.key = slot_key(slot, opts),
+                Node::Group { children, .. } => key_slots(children, opts),
+                Node::Text { .. } | Node::Obj(_) => {}
             }
         }
     }
-    for slot in below.iter_mut().chain(&mut above) {
+    for slot in &mut plan.below {
         slot.key = slot_key(slot, opts);
     }
-    Plan { below, above: still_above.then_some(above) }
+    key_slots(&mut plan.over, opts);
+    plan
+}
+
+/// Objects as nodes, with `depth` of their groups open already: each live text numbered in turn, and the
+/// objects sharing a group at this depth gathered into it. A group off the panel shows nothing, but its
+/// live texts keep their numbers.
+fn nodes<'a>(objects: Vec<Obj<'a>>, depth: usize, index: &mut usize) -> Vec<Node<'a>> {
+    let mut out = Vec::new();
+    let mut objects = objects.into_iter().peekable();
+    while let Some(obj) = objects.next() {
+        let object: &'a Object = obj.object;
+        if let Some(group) = object.groups.get(depth) {
+            let mut members = vec![obj];
+            while let Some(o) = objects.next_if(|o| o.object.groups.get(depth).is_some_and(|g| g.id == group.id)) {
+                members.push(o);
+            }
+            match overlap(group.rect, PANEL) {
+                Some(rect) => out.push(Node::Group { opacity: group.opacity, rect, depth: depth + 1, children: nodes(members, depth + 1, index) }),
+                None => *index += members.iter().filter(|o| o.live()).count(),
+            }
+        } else if obj.live() {
+            out.push(Node::Text { index: *index, fold: 1.0 });
+            *index += 1;
+        } else {
+            out.push(Node::Obj(obj));
+        }
+    }
+    out
+}
+
+/// The over list, with its stills drawn: each run of nodes without live text becomes one still, drawn
+/// into a buffer of `rect` (the parent's) with `depth` of its objects' groups open already.
+fn convert(nodes: Vec<Node>, depth: usize, rect: Rect) -> Vec<Over> {
+    let mut over = Vec::new();
+    let mut run = Vec::new();
+    for node in nodes {
+        if !node.live() {
+            run.push(node);
+            continue;
+        }
+        over.extend(still(std::mem::take(&mut run), depth, rect).map(Over::Still));
+        match node {
+            Node::Text { index, fold } => over.push(Over::Text { index, fold }),
+            Node::Group { opacity, rect, depth, children } => over.push(Over::Group { opacity, rect, children: convert(children, depth, rect) }),
+            Node::Obj(_) | Node::Slot(_) => {}
+        }
+    }
+    over.extend(still(run, depth, rect).map(Over::Still));
+    over
+}
+
+/// A run of nodes without live text drawn as one still, or None when it draws nothing. Objects are drawn
+/// together; a whole layer comes from the layer cache, laid over at its opacity.
+fn still(run: Vec<Node>, depth: usize, rect: Rect) -> Option<Arc<Buf>> {
+    let origin = (rect[0], rect[1]);
+    let size = ((rect[2] - rect[0]) as u32, (rect[3] - rect[1]) as u32);
+    let mut parts: Vec<(Arc<Buf>, f32)> = Vec::new();
+    let mut objects = Vec::new();
+    let draw = |objects: &mut Vec<Obj>, parts: &mut Vec<(Arc<Buf>, f32)>| {
+        if !objects.is_empty() {
+            parts.push((Arc::new(render_objects(objects, Duration::ZERO, depth, origin, size)), 1.0));
+            objects.clear();
+        }
+    };
+    for node in run {
+        match node {
+            Node::Slot(mut slot) => {
+                draw(&mut objects, &mut parts);
+                parts.push((slot.render_cached(), slot.opacity));
+            }
+            node => node.objects_into(&mut objects),
+        }
+    }
+    draw(&mut objects, &mut parts);
+    parts.retain(|(buf, opacity)| !buf.is_empty() && *opacity > 0.0);
+    match &parts[..] {
+        [] => None,
+        [(buf, opacity)] if *opacity >= 1.0 => Some(buf.clone()),
+        _ => {
+            let mut canvas = RgbaImage::new(size.0, size.1);
+            let mut touched = None;
+            for (buf, opacity) in &parts {
+                touched = union(touched, buf.onto_rgba(&mut canvas, origin, *opacity));
+            }
+            touched?;
+            Some(Arc::new(if rect == PANEL {
+                Buf::take(canvas, touched)
+            } else {
+                Buf { left: rect[0] as u32, top: rect[1] as u32, image: canvas }
+            }))
+        }
+    }
+}
+
+/// The over list baked with `texts` (the live text, filled in) into one buffer to lay over the frames:
+/// stills laid over as they are, each text drawn at its opacity × fold inside its clip, and each group
+/// through a buffer of its rect, laid over at its opacity (docs/widgets.md, Live text). A text whose
+/// index isn't in `texts` is skipped.
+pub(crate) fn bake(over: &[Over], texts: &[Text]) -> Buf {
+    fn into(over: &[Over], texts: &[Text], canvas: &mut RgbaImage, origin: (i64, i64)) -> Option<(i64, i64, i64, i64)> {
+        let mut touched = None;
+        for node in over {
+            let drawn = match node {
+                Over::Still(buf) => buf.onto_rgba(canvas, origin, 1.0),
+                Over::Text { index, fold } => {
+                    texts.get(*index).and_then(|w| text_buf(&Text { opacity: w.opacity * fold, ..w.clone() }).onto_rgba(canvas, origin, 1.0))
+                }
+                Over::Group { opacity, rect, children } => overlap(*rect, PANEL).and_then(|[l, t, r, b]| {
+                    let mut group = RgbaImage::new((r - l) as u32, (b - t) as u32);
+                    into(children, texts, &mut group, (l, t))?;
+                    Buf { left: l as u32, top: t as u32, image: group }.onto_rgba(canvas, origin, *opacity)
+                }),
+            };
+            touched = union(touched, drawn);
+        }
+        touched
+    }
+    if over.is_empty() {
+        return Buf::empty();
+    }
+    let mut canvas = RgbaImage::new(WIDTH, HEIGHT);
+    let touched = into(over, texts, &mut canvas, (0, 0));
+    Buf::take(canvas, touched)
+}
+
+/// One text drawn on its own, cut to its clip: the part of the panel it touches.
+fn text_buf(w: &Text) -> Buf {
+    let layer = text::Layer::render([w]);
+    let Some(b) = layer.bounds() else { return Buf::empty() };
+    let drawn = [b.left as i64, b.top as i64, b.right as i64, b.bottom as i64];
+    let rect = overlap(drawn, w.clip.unwrap_or(PANEL)).map(|[l, t, r, b]| (l, t, r, b));
+    Buf::crop(layer.image(), rect)
+}
+
+/// Where the scene's live text is drawn (docs/widgets.md, Live text), or None when it has none.
+pub fn placement(scene: &Scene, global: &[Layer], opts: &Options) -> Option<Placement> {
+    plan(scene, global, opts).placement
 }
 
 /// Identifies a static layer's drawing: its objects and the files they use.
@@ -581,7 +811,7 @@ fn flatten(slots: &mut [Slot]) -> Buf {
     Buf::take(canvas, touched)
 }
 
-/// The scene's cycle of frames, encoded for the panel, plus the still kept over its live text.
+/// The scene's cycle of frames, encoded for the panel, plus what's laid over them with its live text.
 pub fn prepare(scene: &Scene, global: &[Layer], opts: &Options) -> Result<Prepared, String> {
     let mut plan = plan(scene, global, opts);
     let times = timeline(&plan.below);
@@ -634,23 +864,19 @@ pub fn prepare(scene: &Scene, global: &[Layer], opts: &Options) -> Result<Prepar
         }
     }
     frames.extend(art::encode_all(batch, Composite::compose, opts, sampling)?);
-    let above = plan.above.as_mut().map(|slots| flatten(slots)).filter(|b| !b.is_empty());
-    Ok(Prepared { frames, above })
+    Ok(Prepared { frames, over: convert(plan.over, 0, PANEL) })
 }
 
-/// The scene at time `t`, upright, with `live` (its live text, filled in) drawn where it belongs: what
-/// the cooler would show, for checking without it.
+/// The scene at time `t`, upright, with `live` (its live text, filled in, as playlist::live_texts lists
+/// it) drawn where it belongs: what the cooler would show, for checking without it.
 pub fn render_at(scene: &Scene, global: &[Layer], opts: &Options, t: Duration, live: &[Text]) -> RgbImage {
     let mut plan = plan(scene, global, opts);
     let mut frame = background(scene);
     for slot in &mut plan.below {
-        let buf = if slot.animated() { slot.render(t) } else { (*slot.render_cached()).clone() };
+        let buf = if slot.animated() { Arc::new(slot.render(t)) } else { slot.render_cached() };
         buf.onto_rgb(&mut frame, slot.opacity, false);
     }
-    text::Layer::render(live).draw_onto(&mut frame);
-    if let Some(slots) = plan.above.as_mut() {
-        flatten(slots).onto_rgb(&mut frame, 1.0, false);
-    }
+    bake(&convert(plan.over, 0, PANEL), live).onto_rgb(&mut frame, 1.0, false);
     frame
 }
 
@@ -810,7 +1036,9 @@ mod tests {
         let p = s.playlist(&scene(&[below.clone(), layer("live", 1.0, &[live.clone()]), cover.clone()]), "");
         let prepared = prepare(&p.scenes[0], &p.global, &opts()).unwrap();
         assert_eq!(prepared.frames.len(), 1);
-        let above = prepared.above.as_ref().expect("the cover should be kept as a still");
+        let [Over::Text { index: 0, fold: 1.0 }, Over::Still(above)] = &prepared.over[..] else {
+            panic!("the cover should be kept as a still over the text: {:?}", prepared.over)
+        };
         assert_eq!((above.left, above.top, above.image.dimensions()), (90, 90, (400, 100)));
         let frame = image::load_from_memory(&prepared.frames[0].jpeg).unwrap().into_rgb8();
         assert!(frame.get_pixel(200, 120)[1] < 50, "the cover was drawn into the frames");
@@ -822,12 +1050,12 @@ mod tests {
         // the global layer counts as above too
         let p = s.playlist(&scene(&[below.clone(), layer("live", 1.0, &[live.clone()])]), &cover);
         let prepared = prepare(&p.scenes[0], &p.global, &opts()).unwrap();
-        assert!(prepared.above.is_some());
+        assert!(matches!(&prepared.over[..], [Over::Text { .. }, Over::Still(_)]));
         // an animation above it: nothing kept, the text goes on top
         let gif = r#"{ "id": "g", "type": "image", "src": "a.gif", "x": 90, "y": 90, "w": 400, "h": 100 }"#.to_string();
         let p = s.playlist(&scene(&[below, layer("live", 1.0, &[live]), layer("anim", 1.0, &[gif])]), "");
         let prepared = prepare(&p.scenes[0], &p.global, &opts()).unwrap();
-        assert!(prepared.above.is_none());
+        assert_eq!(prepared.over, [Over::Text { index: 0, fold: 1.0 }]);
         assert_eq!(prepared.frames.len(), 3);
         let im = render_at(&p.scenes[0], &p.global, &opts(), Duration::ZERO, &[filled]);
         assert!(im.enumerate_pixels().any(|(x, y, p)| (90..490).contains(&x) && (90..190).contains(&y) && p[1] > 200), "text not on top");

@@ -6,6 +6,7 @@
 
 use std::error::Error;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use image::imageops;
@@ -13,7 +14,7 @@ use image::{ImageFormat, RgbImage};
 use jpeg_encoder::{ColorType, Encoder, SamplingFactor};
 
 use crate::cache;
-use crate::playlist::{Kind, Layer, Scene};
+use crate::playlist::{Kind, Layer, Rect, Scene, Text};
 use crate::scene::{self, Buf};
 
 /// What the panel takes. It shows this upscaled 1.5x on its 2400x1080 glass; a native 2400x1080
@@ -37,12 +38,45 @@ pub struct Options {
     pub ffmpeg: PathBuf,
 }
 
-/// A scene's cycle, ready to send, plus what's kept over its live text (docs/scenes.md): the still
-/// layers above it, when there are any and nothing animated sits among them.
+/// A scene's cycle, ready to send, plus what's laid over it with its live text (empty without any).
 #[derive(Clone)]
 pub struct Prepared {
     pub frames: Vec<Frame>,
-    pub above: Option<Buf>,
+    pub over: Vec<Over>,
+}
+
+impl Prepared {
+    /// What it holds in memory: its JPEGs and the stills of its over list.
+    pub fn bytes(&self) -> usize {
+        fn stills(over: &[Over]) -> usize {
+            over.iter()
+                .map(|node| match node {
+                    Over::Still(buf) => buf.image.len(),
+                    Over::Text { .. } => 0,
+                    Over::Group { children, .. } => stills(children),
+                })
+                .sum()
+        }
+        self.frames.iter().map(|f| f.jpeg.len()).sum::<usize>() + stills(&self.over)
+    }
+}
+
+/// What's laid over the prepared frames while playing (docs/widgets.md, Live text), drawn again when a
+/// live text changes.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Over {
+    Still(Arc<Buf>),
+    /// live_texts()[index], drawn at its own opacity × fold, inside its clip
+    Text { index: usize, fold: f32 },
+    /// a translucent layer, copy or widget layer holding live text: its children drawn into a buffer of
+    /// `rect`, laid over at `opacity`
+    Group { opacity: f32, rect: Rect, children: Vec<Over> },
+}
+
+/// The over list with `texts` (live_texts(), filled in) drawn in, as one buffer: what's laid over each
+/// frame. A text whose index is past the end of `texts` is skipped.
+pub fn bake(over: &[Over], texts: &[Text]) -> Buf {
+    scene::bake(over, texts)
 }
 
 /// A scene's frames, from the disk cache if they're there. `save` keeps newly prepared ones there too; a
@@ -71,31 +105,38 @@ pub fn sampling(scene: &Scene, global: &[Layer]) -> SamplingFactor {
     if video { SamplingFactor::R_4_2_0 } else { SamplingFactor::R_4_4_4 }
 }
 
-/// Lays live text (docs/data.md) over a scene's prepared frames, and the still above it back on top:
-/// each frame is decoded, drawn on (where it belongs on a turned frame) and encoded again, on every
-/// core. A frame that won't decode or encode goes out as it was.
-pub fn overlay(scene: &Scene, prepared: &Prepared, text: &crate::text::Layer, opts: &Options) -> Vec<Frame> {
-    let sampling = sampling(scene, &[]); // as prepare chose it, while the global layers don't count
+/// Lays the over list, baked with the live text (`texts`: live_texts(), filled in, docs/data.md), over a
+/// scene's prepared frames: baked once, then each frame is decoded, has it laid over (where it belongs on
+/// a turned frame) and is encoded again, on every core. A frame that won't decode or encode goes out as
+/// it was. With nothing to lay over, the frames are as they are.
+pub fn overlay(scene: &Scene, global: &[Layer], prepared: &Prepared, texts: &[Text], opts: &Options) -> Vec<Frame> {
+    let baked = bake(&prepared.over, texts);
+    if baked.is_empty() {
+        return prepared.frames.clone();
+    }
+    let sampling = sampling(scene, global); // as prepare chose it
     let redraw = |frame: &Frame| {
         let jpeg = image::load_from_memory_with_format(&frame.jpeg, ImageFormat::Jpeg).ok().and_then(|im| {
             let mut rgb = im.into_rgb8();
-            text.draw_onto_turned(&mut rgb, opts.rotate180);
-            if let Some(above) = &prepared.above {
-                above.onto_rgb(&mut rgb, 1.0, opts.rotate180);
-            }
+            baked.onto_rgb(&mut rgb, 1.0, opts.rotate180);
             encode(&rgb, opts.quality, sampling).ok()
         });
         Frame { jpeg: jpeg.unwrap_or_else(|| frame.jpeg.clone()), duration: frame.duration }
     };
     let frames = &prepared.frames;
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
-    let chunk = frames.len().div_ceil(threads).max(1);
+    let chunk = frames.len().div_ceil(workers(frames.len())).max(1);
     std::thread::scope(|s| {
         let redraw = &redraw;
         let workers: Vec<_> =
             frames.chunks(chunk).map(|part| (part, s.spawn(move || part.iter().map(redraw).collect::<Vec<_>>()))).collect();
         workers.into_iter().flat_map(|(part, w)| w.join().unwrap_or_else(|_| part.to_vec())).collect()
     })
+}
+
+/// How many threads `overlay` redraws `frames` frames on: one per core, but no more than the frames.
+pub fn workers(frames: usize) -> usize {
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+    frames.div_ceil(frames.div_ceil(threads).max(1)).max(1)
 }
 
 /// Composes (with `make`), rotates and encodes a batch, on every core, keeping the order.
