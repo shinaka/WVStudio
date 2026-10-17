@@ -1790,6 +1790,67 @@ mod drawing_tests {
         });
         assert_eq!(words, (user, other));
     }
+
+    /// The same, end to end: the playlist and its widgets read from their files. Editing a widget.json
+    /// changes the keys of exactly the scenes that draw it, directly or inside another widget, and so does
+    /// replacing a file it draws. A copy's live input reading another sensor changes no key; a static
+    /// input's words do.
+    #[test]
+    fn cache_keys_follow_widget_files() {
+        let s = Scratch::new("key-files");
+        let (list, widgets) = (s.dir.join("playlist").join("playlist.json"), s.dir.join("widgets"));
+        std::fs::create_dir_all(s.dir.join("playlist")).unwrap();
+        for id in ["badge", "card", "plain"] {
+            std::fs::create_dir_all(widgets.join(id).join("media")).unwrap();
+        }
+        let write = |path: &Path, value: Value| std::fs::write(path, value.to_string()).unwrap();
+        let icon = widgets.join("badge").join("media").join("icon.png");
+        RgbaImage::from_pixel(2, 2, Rgba([255, 0, 0, 255])).save(&icon).unwrap();
+        let badge = |color: &str| json!({ "version": 1, "w": 60, "h": 20,
+            "inputs": [{ "id": "label", "type": "text", "default": "CPU" }, { "id": "value", "type": "text", "default": "" }],
+            "layers": [{ "id": "l1", "objects": [
+                { "id": "r", "type": "shape", "w": 60, "h": 20, "fill": { "type": "solid", "color": color } },
+                { "id": "i", "type": "image", "src": "media/icon.png", "w": 20, "h": 20 },
+                { "id": "t1", "type": "text", "text": "{$label}", "x": 22, "y": 2, "size": 12 },
+                { "id": "t2", "type": "text", "text": "{$value}", "x": 40, "y": 2, "size": 12 } ] }] });
+        let card = |x: f64| json!({ "version": 1, "w": 100, "h": 40,
+            "layers": [{ "id": "l1", "objects": [{ "id": "b", "type": "widget", "widget": "badge", "x": x, "y": 10, "scale": 1 }] }] });
+        write(&widgets.join("badge").join("widget.json"), badge("#102030"));
+        write(&widgets.join("card").join("widget.json"), card(10.0));
+        write(&widgets.join("plain").join("widget.json"), json!({ "version": 1, "w": 30, "h": 30,
+            "layers": [{ "id": "l1", "objects": [{ "id": "r", "type": "shape", "w": 30, "h": 30 }] }] }));
+        let playlist = |label: &str, value: &str| json!({ "version": 2, "scenes": [
+            { "id": "direct", "layers": [{ "id": "l", "objects": [
+                { "id": "c", "type": "widget", "widget": "badge", "x": 10, "y": 10, "inputs": { "label": label, "value": value } }] }] },
+            { "id": "nested", "layers": [{ "id": "l", "objects": [{ "id": "c", "type": "widget", "widget": "card", "x": 100, "y": 100 }] }] },
+            { "id": "other", "layers": [{ "id": "l", "objects": [{ "id": "c", "type": "widget", "widget": "plain" }] }] } ] });
+        write(&list, playlist("GPU", "{pc.gpu.temp:d}°C"));
+        let keys = || {
+            let p = playlist::read(&list, 30.0, Path::new("ffmpeg")).unwrap();
+            p.scenes.iter().map(|scene| key(scene, &p.global, &opts())).collect::<Vec<u64>>()
+        };
+        let p = playlist::read(&list, 30.0, Path::new("ffmpeg")).unwrap();
+        let ids = |i: usize| p.scenes[i].layers[0].objects.iter().map(|o| o.id.as_str()).collect::<Vec<_>>();
+        assert_eq!(ids(0), ["c/r", "c/i", "c/t1", "c/t2"]);
+        assert_eq!(ids(1), ["c/b/r", "c/b/i", "c/b/t1", "c/b/t2"]);
+        let base = keys();
+        // which scenes' keys an edit changed: direct, nested, other
+        let changed = |before: &[u64]| -> Vec<bool> { keys().iter().zip(before).map(|(a, b)| a != b).collect() };
+        write(&list, playlist("GPU", "{pc.cpu.temp:d}°C"));
+        assert_eq!(changed(&base), [false, false, false], "a live input's words");
+        write(&list, playlist("Graphics", "{pc.gpu.temp:d}°C"));
+        assert_eq!(changed(&base), [true, false, false], "a static input's words");
+        write(&list, playlist("GPU", "{pc.gpu.temp:d}°C"));
+        assert_eq!(changed(&base), [false, false, false]);
+        write(&widgets.join("badge").join("widget.json"), badge("#203040"));
+        assert_eq!(changed(&base), [true, true, false], "the widget recoloured");
+        let recoloured = keys();
+        RgbaImage::from_pixel(3, 3, Rgba([0, 0, 255, 255])).save(&icon).unwrap();
+        assert_eq!(changed(&recoloured), [true, true, false], "the widget's image replaced");
+        let replaced = keys();
+        write(&widgets.join("card").join("widget.json"), card(12.0));
+        assert_eq!(changed(&replaced), [false, true, false], "the outer widget edited");
+    }
 }
 
 /// Live text laid over the frames: the over list (docs/widgets.md, Live text). Owned by work package P3.
