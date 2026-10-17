@@ -82,7 +82,8 @@ pub fn is_video(path: &Path) -> bool {
     path.extension().is_some_and(|e| VIDEO_TYPES.iter().any(|t| e.eq_ignore_ascii_case(t)))
 }
 
-/// How an object shows its file: turned, flipped, then scaled to `w`x`h`.
+/// How an object shows its file: turned, flipped, scaled to `w`x`h`, then tinted. It keys the scaled
+/// frames and the video streams, so a tinted and an untinted view of one file are kept apart.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct View {
     pub rotate: u16,
@@ -90,7 +91,7 @@ pub struct View {
     pub w: u32,
     pub h: u32,
     pub smooth: bool,
-    /// Every pixel then takes this colour, keeping its own alpha (docs/widgets.md). Not applied yet.
+    /// Every pixel then takes this colour, keeping its own alpha (docs/widgets.md, Images in a box).
     pub tint: Option<[u8; 3]>,
 }
 
@@ -320,8 +321,8 @@ impl Cursor {
         Cursor { source: source.clone(), view, scaled, video, last: None }
     }
 
-    /// Frame `index` as the object shows it. Past the end of a video (which may be a frame shorter than
-    /// its length says), the last frame stays.
+    /// Frame `index` as the object shows it: exactly `view.w` x `view.h`, with the tint applied last.
+    /// Past the end of a video (which may be a frame shorter than its length says), the last frame stays.
     pub fn frame(&mut self, index: usize) -> Arc<RgbaImage> {
         if let Some((at, im)) = &self.last
             && *at == index
@@ -383,7 +384,7 @@ impl Cursor {
     }
 }
 
-/// The file's pixels turned, flipped and scaled as the object shows them.
+/// The file's pixels turned, flipped, scaled and tinted as the object shows them.
 pub fn transform(im: &RgbaImage, view: View) -> RgbaImage {
     let turned = match view.rotate {
         90 => imageops::rotate90(im),
@@ -393,12 +394,24 @@ pub fn transform(im: &RgbaImage, view: View) -> RgbaImage {
     };
     let turned = if view.flip { imageops::flip_horizontal(&turned) } else { turned };
     let (w, h) = (view.w.max(1), view.h.max(1));
-    if turned.dimensions() == (w, h) {
+    let mut out = if turned.dimensions() == (w, h) {
         turned
     } else if view.smooth {
         imageops::resize(&turned, w, h, FilterType::Lanczos3)
     } else {
         scale_nearest(&turned, w, h)
+    };
+    if let Some(colour) = view.tint {
+        tint(&mut out, colour);
+    }
+    out
+}
+
+/// Every pixel takes `colour` and keeps its own alpha, so a white or black icon on a transparent
+/// background becomes an icon in that colour. Applied to the final pixels, after the one resample.
+fn tint(im: &mut RgbaImage, colour: [u8; 3]) {
+    for p in im.pixels_mut() {
+        p.0 = [colour[0], colour[1], colour[2], p[3]];
     }
 }
 
