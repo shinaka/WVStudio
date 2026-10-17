@@ -827,9 +827,49 @@ mod tests {
         }
     }
 
-    /// An edit that adds a live text (before the others, so every number moves) while the old frames are
-    /// still showing: the live text keeps coming from the showing scene's own read, matching its over
-    /// list, until the new version is taken in, which shows the new text too.
+    /// Plays `list`, then `edit` adds a live text before the others (so every number moves). While the old
+    /// frames are still showing, the value the first text shows (`first`) becomes 10: the live text keeps
+    /// coming from the showing scene's own read, matching its over list, until the new version is taken
+    /// in, which shows the new text too. `before` and `after` are the live texts as shown, (id, text).
+    fn adds_live_text(list: &Path, edit: impl FnOnce(), first: &str, before: &[(&str, &str)], after: &[(&str, &str)]) {
+        let shown = |p: &Player| -> Vec<(String, String)> {
+            p.current.live.as_ref().unwrap().texts.iter().map(|w| (w.id.clone(), w.text.clone())).collect()
+        };
+        let owned = |l: &[(&str, &str)]| -> Vec<(String, String)> {
+            l.iter().map(|(id, t)| (id.to_string(), t.to_string())).collect()
+        };
+        let texts_over = |p: &Player| {
+            let mut indices = Vec::new();
+            numbered(&p.current.frames.over, &mut indices);
+            indices.len()
+        };
+        let mut p = Player::new(list, Scratch::opts(), 30.0).unwrap();
+        p.settle = Duration::from_millis(50);
+        let ids: Vec<String> = shown(&p).into_iter().map(|(id, _)| id).collect();
+        assert_eq!(ids, before.iter().map(|(id, _)| *id).collect::<Vec<_>>());
+        let showing = p.current.frames.clone();
+
+        edit();
+        read(&mut p);
+        assert!(p.reload.is_some(), "the new version should be prepared in the background");
+        // a new value meanwhile: drawn with the showing version's own texts
+        set(first, 10.0);
+        p.update_live(true, whenever());
+        assert!(eventually(|| p.update_live(false, whenever())));
+        assert!(Arc::ptr_eq(&p.current.frames, &showing));
+        assert_eq!(shown(&p), owned(before));
+        assert_eq!(texts_over(&p), before.len());
+
+        // the new version taken in: its texts, numbered as its over list is, the new one showing too
+        assert!(eventually(|| p.tick()));
+        assert!(!Arc::ptr_eq(&p.current.frames, &showing));
+        assert_eq!(shown(&p), owned(after));
+        assert_eq!(texts_over(&p), after.len());
+        p.update_live(true, whenever());
+        assert!(p.composing.is_none(), "nothing changed");
+    }
+
+    /// An edit to the playlist adds a live text while the old frames are still showing.
     #[test]
     fn edit_adds_live_text_while_showing() {
         if !Path::new(text::DEFAULT_FONT).exists() {
@@ -845,40 +885,46 @@ mod tests {
                 {{ "id": "b", "type": "text", "text": "{{wvtest.add_b}}", "x": 100, "y": 300 }} ] }} ] }} ] }}"##,
                     if extra { c } else { "" })
         };
-        let ids = |p: &Player| -> Vec<String> { p.current.live.as_ref().unwrap().texts.iter().map(|w| w.id.clone()).collect() };
-        let texts_over = |p: &Player| {
-            let mut indices = Vec::new();
-            numbered(&p.current.frames.over, &mut indices);
-            indices.len()
-        };
         for (key, n) in [("wvtest.add_a", 1.0), ("wvtest.add_b", 2.0), ("wvtest.add_c", 3.0)] {
             set(key, n);
         }
         std::fs::write(&s.list, json(false)).unwrap();
-        let mut p = s.player();
-        p.settle = Duration::from_millis(50);
-        assert_eq!(ids(&p), ["a", "b"]);
-        let showing = p.current.frames.clone();
+        adds_live_text(&s.list, || std::fs::write(&s.list, json(true)).unwrap(), "wvtest.add_a",
+                       &[("a", "10"), ("b", "2")], &[("c", "3"), ("a", "10"), ("b", "2")]);
+    }
 
-        std::fs::write(&s.list, json(true)).unwrap();
-        read(&mut p);
-        assert!(p.reload.is_some(), "the new version should be prepared in the background");
-        // a new value meanwhile: drawn with the showing version's own two texts
-        set("wvtest.add_a", 10.0);
-        p.update_live(true, whenever());
-        assert!(eventually(|| p.update_live(false, whenever())));
-        assert!(Arc::ptr_eq(&p.current.frames, &showing));
-        assert_eq!(ids(&p), ["a", "b"]);
-        assert_eq!(p.current.live.as_ref().unwrap().texts[0].text, "10");
-        assert_eq!(texts_over(&p), 2);
-
-        // the new version taken in: three texts, numbered as its over list is
-        assert!(eventually(|| p.tick()));
-        assert!(!Arc::ptr_eq(&p.current.frames, &showing));
-        assert_eq!(ids(&p), ["c", "a", "b"]);
-        assert_eq!(texts_over(&p), 3);
-        p.update_live(true, whenever());
-        assert!(p.composing.is_none(), "nothing changed");
+    /// An edit to a widget adds a live text to its copy while the old frames are still showing (13.3's
+    /// form of the test above). Needs work package P1's reading of widgets.
+    #[test]
+    #[ignore = "until P1 merges"]
+    fn widget_edit_adds_live_text_while_showing() {
+        if !Path::new(text::DEFAULT_FONT).exists() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("wvplay-test-widget-adds-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("playlist")).unwrap();
+        std::fs::create_dir_all(root.join("widgets").join("gauge")).unwrap();
+        let widget = |extra: bool| {
+            let u = r#"{ "id": "u", "type": "text", "text": "{wvtest.wadd_u}", "x": 10, "y": 10 },"#;
+            format!(r#"{{ "version": 1, "name": "Gauge", "w": 400, "h": 160, "layers": [ {{ "id": "l1", "objects": [
+                {} {{ "id": "v", "type": "text", "text": "{{wvtest.wadd_v}}", "x": 10, "y": 80 }} ] }} ] }}"#,
+                    if extra { u } else { "" })
+        };
+        let def = root.join("widgets").join("gauge").join("widget.json");
+        std::fs::write(&def, widget(false)).unwrap();
+        let list = root.join("playlist").join("playlist.json");
+        std::fs::write(&list, r##"{ "version": 2, "scenes": [ { "id": "s", "seconds": 1, "layers": [ { "id": "l", "objects": [
+            { "id": "bg", "type": "shape", "shape": "rect", "w": 1600, "h": 720, "fill": { "type": "solid", "color": "#203040" } },
+            { "id": "c", "type": "widget", "widget": "gauge", "x": 100, "y": 60, "scale": 1 },
+            { "id": "cover", "type": "shape", "shape": "rect", "x": 120, "y": 90, "w": 30, "h": 80 },
+            { "id": "b", "type": "text", "text": "{wvtest.wadd_b}", "x": 100, "y": 300 } ] } ] } ] }"##).unwrap();
+        for (key, n) in [("wvtest.wadd_v", 1.0), ("wvtest.wadd_b", 2.0), ("wvtest.wadd_u", 3.0)] {
+            set(key, n);
+        }
+        adds_live_text(&list, || std::fs::write(&def, widget(true)).unwrap(), "wvtest.wadd_v",
+                       &[("c/v", "10"), ("b", "2")], &[("c/u", "3"), ("c/v", "10"), ("b", "2")]);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Over an animation, a redraw that took `c` of work holds the next back until max(0.5 s, 50 × c)
