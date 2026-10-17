@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "name": "Gauge",
+  "description": "A live value over a panel, with a bar.",
+  "w": 100,
+  "h": 40,
+  "background": "#202020",
+  "fonts": {},
+  "inputs": [],
+  "layers": [
+    {
+      "id": "l1",
+      "name": "Gauge",
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "objects": [
+        {
+          "id": "v",
+          "type": "text",
+          "name": "Value",
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "text": "{pc.cpu.temp:d}°",
+          "font": "",
+          "size": 20,
+          "color": "#ffffff",
+          "x": 4,
+          "y": 4
+        },
+        {
+          "id": "u",
+          "type": "shape",
+          "name": "Bar",
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "x": 4,
+          "y": 30,
+          "w": 92,
+          "h": 6,
+          "shape": "rect",
+          "radius": 0,
+          "fill": {
+            "type": "solid",
+            "color": "#3ddc84"
+          },
+          "crisp": true
+        }
+      ]
+    }
+  ]
+}

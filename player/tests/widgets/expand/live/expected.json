@@ -1,0 +1,69 @@
+{
+  "scenes": [
+    {
+      "id": "gauges",
+      "placement": {"on_top": false, "cut": "g1/v"},
+      "leaves": [
+        {"id": "g1/background", "type": "shape", "x": 0, "y": 0, "w": 100, "h": 40, "opacity": 1, "clip": [0, 0, 100, 40], "groups": [], "shape": "rect", "radius": 0, "color": "#202020", "stroke_width": null, "stroke_color": null, "crisp": true},
+        {"id": "g1/v", "type": "text", "x": 4, "y": 4, "opacity": 1, "clip": [0, 0, 100, 40], "groups": [], "text": "{pc.cpu.temp:d}°", "live": true, "size": 20, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "segoeui.ttf"},
+        {"id": "g1/u", "type": "shape", "x": 4, "y": 30, "w": 92, "h": 6, "opacity": 1, "clip": [0, 0, 100, 40], "groups": [], "shape": "rect", "radius": 0, "color": "#3ddc84", "stroke_width": null, "stroke_color": null, "crisp": true},
+        {"id": "g2/background", "type": "shape", "x": 50, "y": 0, "w": 100, "h": 40, "opacity": 1, "clip": [50, 0, 150, 40], "groups": [], "shape": "rect", "radius": 0, "color": "#202020", "stroke_width": null, "stroke_color": null, "crisp": true},
+        {"id": "g2/v", "type": "text", "x": 54, "y": 4, "opacity": 1, "clip": [50, 0, 150, 40], "groups": [], "text": "{pc.cpu.temp:d}°", "live": true, "size": 20, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "segoeui.ttf"},
+        {"id": "g2/u", "type": "shape", "x": 54, "y": 30, "w": 92, "h": 6, "opacity": 1, "clip": [50, 0, 150, 40], "groups": [], "shape": "rect", "radius": 0, "color": "#3ddc84", "stroke_width": null, "stroke_color": null, "crisp": true}
+      ]
+    },
+    {
+      "id": "faded-copy",
+      "placement": {"on_top": false, "cut": "h/background"},
+      "leaves": [
+        {"id": "r", "type": "shape", "x": 0, "y": 0, "w": 20, "h": 20, "opacity": 1, "clip": null, "groups": [], "shape": "rect", "radius": 0, "color": "#ff0000", "stroke_width": null, "stroke_color": null, "crisp": true},
+        {"id": "h/background", "type": "shape", "x": 10, "y": 10, "w": 100, "h": 40, "opacity": 1, "clip": [10, 10, 110, 50], "groups": [["h", 0.5, [10, 10, 110, 50]]], "shape": "rect", "radius": 0, "color": "#202020", "stroke_width": null, "stroke_color": null, "crisp": true},
+        {"id": "h/v", "type": "text", "x": 14, "y": 14, "opacity": 1, "clip": [10, 10, 110, 50], "groups": [["h", 0.5, [10, 10, 110, 50]]], "text": "{pc.cpu.temp:d}°", "live": true, "size": 20, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "segoeui.ttf"},
+        {"id": "h/u", "type": "shape", "x": 14, "y": 40, "w": 92, "h": 6, "opacity": 1, "clip": [10, 10, 110, 50], "groups": [["h", 0.5, [10, 10, 110, 50]]], "shape": "rect", "radius": 0, "color": "#3ddc84", "stroke_width": null, "stroke_color": null, "crisp": true}
+      ]
+    },
+    {
+      "id": "faded-layer",
+      "placement": {"on_top": false, "cut": "r"},
+      "leaves": [
+        {"id": "r", "type": "shape", "x": 0, "y": 0, "w": 20, "h": 20, "opacity": 1, "clip": null, "groups": [], "shape": "rect", "radius": 0, "color": "#ff0000", "stroke_width": null, "stroke_color": null, "crisp": true},
+        {"id": "k/background", "type": "shape", "x": 10, "y": 10, "w": 100, "h": 40, "opacity": 1, "clip": [10, 10, 110, 50], "groups": [], "shape": "rect", "radius": 0, "color": "#202020", "stroke_width": null, "stroke_color": null, "crisp": true},
+        {"id": "k/v", "type": "text", "x": 14, "y": 14, "opacity": 1, "clip": [10, 10, 110, 50], "groups": [], "text": "{pc.cpu.temp:d}°", "live": true, "size": 20, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "segoeui.ttf"},
+        {"id": "k/u", "type": "shape", "x": 14, "y": 40, "w": 92, "h": 6, "opacity": 1, "clip": [10, 10, 110, 50], "groups": [], "shape": "rect", "radius": 0, "color": "#3ddc84", "stroke_width": null, "stroke_color": null, "crisp": true}
+      ]
+    },
+    {
+      "id": "gif",
+      "placement": {"on_top": true, "cut": "q/v"},
+      "leaves": [
+        {"id": "q/background", "type": "shape", "x": 0, "y": 0, "w": 100, "h": 40, "opacity": 1, "clip": [0, 0, 100, 40], "groups": [], "shape": "rect", "radius": 0, "color": "#202020", "stroke_width": null, "stroke_color": null, "crisp": true},
+        {"id": "q/v", "type": "text", "x": 4, "y": 4, "opacity": 1, "clip": [0, 0, 100, 40], "groups": [], "text": "{pc.cpu.temp:d}°", "live": true, "size": 20, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "segoeui.ttf"},
+        {"id": "q/u", "type": "shape", "x": 4, "y": 30, "w": 92, "h": 6, "opacity": 1, "clip": [0, 0, 100, 40], "groups": [], "shape": "rect", "radius": 0, "color": "#3ddc84", "stroke_width": null, "stroke_color": null, "crisp": true},
+        {"id": "anim", "type": "image", "x": 0, "y": 0, "w": 40, "h": 40, "opacity": 1, "clip": null, "groups": [], "src": "playlist/sources/5f1d0e8a7c3b.gif", "keep_aspect": false, "tint": null}
+      ]
+    },
+    {
+      "id": "hidden",
+      "placement": {"on_top": false, "cut": "z/v"},
+      "leaves": [
+        {"id": "r", "type": "shape", "x": 0, "y": 0, "w": 20, "h": 20, "opacity": 1, "clip": null, "groups": [], "shape": "rect", "radius": 0, "color": "#ff0000", "stroke_width": null, "stroke_color": null, "crisp": true},
+        {"id": "z/background", "type": "shape", "x": 0, "y": 0, "w": 100, "h": 40, "opacity": 1, "clip": [0, 0, 100, 40], "groups": [], "shape": "rect", "radius": 0, "color": "#202020", "stroke_width": null, "stroke_color": null, "crisp": true},
+        {"id": "z/v", "type": "text", "x": 4, "y": 4, "opacity": 1, "clip": [0, 0, 100, 40], "groups": [], "text": "{pc.cpu.temp:d}°", "live": true, "size": 20, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "segoeui.ttf"},
+        {"id": "z/u", "type": "shape", "x": 4, "y": 30, "w": 92, "h": 6, "opacity": 1, "clip": [0, 0, 100, 40], "groups": [], "shape": "rect", "radius": 0, "color": "#3ddc84", "stroke_width": null, "stroke_color": null, "crisp": true}
+      ]
+    },
+    {
+      "id": "plain",
+      "placement": {"on_top": false, "cut": "clock"},
+      "leaves": [
+        {"id": "r", "type": "shape", "x": 0, "y": 0, "w": 20, "h": 20, "opacity": 1, "clip": null, "groups": [], "shape": "rect", "radius": 0, "color": "#ff0000", "stroke_width": null, "stroke_color": null, "crisp": true}
+      ]
+    }
+  ],
+  "global": {
+    "leaves": [
+      {"id": "bar", "type": "shape", "x": 0, "y": 700, "w": 1600, "h": 20, "opacity": 1, "clip": null, "groups": [], "shape": "rect", "radius": 0, "color": "#101010", "stroke_width": null, "stroke_color": null, "crisp": true},
+      {"id": "clock", "type": "text", "x": 1500, "y": 690, "opacity": 1, "clip": null, "groups": [], "text": "{time}", "live": true, "size": 16, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "segoeui.ttf"}
+    ]
+  }
+}

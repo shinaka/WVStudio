@@ -2,6 +2,7 @@
   "scenes": [
     {
       "id": "cycle",
+      "placement": {"on_top": false, "cut": null},
       "leaves": [
         {"id": "sa/r", "type": "shape", "x": 0, "y": 0, "w": 10, "h": 10, "opacity": 1, "clip": [0, 0, 10, 10], "groups": [], "shape": "rect", "radius": 0, "color": "#ff0000", "stroke_width": null, "stroke_color": null, "crisp": false},
         {"id": "pa/r", "type": "shape", "x": 20, "y": 0, "w": 4, "h": 4, "opacity": 1, "clip": [20, 0, 30, 10], "groups": [], "shape": "rect", "radius": 0, "color": "#00ff00", "stroke_width": null, "stroke_color": null, "crisp": false},
@@ -12,6 +13,7 @@
     },
     {
       "id": "deep",
+      "placement": {"on_top": false, "cut": null},
       "leaves": [
         {"id": "deep/r", "type": "shape", "x": 0, "y": 0, "w": 1, "h": 1, "opacity": 1, "clip": [0, 0, 20, 20], "groups": [], "shape": "rect", "radius": 0, "color": "#ffffff", "stroke_width": null, "stroke_color": null, "crisp": false},
         {"id": "deep/n/r", "type": "shape", "x": 1, "y": 1, "w": 1, "h": 1, "opacity": 1, "clip": [1, 1, 20, 20], "groups": [], "shape": "rect", "radius": 0, "color": "#ffffff", "stroke_width": null, "stroke_color": null, "crisp": false},
@@ -25,6 +27,7 @@
     },
     {
       "id": "budget",
+      "placement": {"on_top": false, "cut": null},
       "leaves": [
         {"id": "first", "type": "shape", "x": 0, "y": 0, "w": 5, "h": 5, "opacity": 1, "clip": null, "groups": [], "shape": "rect", "radius": 0, "color": "#ffffff", "stroke_width": null, "stroke_color": null, "crisp": true},
         {"id": "mx/background", "type": "shape", "x": 10, "y": 10, "w": 10, "h": 10, "opacity": 1, "clip": [10, 10, 20, 20], "groups": [], "shape": "rect", "radius": 0, "color": "#101010", "stroke_width": null, "stroke_color": null, "crisp": true},
@@ -40,6 +43,7 @@
     },
     {
       "id": "sizes",
+      "placement": {"on_top": false, "cut": null},
       "leaves": [
         {"id": "bg1/fit", "type": "image", "x": 0, "y": 0, "w": 6400, "h": 2880, "opacity": 1, "clip": [0, 0, 6416, 2896], "groups": [], "src": "widgets/big/media/blk-fbcfeb51.png", "keep_aspect": false, "tint": null},
         {"id": "bg1/rect", "type": "shape", "x": 0, "y": 0, "w": 6416, "h": 2896, "opacity": 1, "clip": [0, 0, 6416, 2896], "groups": [], "shape": "rect", "radius": 0, "color": "#333333", "stroke_width": null, "stroke_color": null, "crisp": false},

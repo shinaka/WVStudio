@@ -78,14 +78,22 @@ pub struct Layer {
     pub objects: Vec<Object>,
 }
 
-impl Layer {
-    /// Text with placeholders (docs/data.md), drawn while playing, with the layer's opacity folded in.
-    pub fn live(&self) -> impl Iterator<Item = Text> + '_ {
-        self.objects.iter().filter(|o| o.visible).filter_map(move |o| match &o.kind {
-            Kind::Text(w) if w.live => Some(Text { opacity: w.opacity * self.opacity, ..w.clone() }),
+/// The text with placeholders (docs/data.md) a scene draws while playing, in drawing order: the scene's
+/// visible layers, then the global ones, each layer's visible objects in order. Each at its own opacity
+/// (its layer's and its groups' are applied where it's drawn, docs/widgets.md, Live text), with its
+/// clip. This order numbers the over list (scene::split_live), so the two must stay the same.
+pub fn live_texts(scene: &Scene, global: &[Layer]) -> Vec<Text> {
+    scene
+        .layers
+        .iter()
+        .chain(global)
+        .filter(|l| l.visible)
+        .flat_map(|l| l.objects.iter().filter(|o| o.visible))
+        .filter_map(|o| match &o.kind {
+            Kind::Text(w) if w.live => Some(Text { clip: o.clip, ..w.clone() }),
             _ => None,
         })
-    }
+        .collect()
 }
 
 /// An image, video, text or shape. The keys every type has, plus its own.
@@ -783,10 +791,10 @@ mod tests {
         assert_eq!(t.font, PathBuf::from(r"C:\pl\fonts/p.ttf"));
         // the second scene gets an id, the fallback seconds and a black background
         assert_eq!((p.scenes[1].id.as_str(), p.scenes[1].seconds, p.scenes[1].background.as_str()), ("s1", 10.0, "#000000"));
-        // the global layer's live text carries the layer's opacity
+        // the global layer's live text is listed at its own opacity (the layer's applies where it's drawn)
         assert_eq!(p.global.len(), 1);
-        let live: Vec<Text> = p.global[0].live().collect();
-        assert_eq!((live.len(), live[0].opacity), (1, 0.25));
+        let live = live_texts(&p.scenes[1], &p.global);
+        assert_eq!((live.len(), live[0].opacity), (1, 0.5));
     }
 
     #[test]
@@ -827,7 +835,7 @@ mod tests {
         // the overlay is the global layer's one layer
         assert_eq!(p.global.len(), 1);
         assert_eq!(p.global[0].name, "Text");
-        assert_eq!(p.global[0].live().count(), 1);
+        assert_eq!(live_texts(&p.scenes[1], &p.global).len(), 1);
     }
 
     #[test]
@@ -852,19 +860,19 @@ mod tests {
         // 1600x720 at 1.118: 1789x805 at -76,-72, edges stretched
         assert_eq!((art.x, art.y, art.w, art.h), (-76.0, -72.0, 1789.0, 805.0));
         assert!(matches!(&art.kind, Kind::Media(m) if m.fill == Fill::Extend && !m.smooth));
-        assert_eq!(p.global[0].live().count(), 1);
+        assert_eq!(live_texts(&p.scenes[0], &p.global).len(), 1);
     }
 
     #[test]
-    fn live_texts() {
+    fn live_text_is_marked() {
         let p = read_json(r#"{ "version": 2, "global": { "layers": [ { "objects": [ { "id": "o", "type": "text", "text": "{time}" } ] } ] },
             "scenes": [ { "layers": [ { "objects": [ { "id": "l", "type": "text", "text": "CPU {pc.cpu.load:d}%" },
                                                     { "id": "s", "type": "text", "text": "{{not live}}" } ] } ] } ] }"#);
-        let ids: Vec<String> = p.scenes[0].layers[0].live().map(|w| w.id).collect();
+        let ids: Vec<String> = live_texts(&p.scenes[0], &[]).into_iter().map(|w| w.id).collect();
         assert_eq!(ids, ["l"]);
         let Kind::Text(s) = &p.scenes[0].layers[0].objects[1].kind else { panic!() };
         assert_eq!(s.text, "{not live}"); // static text has its escapes made plain
-        assert_eq!(p.global[0].live().count(), 1);
+        assert_eq!(live_texts(&p.scenes[0], &p.global).len(), 2);
     }
 
     #[test]
@@ -1374,4 +1382,55 @@ mod expand_tests {
 
 /// Live text in drawing order (docs/widgets.md, Live text). Owned by work package P3.
 #[cfg(test)]
-mod live_tests {}
+mod live_tests {
+    use super::*;
+
+    fn text(id: &str, text: &str, opacity: f32) -> Object {
+        let w = Text { id: id.into(), kind: "text".into(), text: text.into(), opacity, ..Text::default() };
+        Object { id: id.into(), visible: true, opacity, x: 0.0, y: 0.0, w: 0.0, h: 0.0, rotate: 0, flip: false,
+                 kind: Kind::Text(Text { live: crate::data::is_live(text), ..w }), clip: None, groups: Vec::new() }
+    }
+
+    fn layer(id: &str, visible: bool, opacity: f32, objects: Vec<Object>) -> Layer {
+        Layer { id: id.into(), name: id.into(), visible, opacity, objects }
+    }
+
+    /// Live texts come in drawing order, into copies, each at its own opacity and with its clip; hidden
+    /// layers and hidden objects are left out, and so is static text.
+    #[test]
+    fn live_texts_order() {
+        // a copy's leaves, as the expander lays them out: a clip, and a translucent copy as a group
+        let mut inner = text("c/val", "{pc.cpu.temp:d}°", 0.8);
+        inner.clip = Some([10, 20, 110, 60]);
+        inner.groups = vec![Group { id: "c".into(), opacity: 0.5, rect: [10, 20, 110, 60] }];
+        if let Kind::Text(w) = &mut inner.kind {
+            w.clip = inner.clip;
+        }
+        let mut hidden = text("h", "{time}", 1.0);
+        hidden.visible = false;
+        let scene = Scene {
+            id: "s".into(),
+            name: "s".into(),
+            seconds: 1.0,
+            background: "#000000".into(),
+            layers: vec![
+                layer("bottom", true, 1.0, vec![text("a", "{time}", 1.0), text("plain", "{{x}}", 1.0), inner]),
+                layer("gone", false, 1.0, vec![text("g", "{time}", 1.0)]),
+                layer("faded", true, 0.5, vec![hidden, text("b", "{pc.cpu.load}", 0.25)]),
+            ],
+        };
+        let global = vec![layer("top", true, 0.75, vec![text("clock", "{time}", 1.0)])];
+        let live = live_texts(&scene, &global);
+        let ids: Vec<&str> = live.iter().map(|w| w.id.as_str()).collect();
+        assert_eq!(ids, ["a", "c/val", "b", "clock"]);
+        // own opacity only: the layer's and the groups' are applied where the text is drawn
+        let opacities: Vec<f32> = live.iter().map(|w| w.opacity).collect();
+        assert_eq!(opacities, [1.0, 0.8, 0.25, 1.0]);
+        assert_eq!(live[1].clip, Some([10, 20, 110, 60]));
+        assert_eq!(live[0].clip, None);
+        // the global layers alone, when the scene has none
+        let bare = Scene { layers: Vec::new(), ..scene.clone() };
+        assert_eq!(live_texts(&bare, &global).len(), 1);
+        assert!(live_texts(&bare, &[]).is_empty());
+    }
+}
