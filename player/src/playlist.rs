@@ -344,8 +344,20 @@ struct Common {
     y: f64,
     w: f64,
     h: f64,
+    #[serde(deserialize_with = "whole")]
     rotate: u16,
     flip: bool,
+}
+
+/// A whole number however it's written: 90, 90.0 and 9e1 are the same number, as the studio's JSON.parse reads
+/// them (docs/widgets.md, Geometry at scale), so a hand-made `"rotate": 90.0` turns in both.
+fn whole<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u16, D::Error> {
+    let v = f64::deserialize(d)?;
+    if v.fract() == 0.0 && (0.0..=f64::from(u16::MAX)).contains(&v) {
+        Ok(v as u16)
+    } else {
+        Err(serde::de::Error::custom("not a whole number"))
+    }
 }
 
 impl Default for Common {
@@ -780,6 +792,12 @@ mod tests {
         assert_eq!((i.x, i.y, i.w, i.h, i.rotate, i.flip), (1.0, 2.0, 30.0, 40.0, 90, true));
         assert_eq!(i.kind, Kind::Media(Media { src: PathBuf::from(r"C:\pl\sources/x.png"), smooth: true, fill: Fill::Mirror, keep_aspect: false, tint: None }));
         assert_eq!(s.layers[0].objects[1].rotate, 0); // 45 isn't a quarter turn
+        // a number however it's written: 90.0 and 9e1 are 90, as the studio reads them
+        let q = read_json(r#"{ "version": 2, "scenes": [ { "layers": [ { "objects": [
+            { "id": "a", "type": "image", "src": "a.png", "rotate": 90.0 }, { "id": "b", "type": "image", "src": "b.png", "rotate": 9e1 },
+            { "id": "c", "type": "image", "src": "c.png", "rotate": 90.5 }, { "id": "d", "type": "image", "src": "d.png", "rotate": -90 } ] } ] } ] }"#);
+        let turns: Vec<u16> = q.scenes[0].layers[0].objects.iter().map(|o| o.rotate).collect();
+        assert_eq!(turns, [90, 90, 0, 0]);
         let Kind::Shape(sh) = &s.layers[0].objects[2].kind else { panic!() };
         assert_eq!((sh.shape, sh.crisp), (ShapeKind::Ellipse, true));
         assert!(matches!(&sh.fill, Some(Paint::Linear { angle, stops }) if *angle == 90.0 && stops.len() == 2));
