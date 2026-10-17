@@ -191,5 +191,11 @@
     "text": "{ x : d | f }",
     "live": true,
     "plain": " f "
+  },
+  {
+    "text": "x{pc.cpu.te",
+    "live": false,
+    "plain": "x{pc.cpu.te",
+    "note": "a placeholder cut part way by a text limit (docs/widgets.md, Limits) shows as written"
   }
 ]

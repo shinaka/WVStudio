@@ -198,6 +198,19 @@
               "widget": "hollow"
             },
             {
+              "id": "m11",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 10,
+              "y": 10,
+              "w": 10,
+              "h": 10,
+              "scale": 1,
+              "widget": "heavy"
+            },
+            {
               "id": "ok",
               "type": "widget",
               "visible": true,

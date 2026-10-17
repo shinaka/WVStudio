@@ -967,6 +967,16 @@ mod tests {
         }
     }
 
+    /// The live parser reads the shared vectors as they say, a text a limit cut part way included.
+    #[test]
+    fn live_vectors() {
+        for row in vectors("live.json") {
+            let text = row["text"].as_str().unwrap();
+            assert_eq!(crate::data::is_live(text), row["live"].as_bool().unwrap(), "{row}");
+            assert_eq!(crate::data::fill(text, |_| None, chrono::Utc::now()), row["plain"].as_str().unwrap(), "{row}");
+        }
+    }
+
     #[test]
     fn color_vectors() {
         for row in vectors("colors.json") {

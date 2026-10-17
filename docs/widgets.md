@@ -566,8 +566,8 @@ Editing a widget used in the global layer prepares every scene again, as any edi
 | scale | 0.01–16 (the studio offers 0.05–8) | clamped |
 | inputs | 32 per widget | the rest are ignored |
 | objects | 2000 per `widget.json` | the studio refuses to save more |
-| file | 1 MiB per `widget.json` | the studio refuses to save more; the player doesn't read a bigger one, and its copies draw nothing (section 5.11) |
-| text | a copy's text value: 2000 characters, counted again once the values passed down to it are filled in, so it stays within 2000 at any depth. A text inside a widget: 4000 characters once its values are filled in, before it's read for live placeholders | the rest is cut, by whole characters (never half an emoji). Texts in a scene's own objects aren't cut |
+| file | 1 MiB per `widget.json` | the studio refuses to save more, and lists a bigger one as a problem; the player doesn't read it. Its copies draw nothing, on the cooler and in the studio (section 5.11) |
+| text | a copy's text value: 2000 characters, counted again once the values passed down to it are filled in, so it stays within 2000 at any depth. A text inside a widget: 4000 characters once its values are filled in, before it's read for live placeholders | the rest is cut, by whole characters (never half an emoji), and what's left is read as usual: a placeholder cut part way shows as written. Texts in a scene's own objects aren't cut |
 | ids | 64 characters of a copy's id, and of a layer's or an object's id inside a widget | the rest is ignored: two copies whose ids start with the same 64 characters can be drawn as one group (section 5.5) |
 
 **Counting work.** The budget decides which leaves exist, so both renderers count it exactly alike. Steps are
@@ -662,8 +662,8 @@ widget, sorted by name:
 
 - a picture of the widget (letterboxed over a checkerboard), its name, and how many copies use it ("3×");
 - buttons ⧉ Duplicate, ⇩ Export and ✕ Delete;
-- a widget with a problem (a bad folder name, a broken `widget.json`, one from a newer studio) shows a grey card
-  with the reason and **Show folder**;
+- a widget with a problem (a bad folder name, a broken `widget.json`, one over 1 MiB, one from a newer studio)
+  shows a grey card with the reason and **Show folder**;
 - an example (`example-…`) is marked "example", and opens read-only.
 
 After the cards: **+ New**, **From selection**, **Import…**, and **Recently deleted** (when there are some).
