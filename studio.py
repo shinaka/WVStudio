@@ -3,7 +3,8 @@
   python wv.py studio [image]
 
 Serves studio/index.html (and studio.js) to a browser on this PC only. The page draws the scenes and edits the
-playlist document, which saves here as it changes; the player draws the same document on the cooler.
+playlist document, which saves here as it changes; the player draws the same document on the cooler. Widgets
+(docs/widgets.md) are files of their own in widgets/, beside the playlist's folder, saved one by one.
 """
 import base64
 import copy
@@ -202,10 +203,11 @@ class Source:
 
 # --- The playlist: scenes of layers and objects (docs/scenes.md) ---------------------------------
 #
-# playlist/playlist.json, version 2: scenes, each a stack of layers holding image, video, text and shape objects,
-# plus a global layer stack over every scene. The page edits the whole document and sends it back as it changes;
-# the player re-reads it whenever it changes, so editing here is live. Media lives in playlist/sources/, named by
-# content hash. A version 1 file (one piece file plus text per item) is converted the first time it's read.
+# playlist/playlist.json, version 2: scenes, each a stack of layers holding image, video, text, shape and widget
+# objects (copies), plus a global layer stack over every scene. The page edits the whole document and sends it back
+# as it changes; the player re-reads it whenever it changes, so editing here is live. Media lives in
+# playlist/sources/, and the pictures chosen for copies' inputs in playlist/inputs/, each named by content hash. A
+# version 1 file (one piece file plus text per item) is converted the first time it's read.
 
 PLAYLIST_DIR = wv.ROOT / "playlist"
 PLAYLIST = PLAYLIST_DIR / "playlist.json"
@@ -1844,7 +1846,7 @@ def media_get(rest):
         raise ValueError(f"{rel[:100]!r} isn't a kind of media a widget holds.")
     path = folder.joinpath(*rel.split("/"))
     if not inside(path, folder):
-        raise FileNotFoundError(f"{rest} isn't there")
+        raise Refused(404, f"{rest} isn't there.")
     return open_media(path, rest)
 
 
@@ -2899,7 +2901,7 @@ def failure(e):
     if isinstance(e, ValueError):  # a bad request (JSON that isn't, an id that isn't one, a file that isn't)
         return 400, {"error": str(e)}
     if isinstance(e, FileNotFoundError):
-        return 404, {"error": "That file isn't there."}
+        return 404, {"error": f"{Path(str(e.filename or 'That file')).name} isn't there."}
     if isinstance(e, SystemExit):  # wv's helpers exit with a message on failure (Aseprite missing)
         return 400, {"error": str(e)}
     if isinstance(e, OSError) and in_use(e):
@@ -3033,7 +3035,9 @@ class Handler(BaseHTTPRequestHandler):
         elif (m := re.fullmatch(r"/api/media/([\w.-]+)", url.path)):
             try:
                 self.json(open_kept(m[1]))
-            except (OSError, ValueError) as e:
+            except KeyboardInterrupt:
+                raise
+            except BaseException as e:  # SystemExit too: wv.aseprite exits when Aseprite is missing
                 self.json({"error": str(e)}, 404)
         elif url.path == "/api/fonts":
             self.json(font_list())
