@@ -1498,11 +1498,14 @@ function wellFormed(w) {
 
 /** Adds a widget the server has (an entry of GET /api/widgets, or what New, Duplicate, Import or Restore answer:
  *  {id, widget, stamp, ...}) to the library, outside the history. What the page holds is well formed; it's
- *  written back only if it's edited. */
-function libAdd(e) {
+ *  written back only if it's edited. A widget under an id that left the library is another one (a folder copied in
+ *  by hand, say): it gets a gen no undo step holds, so no undo writes the old one over it. Only its own folder
+ *  coming back (undoing its delete) passes `gen`, the one it left with. */
+function libAdd(e, gen = null) {
   const old = libMeta.get(e.id), content = wellFormed(e.widget);
   lib.set(e.id, content);
-  libMeta.set(e.id, { stamp: e.stamp ?? null, gen: old?.gen ?? lostGens.get(e.id) ?? 0, saved: JSON.stringify(content),
+  const fresh = lostGens.has(e.id) ? lostGens.get(e.id) + 1 : 0;
+  libMeta.set(e.id, { stamp: e.stamp ?? null, gen: old?.gen ?? gen ?? fresh, saved: JSON.stringify(content),
                       resolvedFonts: e.resolved_fonts || old?.resolvedFonts || {}, ownFonts: e.own_fonts || old?.ownFonts || [],
                       readOnly: e.read_only ?? old?.readOnly ?? null, force: false });
   libTouch(e.id);
@@ -1648,7 +1651,7 @@ async function restoreFolder(action) {
   try {
     const out = await postJson("/api/widgets/restore", { trash: action.trash });
     if (lib.has(out.id)) takeInWidget(out.id, out.widget, out.stamp);
-    else libAdd(out);
+    else libAdd(out, lostGens.get(out.id) ?? 0);
     afterSaves(() => refreshLibrary());  // its fonts and the deleted list
   } catch (err) {
     message(`Couldn't bring ${action.id} back: ${err.message}`, "warn");
