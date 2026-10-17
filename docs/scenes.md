@@ -1,7 +1,8 @@
 # Scenes: layers and objects (spec)
 
-Each playlist entry is a **scene**: a 1600x720 canvas with a background colour and a stack of **layers**,
-each holding **objects** (images, videos, text, shapes). The player draws scenes from the original files.
+Each playlist entry is a **scene**: the panel's 1600x720 canvas (a widget has its own size) with a
+background colour and a stack of **layers**, each holding **objects** (images, videos, text, shapes and
+copies of widgets). The player draws scenes from the original files.
 The studio is an editor for them, in the spirit of Photoshop or Figma. This replaces the one piece file
 plus text model.
 
@@ -45,6 +46,10 @@ objects overlap, they don't show through each other. A hidden layer isn't drawn.
   - For image, video and shape objects: the box in panel pixels, as drawn after rotation. For a
     90°/270° rotation, `w`/`h` are the box's on-screen size.
   - For text: `x`/`y` are the anchor (text.md), and `w`/`h` are ignored.
+  - For a widget copy: `x`/`y` are the container's top-left, and `w`/`h` are only for older tools; its
+    size comes from `scale` (widgets.md).
+  - A position that isn't a whole number is rounded half up (`floor(v + 0.5)`), in the player and the
+    studio alike, so −1.5 becomes −1.
 - `rotate` is 0, 90, 180 or 270 (clockwise), and `flip` mirrors left to right after rotating. Text
   ignores both for now.
 - `opacity` is 0..1, and multiplies within the layer's buffer.
@@ -65,8 +70,14 @@ objects overlap, they don't show through each other. A hidden layer isn't drawn.
     today's fill modes do, still within its layer. `none` draws only its box.
   - **Animation:** animated images (GIF, APNG, WebP) and videos loop on their own timing. Video is read at
     30 fps or less, and only its first 60 s are used.
+  - **Files:** images are PNG, APNG, GIF, WebP, JPG and BMP; videos MP4, M4V, MOV, WebM, MKV and AVI. A
+    video is always read as the container its extension names, so a WebM renamed `.mp4` doesn't play.
   - `pixel` is how many source pixels make one art pixel. Only the editor uses it, to offer whole-number
     sizes; it's 1 for photos and video.
+  - `"keep_aspect": true` fits the file inside its box, keeping its shape, centred. `"tint": "#rrggbb"`
+    gives every pixel the file draws that colour, keeping its transparency; `null` draws it as it is.
+    Both are described in widgets.md ("Images in a box"). The studio offers Tint everywhere and the
+    keep-aspect tick box inside widgets.
 - **text:** the text keys from text.md (text, font, size, color, align, valign, line_height, outline
   and crisp, with `x`/`y` as the anchor), plus the common keys. Its `opacity` replaces the one in text.md.
   Live placeholders work as described in data.md.
@@ -83,6 +94,13 @@ objects overlap, they don't show through each other. A hidden layer isn't drawn.
   - **Crisp:** a pixel is painted exactly when its centre is inside the fill or stroke region, with no
     anti-aliasing. Both renderers must follow that rule, so crisp shapes match exactly.
   - Shapes ignore `rotate` and `flip`.
+- **widget:** a copy of a widget from the `widgets\` folder next to the playlist's, drawn here at a
+  scale, with its own values for the widget's inputs.
+  - Keys: `"widget": "<id>"`, `"scale": 1.5`, `"inputs": {"label": "GPU"}`, plus the common keys.
+  - `scale` is what counts: the copy is the widget's container times `scale`. `w` and `h` are written
+    for older tools, and renderers ignore them. Copies don't turn or flip (`rotate` and `flip` are
+    ignored), because text and shapes can't.
+  - The whole format, the inputs and the drawing rules are in widgets.md.
 
 ### Drawing a frame at time t
 
@@ -91,6 +109,11 @@ objects overlap, they don't show through each other. A hidden layer isn't drawn.
    buffer at time t, each at its own opacity. Then blend the buffer over the frame at the layer's
    opacity.
 3. Draw the global layers the same way, on top.
+
+A copy of a widget is drawn as its objects, in place in its layer's list, each clipped to the copy's box.
+A copy below 100% opacity, and a widget layer below 100%, is a group like a scene layer: drawn whole onto
+a buffer, then blended at that opacity. At 100% its objects are drawn straight into the layer, which
+gives the same picture.
 
 ### Timeline
 
@@ -104,11 +127,27 @@ objects overlap, they don't show through each other. A hidden layer isn't drawn.
 
 ### Live text (data.md)
 
-- **Where it's drawn:** a live text object is drawn at its true place in the stack when nothing above it,
-  in the scene or the global layer, is animated. In that case the player keeps whatever is above as a
-  still RGBA image and blends it over the redrawn text.
-- **Otherwise** it's drawn on top of everything. The studio shows a note on such objects.
-- **Cost:** it's only redrawn when its shown text changes, as now.
+The player decides once per scene where its live text goes, copies expanded:
+
+1. Take the scene's layers, then the global layers, in drawing order. Find the first live text, P.
+2. Find S, where P's group starts: P's top-level layer if that layer is below 100%; otherwise the
+   outermost copy or widget layer below 100% around P; otherwise P itself.
+3. If nothing animated is drawn from S upward (S's own content included), every live text is drawn **in
+   place**: exactly where it sits in the stack, inside its groups and clips, as if it were static text.
+   Translucent groups are kept whole, so a faded copy's value fades with its panel.
+4. **Otherwise** every live text is drawn on top of everything, in drawing order, at its opacity times the
+   opacities of its layer and its groups, clipped to its copy. The layers panel marks such text
+   `live, on top`.
+
+- Live text in a hidden layer isn't drawn.
+- **Cost:** it's only redrawn when its shown text changes. While playing, the frames hold everything below
+  S; what's from S upward is kept as stills, groups and live texts, put together again when a text
+  changes, then laid over each frame.
+- **Over an animation, values update less often.** A change means every frame of the scene's cycle is
+  blended and encoded again. The player keeps that to about 2% of one core: after a redraw that took `c`
+  seconds, the next starts no sooner than `max(0.5 s, 50 × c)` after the last one started. Over a still
+  that's twice a second at most; over a long video it can be minutes. The studio says so in the scene's
+  note.
 
 ## Moving from version 1
 
@@ -137,8 +176,8 @@ reads both versions the same way.
 
 - **Editor layout:**
   - **Left:** a toolbar with Move/Select (V), Text (T), Image/Video (I: a file picker, or drop a file onto
-    the canvas), Shape (R, with a menu for rect, ellipse and line), and Hand and zoom (H, and Space
-    to drag).
+    the canvas), Shape (R, with a menu for rect, ellipse and line), Widget (W: pick a widget, then click
+    where its copy goes), and Hand and zoom (H, and Space to drag).
   - **Centre:** the canvas, with guides, the camera hole, snapping and corner handles as now.
   - **Right, top: Layers panel.** Layers with their objects nested under them, top first. Drag to reorder
     objects, or to move them between layers. Eye and lock toggles, double-click to rename, Add and Delete
@@ -149,11 +188,14 @@ reads both versions the same way.
       background colour from the eyedropper.
     - **Text:** the text options, with autocomplete.
     - **Shapes:** fill (solid or gradient), stroke, radius, crisp.
+    - **A widget copy:** the widget, its scale, and a row per input (widgets.md).
     - **A layer:** opacity and name.
     - **Nothing selected:** the scene's name, seconds and background.
 - **The playlist:** a strip of scene thumbnails with their seconds. **Global** is pinned first. Click a
   scene to edit it; add, duplicate, delete and reorder scenes. There are Play/Stop and Start with Windows
-  controls, and the Data sources window as now.
+  controls, and the Data sources window as now. A **Widgets** tab beside **Scenes** holds the widget
+  library: a card per widget to open or drag onto the canvas, plus New, From selection and Import
+  (widgets.md).
 - **Saving:** edits save as you make them (debounced), and the player picks them up. There's no Add or
   Update step any more.
   - Media uploads go into `sources/` (named by content hash, as now) and are tidied when no object uses

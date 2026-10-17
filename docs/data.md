@@ -16,6 +16,8 @@ player polls them and draws the text.
 
 - Keys are lowercase and dotted, e.g. `claude.week` or `pc.gpu.temp`. Unknown, missing or stale values with
   no fallback show `--`.
+- Inside a widget, `{$id}` is one of its inputs, filled in before placeholders are read, so a copy's value
+  can be a placeholder of its own (see [widgets.md](widgets.md)).
 - Default forms:
   - Numbers: whole numbers have no decimals; others are rounded to 1 decimal place with a trailing `.0`
     dropped.
@@ -294,14 +296,16 @@ hours.
     `{"values": {...}}` or `{"error": "..."}`.
 - **Drawing live text:**
   - Static text is drawn into the prepared frames as now.
-  - Live text is drawn into a separate live layer, while playing, over the prepared frames. Live text
-    always draws above static text: the one difference from list order.
-  - **When to redraw:** the live layer is redrawn only when some live text object's resolved text changes. For
-    the time, that's checked when the minute changes or values update.
-  - **Building frames:** each frame is the cached JPEG decoded, the live layer blended over it, then
+  - Live text is drawn while playing, over the prepared frames. It keeps its place in the stack when
+    nothing above it is animated; otherwise it's drawn on top of everything. The exact rule is in
+    scenes.md ("Live text").
+  - **When to redraw:** the live text is redrawn only when some live text object's resolved text changes.
+    That's checked every 500 ms, so `{time:%H:%M:%S}` redraws about once a second and `{time}` once a
+    minute. Over an animation, redraws are spaced out to stay cheap (scenes.md).
+  - **Building frames:** each frame is the cached JPEG decoded, the live text blended over it, then
     re-encoded, rotated as before.
-  - **Caching:** results are kept per text version, so an animation is re-encoded once per change, not
-    every loop, and a still is re-encoded once.
+  - **Caching:** only the frames of the current text are kept, so an animation is re-encoded once per
+    change, not every loop, and a still is re-encoded once.
   - **No live text:** exactly today's path, with zero extra cost.
 
 ## The studio
