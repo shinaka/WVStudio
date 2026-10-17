@@ -915,11 +915,20 @@
     seg("wdBackdrop", backdrop());
     showInputs(id, def, locked);
     showPreviewChoice(id);
-    const cut = [...cutOffInputs(`widget:${id}`)].map((i) => def.inputs.find((x) => x.id === i)?.name || i);
-    $("wdCutNote").hidden = !cut.length;
-    $("wdCutNote").textContent = cut.length ? `${cut.join(", ")} ${cut.length > 1 ? "are" : "is"} cut off by the widget's edge.` : "";
+    showCutOff(id, def);
     showUsedIn(id);
   }
+  /** Which text inputs, as the editor previews them, run past the widget's edge (the container always clips). */
+  function showCutOff(id, def = defOf(id)) {
+    const cut = [...cutOffInputs(`widget:${id}`)].map((i) => def.inputs.find((x) => x.id === i)?.name || i);
+    const text = cut.length ? `${cut.join(", ")} ${cut.length > 1 ? "are" : "is"} cut off by the widget's edge.` : "";
+    if ($("wdCutNote").textContent !== text) $("wdCutNote").textContent = text;
+    $("wdCutNote").hidden = !text;
+  }
+  setInterval(() => {  // it follows what arrives: live values, fonts
+    const id = holderWidgetId();
+    if (widgetsOn && id !== null && lib.has(id) && !$("pWidget").hidden) showCutOff(id);
+  }, 500);
 
   /** The inputs editor: a row per input with its type, name, {$id} chip, default and ⋮. Rows are built again when
    *  inputs come, go or move; a name or default is updated in place, unless it's being typed in. */
