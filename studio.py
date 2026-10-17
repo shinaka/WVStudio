@@ -268,11 +268,35 @@ def write_file(path, data):
             raise
 
 
+JSON_DEPTH = 127  # arrays and objects inside each other: the player's JSON reader (serde_json) stops at 128
+TOO_DEEP = f"nests arrays and objects more than {JSON_DEPTH} deep, which the player doesn't read"
+
+
 def strict_json(text):
-    """JSON as the player and the page read it: NaN and Infinity aren't numbers there, so here they're refused too."""
+    """JSON as the player and the page read it: NaN and Infinity aren't numbers there, so here they're refused too,
+    and so is nesting deeper than the player reads."""
     def refuse(name):
         raise ValueError(f"{name} isn't a JSON number")
-    return json.loads(text, parse_constant=refuse)
+    try:
+        value = json.loads(text, parse_constant=refuse)
+    except RecursionError:
+        raise ValueError(f"it {TOO_DEEP}") from None
+    if too_deep(value):
+        raise ValueError(f"it {TOO_DEEP}")
+    return value
+
+
+def too_deep(value):
+    """Whether arrays and objects nest more than JSON_DEPTH deep in a JSON value. A loop, not recursion: a file
+    made by hand can nest deeper than Python recurses."""
+    stack = [(value, 1)]
+    while stack:
+        v, depth = stack.pop()
+        if isinstance(v, (dict, list)):
+            if depth > JSON_DEPTH:
+                return True
+            stack.extend((x, depth + 1) for x in (v.values() if isinstance(v, dict) else v))
+    return False
 
 
 def write_atomic(path, data):
@@ -323,15 +347,16 @@ def note_used(paths):
 
 
 def strings_in(value):
-    """Every string anywhere in a JSON value."""
-    if isinstance(value, str):
-        yield value
-    elif isinstance(value, dict):
-        for v in value.values():
-            yield from strings_in(v)
-    elif isinstance(value, list):
-        for v in value:
-            yield from strings_in(v)
+    """Every string anywhere in a JSON value, in order. A loop, not recursion, as in too_deep."""
+    stack = [value]
+    while stack:
+        v = stack.pop()
+        if isinstance(v, str):
+            yield v
+        elif isinstance(v, dict):
+            stack.extend(reversed(list(v.values())))
+        elif isinstance(v, list):
+            stack.extend(reversed(v))
 
 
 def named_files(doc, folders):
@@ -826,7 +851,7 @@ def carried_font(path):
     wid = p.parent.parent.name
     return (p.parent.name.lower() == "fonts" and font_name_ok(p.name) and WIDGET_ID.fullmatch(wid) is not None
             and wid not in RESERVED and same_file(p.parent.parent.parent, widgets_dir())
-            and inside(p, widgets_dir() / wid))
+            and real_dir(widgets_dir() / wid) and inside(p, widgets_dir() / wid))
 
 
 # --- Reusable widgets (docs/widgets.md) ---------------------------------------------------------------------------
@@ -883,6 +908,15 @@ def widget_folder(wid):
     return widgets_dir() / wid
 
 
+def installed_folder(wid):
+    """widget_folder(id) for a widget that's here: a plain folder, not a link or junction to somewhere else (the
+    listing calls that a problem, and nothing is read through it). Else 404."""
+    folder = widget_folder(wid)
+    if not real_dir(folder):
+        raise Refused(404, f"There's no widget {wid}.")
+    return folder
+
+
 def is_example(wid):
     """The shipped examples are tracked in git: the studio never writes into them."""
     return wid.startswith("example-")
@@ -929,7 +963,7 @@ def is_ref(v):
 def same_file(a, b):
     try:
         return os.path.samefile(a, b)
-    except OSError:
+    except (OSError, ValueError):  # ValueError: a NUL in a path from a query string
         return False
 
 
@@ -1006,8 +1040,11 @@ def taken_ids():
 
 
 def fresh_id(name, taken=None):
-    """A new widget's id: made from its name, then -2, -3 and so on while that's taken."""
+    """A new widget's id: made from its name, then -2, -3 and so on while that's taken. Never an example's: the
+    studio never writes into a folder named example-..., so a widget named "Example clock" gets `clock`."""
     stem = make_id(name)
+    while is_example(stem):
+        stem = make_id(stem[len("example-"):])
     taken = taken_ids() if taken is None else taken
     wid, n = stem, 1
     while wid.casefold() in taken:
@@ -1204,7 +1241,7 @@ def find_font(folder, name):
 
 def widget_font(wid, name):
     """GET /api/font?widget=<id>&name=<file>: the file that widget's font name means, found as the player finds it."""
-    folder = widget_folder(wid)
+    folder = installed_folder(wid)
     if not font_name_ok(name):
         raise ValueError(f"{name[:100]!r} isn't a font file's name.")
     path = find_font(folder, name)
@@ -1461,6 +1498,8 @@ def check_widget(w, wid=None, folder=None, types_of=None):
         raise ValueError("A widget must be an object.")
     if newer(w):
         raise ValueError(f"This widget was made by a newer studio (version {w['version']}).")
+    if too_deep(w):
+        raise ValueError(f"This widget {TOO_DEEP}.")
     if len(json.dumps(w, ensure_ascii=False).encode("utf-8")) > MAX_WIDGET_JSON:
         raise ValueError("This widget is more than 1 MB as JSON.")
     w = copy.deepcopy(w)
@@ -1637,6 +1676,9 @@ def duplicate_widget(req):
     src = widget_folder(wid)
     if target is not None:
         widget_folder(target)
+        if is_example(target):
+            raise ValueError("Folder names starting with example- are kept for the examples that come with the "
+                             "studio: choose another name.")
     name = req.get("name").strip()[:80] if isinstance(req.get("name"), str) else ""
     with playlist_lock:
         if not real_dir(src):
@@ -1837,7 +1879,7 @@ def media_get(rest):
     if parts[0] == "inputs" and len(parts) == 2 and PART.fullmatch(parts[1]):
         folder, rel = inputs_dir(), parts[1]
     elif parts[0] == "widgets" and len(parts) >= 3:
-        folder, rel = widget_folder(parts[1]), "/".join(parts[2:])
+        folder, rel = installed_folder(parts[1]), "/".join(parts[2:])
         if not rel_path_ok(rel):
             raise ValueError(f"{rel[:100]!r} isn't a path inside a widget's folder.")
     else:
@@ -1856,10 +1898,7 @@ def holder_of(spec):
         return None, PLAYLIST_DIR
     if isinstance(spec, str) and spec.startswith("widget:"):
         wid = spec[len("widget:"):]
-        folder = widget_folder(wid)
-        if not real_dir(folder):
-            raise Refused(404, f"There's no widget {wid}.")
-        return wid, folder
+        return wid, installed_folder(wid)
     raise ValueError('a holder is "playlist" or "widget:<id>"')
 
 
@@ -1981,8 +2020,8 @@ def ref_file(ref):
         folder = PLAYLIST_DIR / parts[0]
     elif len(parts) == 4 and parts[0] == "widgets" and parts[2] == "media" and PART.fullmatch(parts[3]):
         try:
-            folder = widget_folder(parts[1]) / "media"
-        except ValueError:
+            folder = installed_folder(parts[1]) / "media"
+        except (ValueError, Refused):
             return None
     else:
         return None
@@ -2456,11 +2495,15 @@ def describe_import(x, found, installed, graph):
         style = entry.get("style") if isinstance(entry.get("style"), str) else ""
         fonts_missing.append({"name": name, "family": family, "style": style,
                               "installed": installed_named(family, style) if family else []})
+    exists, notes = compare_installed(x), list(x["notes"])
+    if exists == "different" and is_example(x["id"]):
+        notes.append(f"{x['id']} is one of the examples, which the studio doesn't change: Replace skips it, and Keep "
+                     "both imports it under another id.")
     return {"folder": x["folder"], "id": x["id"], "name": w["name"], "description": w["description"], "w": w["w"],
             "h": w["h"], "inputs": w["inputs"],
             "preview": "data:image/png;base64," + base64.b64encode(preview).decode() if preview else None,
-            "exists": compare_installed(x), "needs": needs, "cycles": cycles_through(x["id"], graph),
-            "fonts_missing": fonts_missing, "notes": x["notes"]}
+            "exists": exists, "needs": needs, "cycles": cycles_through(x["id"], graph),
+            "fonts_missing": fonts_missing, "notes": notes}
 
 
 def cycles_through(wid, graph):
@@ -2480,9 +2523,10 @@ def cycles_through(wid, graph):
 def import_widgets(body, mode, choices, zip_name):
     """POST /api/widgets/import. mode=check reads the zip and describes each widget in it, writing nothing.
     mode=import puts them in the library: one this PC has the same of is skipped; a different one follows
-    `choices` ({folder: "keep-both", "replace" or "skip"}): keep-both imports it under a fresh id (and points the
-    zip's other widgets at that), replace moves this PC's one to .deleted first. Each widget is written from the
-    bytes read into a folder of the studio's own, then moved into place whole."""
+    `choices` ({folder: "keep-both", "replace" or "skip"}): keep-both imports it under a fresh id made from its name
+    (and points the zip's other widgets at that), replace moves this PC's one to .deleted first (never an example:
+    those are skipped). Each widget is written from the bytes read into a folder of the studio's own, then they're
+    all moved into place, or none are."""
     if mode not in ("check", "import"):
         raise ValueError('mode must be "check" or "import"')
     found, notes = read_zip(body, zip_name)
@@ -2510,14 +2554,21 @@ def import_widgets(body, mode, choices, zip_name):
             elif exists == "same":
                 skipped.append({"folder": x["folder"], "why": "The same widget is here already."})
             elif exists == "different" and choice == "keep-both":
-                renames[x["id"]] = new = fresh_id(x["id"], taken)
-                taken.add(new)
+                # a fresh id made from its name, as for any new widget (docs/widgets.md, Ids)
+                renames[x["id"]] = new = fresh_id(x["checked"]["name"], taken)
+                taken.add(new.casefold())
                 plan.append((x, new, False))
+            elif exists == "different" and choice == "replace" and is_example(x["id"]):
+                skipped.append({"folder": x["folder"], "why": f"{x['id']} is one of the examples, which the studio "
+                                "doesn't change: choose Keep both to import it under another id."})
+            elif exists == "different" and choice == "replace" and not real_dir(widgets_dir() / x["id"]):
+                skipped.append({"folder": x["folder"], "why": f"widgets\\{x['id']} isn't a plain folder (it's a link, "
+                                "or a file): it isn't replaced."})
             elif exists == "different" and choice == "replace":
                 plan.append((x, x["id"], True))
             elif exists == "different":
                 skipped.append({"folder": x["folder"], "why": f"You have a different widget {x['id']}: choose Keep "
-                                "both or Replace."})
+                                + ("both." if is_example(x["id"]) else "both or Replace.")})
             else:
                 plan.append((x, x["id"], False))
         staging = staging_folder("import") if plan else None
@@ -2534,21 +2585,56 @@ def import_widgets(body, mode, choices, zip_name):
                 for rel, data in files.items():
                     write_file(staging.joinpath(wid, *rel.split("/")), data)
                 x["written"] = w
-            for x, wid, replace in plan:
-                dest, trash = widgets_dir() / wid, None
-                if replace and real_dir(dest):
-                    trash = to_trash(dest, wid)
-                elif os.path.lexists(dest):
-                    skipped.append({"folder": x["folder"], "why": f"widgets\\{wid} appeared meanwhile."})
-                    continue
-                move_folder(staging / wid, dest, shown_name(x["written"], wid))
-                note_used(all_media(dest))
-                imported.append({"from": x["folder"], "id": wid, "widget": x["written"],
-                                 "stamp": file_stamp(dest / "widget.json"), "replaced": trash})
+            placed = place_imports(plan, staging, skipped)
         finally:
             if staging is not None:
                 shutil.rmtree(staging, ignore_errors=True)
+        for x, wid, trash in placed:
+            dest = widgets_dir() / wid
+            note_used(all_media(dest))
+            imported.append({"from": x["folder"], "id": wid, "widget": x["written"],
+                             "stamp": file_stamp(dest / "widget.json"), "replaced": trash})
     return {"imported": imported, "skipped": skipped, "notes": notes}
+
+
+def place_imports(plan, staging, skipped):
+    """Moves an import's widgets from `staging` into widgets/, all of them or none (docs/widgets.md, Undo, saving
+    and deleting): first each widget a Replace takes out goes to .deleted, then each new folder goes in. When
+    Windows won't move one (a program has a file in it open), every move already made is moved back, last first,
+    and the refusal (409, "in use") is raised: nothing has changed. Returns [(x, id, the old one's name in .deleted
+    or None)]."""
+    done, placed, trashed = [], [], {}  # done: (where a folder was, where it went), for moving it back
+    had_trash = os.path.lexists(trash_dir())
+    try:
+        for x, wid, replace in plan:
+            if replace:
+                trashed[wid] = to_trash(widgets_dir() / wid, wid)
+                done.append((widgets_dir() / wid, trash_dir() / trashed[wid]))
+        for x, wid, replace in plan:
+            dest = widgets_dir() / wid
+            if os.path.lexists(dest):  # made by hand since the plan, or a replaced one's folder made again
+                skipped.append({"folder": x["folder"], "why": f"widgets\\{wid} appeared meanwhile."})
+                continue
+            move_folder(staging / wid, dest, shown_name(x["written"], wid))
+            done.append((staging / wid, dest))
+            placed.append((x, wid, trashed.get(wid)))
+    except BaseException as e:
+        stuck = []
+        for back, there in reversed(done):
+            try:
+                move_folder(there, back, there.name)
+            except Exception:
+                stuck.append(there)
+        if not had_trash:
+            try:
+                trash_dir().rmdir()  # only if it's empty again
+            except OSError:
+                pass
+        if stuck and not isinstance(e, KeyboardInterrupt):
+            shown = " and ".join(f"widgets\\{p.relative_to(widgets_dir())}" for p in stuck)
+            raise Refused(500, f"{e} Part of the import couldn't be undone, so look at {shown}.") from e
+        raise
+    return placed
 
 
 # --- Live data in text (docs/data.md) -----------------------------------------------------
@@ -2900,6 +2986,8 @@ def failure(e):
         return e.status, {"error": str(e), **e.extra}
     if isinstance(e, ValueError):  # a bad request (JSON that isn't, an id that isn't one, a file that isn't)
         return 400, {"error": str(e)}
+    if isinstance(e, RecursionError):  # a body whose arrays and objects nest past what json.loads reads
+        return 400, {"error": "That request nests arrays and objects too deeply."}
     if isinstance(e, FileNotFoundError):
         return 404, {"error": f"{Path(str(e.filename or 'That file')).name} isn't there."}
     if isinstance(e, SystemExit):  # wv's helpers exit with a message on failure (Aseprite missing)
