@@ -47,7 +47,6 @@ Each case is a playlist and its widgets, as they'd sit on disk: `playlist/playli
 | `inputs` | text, colour and image inputs and their defaults; values that aren't colours; fallbacks inside the widget; a bound tint; unknown and wrong-type references; values made safe; a reference that builds a placeholder; image paths from the playlist and from the widget; `""`; `{$x}` values at the top level |
 | `nested` | a copy inside a widget, with values passed down by `{$id}` and inline; nested placement, clips and group ids |
 | `limits` | scenes `cycle` (A in A, A → B → A), `deep` (9 deep), `budget` (the work count, cut part way through a copy), `sizes` (placed media over 6400 × 2880, `scale` from `w`, clamping) |
-| `bounds` | the limits in code points: scene `values` (a copy's value cut to 2000 again after its text pass, which made 800,000 characters; a copy's text cut to 4000 after it, before the live parse: a placeholder cut part way, a cut between doubled braces, emoji), scene `ids` (copy, layer and object ids cut to 64 in leaf and group ids; two copies whose ids become the same; a scene's own object keeps its id) |
 
 `expected.json` lists, for each scene and for the global layers, every object drawn, in drawing order, with
 copies expanded. A top-level object that isn't a copy comes out as it is, with no clip and no groups.

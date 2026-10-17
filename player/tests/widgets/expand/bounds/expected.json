@@ -1,4 +1,5 @@
 {
+  "note": "The limits in code points (decision 24 a-c; docs/widgets.md, Limits). Scene values: a copy's value cut to 2000 again after its text pass, which made 800,000 characters (p/i/t), and an emoji value cut there (p/j/t); a copy's text cut to 4000 after it, before the live parse (g/t1 to g/t4: emoji, a cut between doubled braces, a placeholder cut part way, so nothing is live). Scene ids: copy, layer and object ids cut to 64 in leaf and group ids, right after an emoji; two copies whose ids become the same; a scene's own object keeps its id. Worked out from the decision's words, not by running a renderer.",
   "scenes": [
     {
       "id": "values",
