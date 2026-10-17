@@ -375,12 +375,16 @@ function copyScale(o, def) {
   if (typeof s !== "number" || !(s > 0)) s = typeof o.w === "number" && o.w > 0 ? o.w / def.w : 1;
   return Math.min(16, Math.max(0.01, s));
 }
+/** A layer's objects that are objects. A file made by hand can hold anything there, which the player passes over. */
+function objectsIn(l) {
+  return l && typeof l === "object" && Array.isArray(l.objects) ? l.objects.filter((o) => o && typeof o === "object") : [];
+}
 /** Brings the stored w and h of a holder's copies up to date with their scale and their widgets' containers. Older
  *  tools and a missing widget's box use them; renderers don't. */
 function refreshCopySizes(h) {
   for (const l of layersOf(h)) {
-    for (const o of l.objects || []) {
-      if (o?.type !== "widget" || !WV.idOk(o.widget) || !lib.has(o.widget)) continue;
+    for (const o of objectsIn(l)) {
+      if (o.type !== "widget" || !WV.idOk(o.widget) || !lib.has(o.widget)) continue;
       const def = WV.readDef(o.widget, lib.get(o.widget));
       if (def.problem) continue;
       const s = copyScale(o, def), w = WV.rnd(s * def.w), hh = WV.rnd(s * def.h);
@@ -1406,9 +1410,10 @@ function sendWidget(id, budget = null) {
     if (res.ok) {
       meta.stamp = out.stamp ?? meta.stamp;
       meta.force = false;
+      libTouch(id);
       if (JSON.stringify(lib.get(id)) === body && out.widget && typeof out.widget === "object") {
-        lib.set(id, out.widget);  // as the server wrote it (normalised), without an undo step
-        meta.saved = JSON.stringify(out.widget);
+        lib.set(id, wellFormed(out.widget));  // as the server wrote it (normalised), without an undo step
+        meta.saved = JSON.stringify(lib.get(id));
         libEpoch++;
         docEpoch++;
         redraw();
@@ -1468,15 +1473,39 @@ function sendHold(budget = null) {
 
 const lostGens = new Map();  // id -> the gen a widget had when it left the library, should it come back
 const conflicts = new Set(); // widgets changed both here and on disk, waiting for an answer
+// What this page changed in the library, and when, so a listing asked for before that leaves it alone: each widget
+// added, dropped, taken in or saved here, with the count of such changes then.
+let libActs = 0;
+const libActAt = new Map();
+function libTouch(id) { libActAt.set(id, ++libActs); }
+
+/** A widget's content with what the player passes over taken out: layers and objects that aren't objects, and
+ *  `layers` or `objects` that aren't lists (only a file made by hand has these: a save refuses them). When a layer
+ *  goes, each layer without an id gets the l<index> it was drawn with, so its groups keep their ids. Anything else
+ *  stays as it is. */
+function wellFormed(w) {
+  const isObject = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+  if (!isObject(w)) return w;
+  const listed = (l) => isObject(l) && (l.objects === undefined || (Array.isArray(l.objects) && l.objects.every(isObject)));
+  if (Array.isArray(w.layers) && w.layers.every(listed)) return w;
+  const layers = Array.isArray(w.layers) ? w.layers : [], gone = !layers.every(isObject);
+  return { ...w, layers: layers.flatMap((l, i) => (!isObject(l) ? [] : [{
+    ...l,
+    ...(gone && !(typeof l.id === "string" && l.id) ? { id: `l${i}` } : {}),
+    ...(l.objects === undefined ? {} : { objects: Array.isArray(l.objects) ? l.objects.filter(isObject) : [] }),
+  }])) };
+}
 
 /** Adds a widget the server has (an entry of GET /api/widgets, or what New, Duplicate, Import or Restore answer:
- *  {id, widget, stamp, ...}) to the library, outside the history. */
+ *  {id, widget, stamp, ...}) to the library, outside the history. What the page holds is well formed; it's
+ *  written back only if it's edited. */
 function libAdd(e) {
-  const old = libMeta.get(e.id);
-  lib.set(e.id, e.widget);
-  libMeta.set(e.id, { stamp: e.stamp ?? null, gen: old?.gen ?? lostGens.get(e.id) ?? 0, saved: JSON.stringify(e.widget),
+  const old = libMeta.get(e.id), content = wellFormed(e.widget);
+  lib.set(e.id, content);
+  libMeta.set(e.id, { stamp: e.stamp ?? null, gen: old?.gen ?? lostGens.get(e.id) ?? 0, saved: JSON.stringify(content),
                       resolvedFonts: e.resolved_fonts || old?.resolvedFonts || {}, ownFonts: e.own_fonts || old?.ownFonts || [],
                       readOnly: e.read_only ?? old?.readOnly ?? null, force: false });
+  libTouch(e.id);
   libEpoch++;
 }
 /** The one way content under an id the library holds is replaced from outside the history (a change on disk, Use
@@ -1487,11 +1516,12 @@ function takeInWidget(id, content, stamp) {
   meta.gen = (meta.gen ?? 0) + 1;
   libAdd({ id, widget: content, stamp });
   libMeta.get(id).gen = meta.gen;
-  rewriteHistory(id, content, meta.gen);
+  rewriteHistory(id, lib.get(id), meta.gen);
 }
 /** Drops a widget from the library (its copies show as missing). `history`: from every undo and redo state too, for
  *  a folder gone from disk. */
 function libDrop(id, { history = false } = {}) {
+  libTouch(id);
   if (libMeta.has(id)) lostGens.set(id, libMeta.get(id).gen);
   lib.delete(id);
   libMeta.delete(id);
@@ -1520,6 +1550,7 @@ function rewriteHistory(id, content, gen) {
  *  widget whose file changed outside this page is taken in, or, with unsaved changes here too, asked about. `take`
  *  lists widgets whose file wins anyway (Use the file's version). */
 async function refreshLibrary(take = []) {
+  const asked = libActs;
   let out;
   try {
     const res = await api("/api/widgets");
@@ -1528,10 +1559,13 @@ async function refreshLibrary(take = []) {
   } catch (err) {
     return message(`Couldn't read the widgets: ${err.message}`, "warn");
   }
+  // a widget this page added, dropped, took in or saved while the listing was on its way: the page knows better
+  const since = (id) => (libActAt.get(id) ?? 0) > asked;
   const seen = new Set();
   for (const e of Array.isArray(out.widgets) ? out.widgets : []) {
     if (!e || typeof e.id !== "string") continue;
     seen.add(e.id);
+    if (since(e.id)) continue;
     const meta = libMeta.get(e.id);
     if (!meta) { libAdd(e); continue; }
     Object.assign(meta, { resolvedFonts: e.resolved_fonts || {}, ownFonts: e.own_fonts || [], readOnly: e.read_only ?? null });
@@ -1539,7 +1573,7 @@ async function refreshLibrary(take = []) {
     if (JSON.stringify(lib.get(e.id)) === meta.saved || take.includes(e.id)) takeInWidget(e.id, e.widget, e.stamp);
     else askConflict(e.id);
   }
-  for (const id of [...lib.keys()]) if (!seen.has(id)) libDrop(id, { history: true });
+  for (const id of [...lib.keys()]) if (!seen.has(id) && !since(id)) libDrop(id, { history: true });
   libProblems = Array.isArray(out.problems) ? out.problems : [];
   libDeleted = Array.isArray(out.deleted) ? out.deleted : [];
   libEpoch++;
@@ -1578,7 +1612,11 @@ async function widgetGone(id) {
     try {
       const out = await postJson("/api/widgets/restore", { trash });
       const meta = libMeta.get(id);
-      if (meta) { meta.stamp = out.stamp; meta.saved = JSON.stringify(out.widget); }  // this page's edits save over it
+      if (meta) {  // this page's edits save over it
+        meta.stamp = out.stamp;
+        meta.saved = JSON.stringify(out.widget);
+        libTouch(id);
+      }
       return saveSoon(0);
     } catch (err) {
       message(`Couldn't restore ${name}: ${err.message}`, "warn");
@@ -1622,13 +1660,22 @@ async function restoreFolder(action) {
  *  back both. Resolves to whether it happened. */
 async function deleteWidget(id, { copies = false } = {}) {
   const action = { action: "delete", id, trash: null }, before = snapshot();
-  if (!(await trashFolder(action))) return false;
-  if (copies) {
-    const holders = [doc.global, ...doc.scenes, ...[...lib].filter(([w]) => !isReadOnly(w)).map(([, c]) => c)];
-    for (const h of holders) for (const l of layersOf(h)) l.objects = (l.objects || []).filter((o) => !(o?.type === "widget" && o.widget === id));
+  try {
+    if (!(await trashFolder(action))) return false;
+    if (copies) {
+      const holders = [doc.global, ...doc.scenes, ...[...lib].filter(([w]) => !isReadOnly(w)).map(([, c]) => c)];
+      for (const h of holders) {
+        for (const l of layersOf(h)) {
+          if (Array.isArray(l?.objects)) l.objects = l.objects.filter((o) => !(o?.type === "widget" && o.widget === id));
+        }
+      }
+    }
+  } finally {
+    if (action.trash) {  // the folder has moved: whatever happened since, the step that brings it back is there
+      pushUndo(before, "", action);
+      changed();
+    }
   }
-  pushUndo(before, "", action);
-  changed();
   return true;
 }
 
@@ -2717,8 +2764,8 @@ function widgetThumbKey(id) {
 function usedWidgets(h) {
   const out = new Set(), memo = closureMemo();
   for (const l of layersOf(h)) {
-    for (const o of l.objects || []) {
-      if (o?.type !== "widget" || typeof o.widget !== "string" || out.has(o.widget)) continue;
+    for (const o of objectsIn(l)) {
+      if (o.type !== "widget" || typeof o.widget !== "string" || out.has(o.widget)) continue;
       out.add(o.widget);
       for (const id of WV.closure(lib, o.widget, memo)) out.add(id);
     }
@@ -3588,13 +3635,13 @@ async function loadLibrary() {
  *  studio's resize is undone). Saved with the next save, without an undo step. A widget's own copies are brought up
  *  to date only when it's edited, so one nobody edits is never rewritten. */
 function tidyDocument() {
-  const ids = new Set(doc.scenes.map((s) => s.id));
+  const ids = new Set(doc.scenes.map((s) => s?.id));
   for (const s of doc.scenes) {
-    if (typeof s.id === "string" && s.id.startsWith("widget:")) { s.id = uid("s", ids); ids.add(s.id); }
+    if (typeof s?.id === "string" && s.id.startsWith("widget:")) { s.id = uid("s", ids); ids.add(s.id); }
   }
   for (const h of [doc.global, ...doc.scenes]) refreshCopySizes(h);
 }
-const hasCopies = () => [doc.global, ...doc.scenes].some((h) => layersOf(h).some((l) => (l.objects || []).some((o) => o?.type === "widget")));
+const hasCopies = () => [doc.global, ...doc.scenes].some((h) => layersOf(h).some((l) => objectsIn(l).some((o) => o.type === "widget")));
 // The player's version (docs/widgets.md, Compatibility): said once a session, and again when it changes, once the
 // document has copies. `built` is whether the build for Play and Export PNG draws them (from /api/config), `running`
 // whether the player running does (polled with /api/player); null for no such player.
