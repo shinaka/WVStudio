@@ -1,4 +1,4 @@
-//! Text widgets (docs/widgets.md): a piece's own text plus the global layer, drawn into one transparent
+//! Text objects (docs/text.md): a piece's own text plus the global layer, drawn into one transparent
 //! 1600x720 layer that's then laid over each of the piece's frames.
 //!
 //! The geometry follows the spec to the letter, and lays text out as Chrome does on Windows (its line
@@ -17,9 +17,9 @@ use image::{RgbImage, Rgba, RgbaImage};
 use rustybuzz::{Face, UnicodeBuffer, ttf_parser};
 
 use crate::art::{HEIGHT, WIDTH};
-use crate::playlist::{self, Align, Valign, Widget};
+use crate::playlist::{self, Align, Rect, Text, Valign};
 
-/// Used when a widget's own font is missing or unreadable.
+/// Used when a text's own font is missing or unreadable.
 pub const DEFAULT_FONT: &str = r"C:\Windows\Fonts\segoeui.ttf";
 /// Bump when drawing changes, so text prepared by an older player is drawn again.
 pub const VERSION: u32 = 2;
@@ -64,11 +64,11 @@ impl Bounds {
 }
 
 impl Layer {
-    /// Draws the widgets in order, each over the ones before. Any it can't draw (an unknown type, no
+    /// Draws the texts in order, each over the ones before. Any it can't draw (an unknown type, no
     /// usable font) are skipped.
-    pub fn render<'a>(widgets: impl IntoIterator<Item = &'a Widget>) -> Layer {
+    pub fn render<'a>(texts: impl IntoIterator<Item = &'a Text>) -> Layer {
         let mut layer = Layer { image: RgbaImage::new(0, 0), bounds: None };
-        for w in widgets {
+        for w in texts {
             if w.kind == "text" {
                 layer.draw(w);
             }
@@ -119,7 +119,7 @@ impl Layer {
         }
     }
 
-    fn draw(&mut self, w: &Widget) {
+    fn draw(&mut self, w: &Text) {
         if !(w.size > 0.0) || !(w.opacity > 0.0) {
             return;
         }
@@ -137,12 +137,14 @@ impl Layer {
         }
         let fill = rgb(&w.color, [255, 255, 255]);
         let edge = rgb(&w.outline.color, [0, 0, 0]);
-        self.paint(&mask, fill, ring.as_deref().map(|r| (r, edge)), w.opacity.min(1.0));
+        self.paint(&mask, fill, ring.as_deref().map(|r| (r, edge)), w.opacity.min(1.0), w.clip);
     }
 
     /// Paints the fill over the outline (if any), then the two as one over the layer at `opacity`, so
-    /// the outline doesn't show through faint text.
-    fn paint(&mut self, mask: &Mask, fill: [u8; 3], ring: Option<(&[f32], [u8; 3])>, opacity: f32) {
+    /// the outline doesn't show through faint text. `clip` is where it may draw, in panel pixels: not
+    /// applied yet, so only the panel's edges cut it.
+    fn paint(&mut self, mask: &Mask, fill: [u8; 3], ring: Option<(&[f32], [u8; 3])>, opacity: f32, clip: Option<Rect>) {
+        let _ = clip;
         if self.image.width() == 0 {
             self.image = RgbaImage::new(WIDTH, HEIGHT);
         }
@@ -207,7 +209,7 @@ struct Placed {
 
 /// The spec's geometry: lines `size * line_height` apart from the block's top, each lined up on `x` by
 /// its width.
-fn layout(font: &Typeface, w: &Widget, size: f32) -> Vec<Placed> {
+fn layout(font: &Typeface, w: &Text, size: f32) -> Vec<Placed> {
     let Some(face) = Face::from_slice(&font.data, 0) else { return Vec::new() };
     let (ascent, descent) = font.line_metrics(size);
     let lines: Vec<String> = w.text
@@ -506,17 +508,17 @@ fn font(path: &Path) -> Option<Arc<Typeface>> {
     font
 }
 
-/// Identifies how text looks: the widgets, plus the size and modified time of each font they use and
-/// of the fallback. None when there's no text, so pieces without any keep the cache keys they had.
-pub fn key<'a>(widgets: impl IntoIterator<Item = &'a Widget>) -> Option<u64> {
-    let widgets: Vec<&Widget> = widgets.into_iter().collect();
-    if widgets.is_empty() {
+/// Identifies how text looks: the texts, plus the size and modified time of each font they use and of
+/// the fallback. None when there's no text, so pieces without any keep the cache keys they had.
+pub fn key<'a>(texts: impl IntoIterator<Item = &'a Text>) -> Option<u64> {
+    let texts: Vec<&Text> = texts.into_iter().collect();
+    if texts.is_empty() {
         return None;
     }
     let mut h = DefaultHasher::new(); // fixed keys, so the same text hashes the same every run
     VERSION.hash(&mut h);
-    serde_json::to_string(&widgets).ok()?.hash(&mut h);
-    for font in widgets.iter().map(|w| w.font.as_path()).chain([Path::new(DEFAULT_FONT)]) {
+    serde_json::to_string(&texts).ok()?.hash(&mut h);
+    for font in texts.iter().map(|w| w.font.as_path()).chain([Path::new(DEFAULT_FONT)]) {
         (font, playlist::stamp(font)).hash(&mut h);
     }
     Some(h.finish())
@@ -527,8 +529,8 @@ mod tests {
     use super::*;
     use image::Rgb;
 
-    fn text(s: &str) -> Widget {
-        Widget { id: "t".into(), kind: "text".into(), text: s.into(), size: 100.0, ..Widget::default() }
+    fn text(s: &str) -> Text {
+        Text { id: "t".into(), kind: "text".into(), text: s.into(), size: 100.0, ..Text::default() }
     }
 
     fn have_default_font() -> bool {
@@ -560,7 +562,7 @@ mod tests {
     fn no_text_costs_nothing() {
         let layer = Layer::render([]);
         assert!(layer.is_empty() && layer.image.width() == 0);
-        let unknown = Widget { kind: "image".into(), ..text("x") };
+        let unknown = Text { kind: "image".into(), ..text("x") };
         assert!(Layer::render([&unknown]).is_empty());
         assert!(Layer::render([&text("")]).is_empty());
         assert!(Layer::render([&text("   ")]).is_empty());
@@ -577,7 +579,7 @@ mod tests {
             return;
         }
         let at = |align, valign| {
-            let w = Widget { x: 800.0, y: 360.0, align, valign, ..text("HH\nHHHH") };
+            let w = Text { x: 800.0, y: 360.0, align, valign, ..text("HH\nHHHH") };
             Layer::render([&w]).bounds().unwrap()
         };
         let font = font(Path::new(DEFAULT_FONT)).unwrap();
@@ -596,7 +598,7 @@ mod tests {
         assert_eq!(at(Align::Left, Valign::Middle).bottom, last_baseline(360.0 - height / 2.0));
         assert_eq!(at(Align::Left, Valign::Bottom).bottom, last_baseline(360.0 - height));
         // lines are aligned one by one: the short line's centre matches the long one's
-        let w = Widget { x: 800.0, y: 100.0, align: Align::Center, ..text("HH\nHHHH") };
+        let w = Text { x: 800.0, y: 100.0, align: Align::Center, ..text("HH\nHHHH") };
         let layer = Layer::render([&w]);
         let row_span = |y: u32| {
             let xs: Vec<u32> = (0..WIDTH).filter(|&x| layer.image.get_pixel(x, y)[3] > 0).collect();
@@ -616,7 +618,7 @@ mod tests {
         let advance = |c| font.glyphs.metrics(c, 100.0).advance_width;
         assert!(placed[1].x - placed[0].x < advance('A') - 1.0);
         // and the line's width includes it: right-aligned, V ends where it would unkerned, less the kern
-        let right = layout(&font, &Widget { align: Align::Right, x: 500.0, ..text("AV") }, 100.0);
+        let right = layout(&font, &Text { align: Align::Right, x: 500.0, ..text("AV") }, 100.0);
         let kern = placed[1].x - placed[0].x - advance('A');
         assert!((right[0].x - (500.0 - (advance('A') + kern + advance('V')))).abs() < 1e-3);
     }
@@ -675,9 +677,9 @@ mod tests {
         if !have_default_font() {
             return;
         }
-        let plain = Widget { x: 100.0, y: 100.0, ..text("Hg") };
+        let plain = Text { x: 100.0, y: 100.0, ..text("Hg") };
         let b = Layer::render([&plain]).bounds().unwrap();
-        let outlined = Widget { outline: playlist::Outline { color: "#ff0000".into(), width: 6.0 }, ..plain.clone() };
+        let outlined = Text { outline: playlist::Outline { color: "#ff0000".into(), width: 6.0 }, ..plain.clone() };
         let layer = Layer::render([&outlined]);
         let o = layer.bounds().unwrap();
         assert!((b.left - o.left).abs_diff(6) <= 1 && (o.right - b.right).abs_diff(6) <= 1, "{b:?} {o:?}");
@@ -686,15 +688,15 @@ mod tests {
         assert!(layer.image.pixels().any(|p| p.0 == [255, 0, 0, 255]));
         assert!(layer.image.pixels().any(|p| p.0 == [255, 255, 255, 255]));
 
-        let faint = Layer::render([&Widget { opacity: 0.5, ..plain.clone() }]);
+        let faint = Layer::render([&Text { opacity: 0.5, ..plain.clone() }]);
         assert_eq!(faint.image.pixels().map(|p| p[3]).max(), Some(128));
         // opacity applies to fill and outline as one: the outline doesn't show through the fill
-        let faint = Layer::render([&Widget { opacity: 0.5, ..outlined.clone() }]);
+        let faint = Layer::render([&Text { opacity: 0.5, ..outlined.clone() }]);
         assert_eq!(faint.image.pixels().map(|p| p[3]).max(), Some(128));
         assert!(faint.image.pixels().any(|p| p.0 == [255, 255, 255, 128]));
         assert!(faint.image.pixels().any(|p| p.0 == [255, 0, 0, 128]));
 
-        let crisp = Layer::render([&Widget { crisp: true, ..outlined.clone() }]);
+        let crisp = Layer::render([&Text { crisp: true, ..outlined.clone() }]);
         assert!(crisp.image.pixels().all(|p| p[3] == 0 || p[3] == 255));
         assert!(crisp.image.pixels().all(|p| p[3] == 0 || matches!(p.0, [255, 0, 0, _] | [255, 255, 255, _])));
     }
@@ -705,7 +707,7 @@ mod tests {
             return;
         }
         let normal = Layer::render([&text("Fallback")]);
-        let missing = Layer::render([&Widget { font: r"C:\nowhere\nothing.ttf".into(), ..text("Fallback") }]);
+        let missing = Layer::render([&Text { font: r"C:\nowhere\nothing.ttf".into(), ..text("Fallback") }]);
         assert!(!normal.is_empty());
         assert_eq!(normal.bounds(), missing.bounds());
         assert!(normal.image == missing.image);
@@ -716,10 +718,10 @@ mod tests {
         if !have_default_font() {
             return;
         }
-        let off = Widget { x: -20.0, y: 620.0, outline: playlist::Outline { width: 4.0, ..Default::default() }, ..text("Edge") };
+        let off = Text { x: -20.0, y: 620.0, outline: playlist::Outline { width: 4.0, ..Default::default() }, ..text("Edge") };
         let b = Layer::render([&off]).bounds().unwrap();
         assert_eq!((b.left, b.bottom), (0, HEIGHT));
-        let gone = Widget { x: 5000.0, y: -5000.0, ..text("Gone") };
+        let gone = Text { x: 5000.0, y: -5000.0, ..text("Gone") };
         assert!(Layer::render([&gone]).is_empty());
     }
 
@@ -728,7 +730,7 @@ mod tests {
         if !have_default_font() {
             return;
         }
-        let layer = Layer::render([&Widget { x: 10.0, y: 10.0, ..text("I") }]);
+        let layer = Layer::render([&Text { x: 10.0, y: 10.0, ..text("I") }]);
         let mut frame = RgbImage::from_pixel(WIDTH, HEIGHT, Rgb([0, 0, 255]));
         layer.draw_onto(&mut frame);
         let b = layer.bounds().unwrap();
@@ -751,7 +753,7 @@ mod tests {
         let font = font(Path::new(DEFAULT_FONT)).unwrap();
         for (width, size) in [(0.5, 30.0), (1.0, 40.0), (2.5, 40.0), (7.0, 60.0), (20.0, 80.0)] {
             let pad = (width as f32).ceil() as i32 + 1;
-            let w = Widget { x: 20.0, y: 20.0, ..text("Ag/o") };
+            let w = Text { x: 20.0, y: 20.0, ..text("Ag/o") };
             let mask = coverage(&font.glyphs, size, &layout(&font, &w, size), pad).unwrap();
             let fast = dilate(&mask, width);
             let (mw, mh, reach) = (mask.width as i64, mask.height as i64, pad as i64);

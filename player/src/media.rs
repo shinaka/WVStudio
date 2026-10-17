@@ -90,6 +90,8 @@ pub struct View {
     pub w: u32,
     pub h: u32,
     pub smooth: bool,
+    /// Every pixel then takes this colour, keeping its own alpha (docs/widgets.md). Not applied yet.
+    pub tint: Option<[u8; 3]>,
 }
 
 /// Decoded files by path and stamp, with the scaled versions of each view. `used` orders evictions.
@@ -441,10 +443,10 @@ mod tests {
     #[test]
     fn turns_then_flips() {
         let src = RgbaImage::from_fn(2, 1, |x, _| Rgba([x as u8 * 100, 0, 0, 255]));
-        let view = View { rotate: 90, flip: false, w: 1, h: 2, smooth: false };
+        let view = View { rotate: 90, flip: false, w: 1, h: 2, smooth: false, tint: None };
         let t = transform(&src, view);
         assert_eq!((t.get_pixel(0, 0)[0], t.get_pixel(0, 1)[0]), (0, 100)); // clockwise: left end goes to the top
-        let view = View { rotate: 0, flip: true, w: 4, h: 1, smooth: false };
+        let view = View { rotate: 0, flip: true, w: 4, h: 1, smooth: false, tint: None };
         let t = transform(&src, view);
         assert_eq!(t.as_raw().iter().step_by(4).copied().collect::<Vec<_>>(), [100, 100, 0, 0]);
     }

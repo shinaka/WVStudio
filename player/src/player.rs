@@ -11,7 +11,7 @@ use std::thread::{JoinHandle, sleep};
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::panel::Panel;
-use crate::playlist::{self, Playlist, Scene, Widget};
+use crate::playlist::{self, Playlist, Scene, Text};
 use crate::text::Layer;
 use crate::{art, cache, data, scene};
 
@@ -52,15 +52,15 @@ struct Loaded {
 /// an animation is encoded again once per change rather than every loop.
 #[derive(Clone)]
 struct Live {
-    /// The live widgets with their text filled in, as drawn.
-    widgets: Vec<Widget>,
+    /// The live text with its placeholders filled in, as drawn.
+    texts: Vec<Text>,
     frames: Arc<Vec<art::Frame>>,
 }
 
 /// New live frames being drawn in the background, over `base`, while the old ones carry on.
 struct Composing {
     base: Arc<art::Prepared>,
-    widgets: Vec<Widget>,
+    texts: Vec<Text>,
     job: JoinHandle<Arc<Vec<art::Frame>>>,
 }
 
@@ -138,11 +138,11 @@ impl Player {
     fn update_live(&mut self, look: bool) -> bool {
         let mut changed = false;
         if self.composing.as_ref().is_some_and(|c| c.job.is_finished()) {
-            let Composing { base, widgets, job } = self.composing.take().unwrap();
+            let Composing { base, texts, job } = self.composing.take().unwrap();
             // dropped if the scene has moved on meanwhile
             if let Ok(frames) = job.join() {
                 if Arc::ptr_eq(&base, &self.current.frames) {
-                    self.current.live = Some(Live { widgets, frames });
+                    self.current.live = Some(Live { texts, frames });
                     changed = true;
                 }
             }
@@ -150,18 +150,18 @@ impl Player {
         if !look {
             return changed;
         }
-        let widgets = filled(&self.playlist, self.current.index);
-        if widgets.is_empty() {
+        let texts = filled(&self.playlist, self.current.index);
+        if texts.is_empty() {
             self.composing = None;
             return self.current.live.take().is_some() || changed;
         }
         let base = &self.current.frames;
-        let showing = self.current.live.as_ref().is_some_and(|l| l.widgets == widgets);
-        let coming = self.composing.as_ref().is_some_and(|c| c.widgets == widgets && Arc::ptr_eq(&c.base, base));
+        let showing = self.current.live.as_ref().is_some_and(|l| l.texts == texts);
+        let coming = self.composing.as_ref().is_some_and(|c| c.texts == texts && Arc::ptr_eq(&c.base, base));
         if !showing && !coming {
-            let (scene, base, opts, drawn) = (self.scene().clone(), base.clone(), self.opts.clone(), widgets.clone());
+            let (scene, base, opts, drawn) = (self.scene().clone(), base.clone(), self.opts.clone(), texts.clone());
             let job = std::thread::spawn(move || overlay(&scene, &base, &drawn, &opts));
-            self.composing = Some(Composing { base: self.current.frames.clone(), widgets, job });
+            self.composing = Some(Composing { base: self.current.frames.clone(), texts, job });
         }
         changed
     }
@@ -338,22 +338,21 @@ fn cached(cache: &Cache, playlist: &Playlist, index: usize, opts: &art::Options)
     Some(Loaded { index, frames, key, live: None })
 }
 
-/// A scene's live widgets (its own, then the global layers'), with their text filled in from the values
-/// as they are now.
-fn filled(playlist: &Playlist, index: usize) -> Vec<Widget> {
+/// A scene's live text (its own, then the global layers'), filled in from the values as they are now.
+fn filled(playlist: &Playlist, index: usize) -> Vec<Text> {
     playlist.scenes[index]
         .layers
         .iter()
         .chain(&playlist.global)
         .flat_map(|l| l.live().collect::<Vec<_>>())
-        .map(|w| Widget { text: data::resolve(&w.text), ..w })
+        .map(|w| Text { text: data::resolve(&w.text), ..w })
         .collect()
 }
 
-/// The frames with `widgets` drawn over them (and the still above them back on top); the same frames
-/// when that draws nothing.
-fn overlay(scene: &Scene, prepared: &Arc<art::Prepared>, widgets: &[Widget], opts: &art::Options) -> Arc<Vec<art::Frame>> {
-    let layer = Layer::render(widgets);
+/// The frames with `texts` drawn over them (and the still above them back on top); the same frames when
+/// that draws nothing.
+fn overlay(scene: &Scene, prepared: &Arc<art::Prepared>, texts: &[Text], opts: &art::Options) -> Arc<Vec<art::Frame>> {
+    let layer = Layer::render(texts);
     if layer.is_empty() { Arc::new(prepared.frames.clone()) } else { Arc::new(art::overlay(scene, prepared, &layer, opts)) }
 }
 
@@ -363,10 +362,10 @@ fn load_from(playlist: &Playlist, from: usize, opts: &art::Options, cache: &Cach
     let n = playlist.scenes.len();
     (0..n).map(|k| (from + k) % n).find_map(|index| {
         let mut loaded = cached(cache, playlist, index, opts).or_else(|| prepare(playlist, index, opts, cache, save))?;
-        let widgets = filled(playlist, index);
-        if !widgets.is_empty() {
-            let frames = overlay(&playlist.scenes[index], &loaded.frames, &widgets, opts);
-            loaded.live = Some(Live { widgets, frames });
+        let texts = filled(playlist, index);
+        if !texts.is_empty() {
+            let frames = overlay(&playlist.scenes[index], &loaded.frames, &texts, opts);
+            loaded.live = Some(Live { texts, frames });
         }
         Some(loaded)
     })
@@ -612,7 +611,7 @@ mod tests {
         let base: Vec<Vec<u8>> = p.current.frames.frames.iter().map(|f| f.jpeg.clone()).collect();
         assert_eq!(base, plain);
         let first = p.current.live.clone().expect("no live frames");
-        assert_eq!(first.widgets[0].text, "n=1");
+        assert_eq!(first.texts[0].text, "n=1");
         assert_eq!(first.frames.len(), base.len());
         assert!(first.frames.iter().zip(&base).all(|(live, base)| live.jpeg != *base));
         assert!(std::ptr::eq(p.showing().as_ptr(), first.frames.as_ptr()));
@@ -630,12 +629,12 @@ mod tests {
         assert!(std::ptr::eq(p.showing().as_ptr(), first.frames.as_ptr()));
         assert!(eventually(|| p.update_live(false)));
         let second = p.current.live.clone().unwrap();
-        assert_eq!(second.widgets[0].text, "n=2");
+        assert_eq!(second.texts[0].text, "n=2");
         assert!(!Arc::ptr_eq(&second.frames, &first.frames));
         assert!(!p.update_live(true));
         assert!(p.composing.is_none());
 
-        // the live widget gone: back to the prepared frames as they are
+        // the live text gone: back to the prepared frames as they are
         s.write("");
         read(&mut p);
         p.update_live(true);

@@ -9,7 +9,7 @@ use image::ImageFormat;
 
 use crate::panel::Panel;
 use crate::player::{log_to, play};
-use crate::playlist::Widget;
+use crate::playlist::Text;
 use crate::{art, data, playlist, scene};
 
 const USAGE: &str = "\
@@ -85,7 +85,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
             let time = Duration::from_millis(option(args, "--time")?.unwrap_or(0.0).max(0.0) as u64);
             let start = Instant::now();
             // live text with the values the player has now; without a player, only the time
-            let live: Vec<Widget> = scene.layers.iter().chain(&playlist.global).flat_map(|l| l.live().collect::<Vec<_>>()).collect();
+            let live: Vec<Text> = scene.layers.iter().chain(&playlist.global).flat_map(|l| l.live().collect::<Vec<_>>()).collect();
             let texts: Vec<String> = live.iter().map(|w| w.text.clone()).collect();
             let filled = match texts.is_empty() {
                 true => Vec::new(),
@@ -94,7 +94,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
                     texts.iter().map(|t| data::resolve(t)).collect()
                 }),
             };
-            let live: Vec<Widget> = live.into_iter().zip(filled).map(|(w, text)| Widget { text, ..w }).collect();
+            let live: Vec<Text> = live.into_iter().zip(filled).map(|(w, text)| Text { text, ..w }).collect();
             for w in &live {
                 println!("live: {:?}", w.text);
             }
