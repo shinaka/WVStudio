@@ -63,11 +63,12 @@ pub fn load(scene: &Scene, global: &[Layer], opts: &Options, save: bool) -> Resu
     Ok(prepared)
 }
 
-/// Full-resolution colour keeps coloured pixel-art edges sharp; a scene with video, in its own layers or
-/// the global ones, doesn't need it.
+/// Full-resolution colour keeps coloured pixel-art edges sharp; a scene with video doesn't need it. Only
+/// the scene's own layers count, a video inside one of its copies included: a video in the global layers
+/// alone leaves the scene's art at full colour.
 pub fn sampling(scene: &Scene, global: &[Layer]) -> SamplingFactor {
-    let mut objects = scene.layers.iter().chain(global).flat_map(|l| &l.objects);
-    let video = objects.any(|o| matches!(&o.kind, Kind::Media(m) if crate::media::is_video(&m.src)));
+    let _ = global;
+    let video = scene.layers.iter().flat_map(|l| &l.objects).any(|o| matches!(&o.kind, Kind::Media(m) if crate::media::is_video(&m.src)));
     if video { SamplingFactor::R_4_2_0 } else { SamplingFactor::R_4_4_4 }
 }
 
@@ -75,7 +76,7 @@ pub fn sampling(scene: &Scene, global: &[Layer]) -> SamplingFactor {
 /// each frame is decoded, drawn on (where it belongs on a turned frame) and encoded again, on every
 /// core. A frame that won't decode or encode goes out as it was.
 pub fn overlay(scene: &Scene, prepared: &Prepared, text: &crate::text::Layer, opts: &Options) -> Vec<Frame> {
-    let sampling = sampling(scene, &[]); // prepare also counts the global layers, which work package P3 passes here
+    let sampling = sampling(scene, &[]); // as prepare chose it: the global layers don't count
     let redraw = |frame: &Frame| {
         let jpeg = image::load_from_memory_with_format(&frame.jpeg, ImageFormat::Jpeg).ok().and_then(|im| {
             let mut rgb = im.into_rgb8();

@@ -1385,17 +1385,23 @@ mod drawing_tests {
         assert_eq!((px(&draw(&p), 2, 1), px(&draw(&p), 3, 1), px(&draw(&p), 0, 2)), (green, [0; 3], [0; 3]));
     }
 
-    /// JPEG frames keep full colour unless video is drawn, in the scene's layers or the global ones.
+    /// JPEG frames keep full colour unless the scene's own layers draw video, a copy's video leaf
+    /// included. A video in the global layers alone doesn't count, as before widgets.
     #[test]
-    fn sampling_sees_global_video() {
+    fn sampling_sees_the_scenes_video() {
         let s = Scratch::new("sampling");
         let still = (1.0, vec![image("a.png", 0.0, 0.0, 10.0, 10.0)]);
         let video = (1.0, vec![json!({ "id": "v", "type": "video", "src": "v.mp4", "w": 10, "h": 10 })]);
         let p = s.playlist(&[&[still.clone()]], &[]);
         assert_eq!(art::sampling(&p.scenes[0], &p.global), SamplingFactor::R_4_4_4);
-        let p = s.playlist(&[&[still.clone()]], &[video.clone()]);
+        let mut p = s.playlist(&[&[still.clone()]], &[video.clone()]);
+        assert_eq!(art::sampling(&p.scenes[0], &p.global), SamplingFactor::R_4_4_4);
+        leaves(&mut p.global[0].objects, [0, 0, 10, 10], &[("c", 0.5, [0, 0, 10, 10])]);
+        assert_eq!(art::sampling(&p.scenes[0], &p.global), SamplingFactor::R_4_4_4);
+        let p = s.playlist(&[&[still.clone(), video.clone()]], &[]);
         assert_eq!(art::sampling(&p.scenes[0], &p.global), SamplingFactor::R_4_2_0);
-        let p = s.playlist(&[&[still, video]], &[]);
+        let mut p = s.playlist(&[&[still, video]], &[]);
+        leaves(&mut p.scenes[0].layers[1].objects, [0, 0, 10, 10], &[("c", 0.5, [0, 0, 10, 10]), ("c/l1", 0.8, [0, 0, 10, 10])]);
         assert_eq!(art::sampling(&p.scenes[0], &p.global), SamplingFactor::R_4_2_0);
     }
 
