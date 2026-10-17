@@ -1,5 +1,5 @@
 //! Text objects (docs/text.md): a piece's own text plus the global layer, drawn into one transparent
-//! 1600x720 layer that's then laid over each of the piece's frames.
+//! layer covering just the box the text touches, that's then laid over each of the piece's frames.
 //!
 //! The geometry follows the spec to the letter, and lays text out as Chrome does on Windows (its line
 //! metrics, HarfBuzz shaping), so the studio's preview matches the cooler. Drawing a layer doesn't depend
@@ -35,10 +35,14 @@ const NONE: u32 = u32::MAX;
 /// 127; the studio turns on at 128 of 255, Chrome's half.
 const HALF: f32 = 127.0 / 255.0;
 
-/// Text ready to lay over frames: RGBA (not premultiplied) in upright panel pixels.
+/// Text ready to lay over frames: RGBA (not premultiplied) in upright panel pixels, over the box the
+/// text can touch (each text's mask, cut to its clip or the panel), not the whole panel.
 pub struct Layer {
     /// Empty (0x0) while there's no text, so a piece without any costs nothing.
     image: RgbaImage,
+    /// Where the image's top-left sits on the panel.
+    left: u32,
+    top: u32,
     bounds: Option<Bounds>,
 }
 
@@ -67,7 +71,7 @@ impl Layer {
     /// Draws the texts in order, each over the ones before. Any it can't draw (an unknown type, no
     /// usable font) are skipped.
     pub fn render<'a>(texts: impl IntoIterator<Item = &'a Text>) -> Layer {
-        let mut layer = Layer { image: RgbaImage::new(0, 0), bounds: None };
+        let mut layer = Layer { image: RgbaImage::new(0, 0), left: 0, top: 0, bounds: None };
         for w in texts {
             if w.kind == "text" {
                 layer.draw(w);
@@ -80,9 +84,19 @@ impl Layer {
         self.bounds
     }
 
-    /// The whole 1600x720 layer (0x0 while there's no text).
+    /// The layer's pixels, covering the box from `origin` (0x0 while there's no text).
     pub fn image(&self) -> &RgbaImage {
         &self.image
+    }
+
+    /// Where `image`'s top-left sits on the panel.
+    pub fn origin(&self) -> (u32, u32) {
+        (self.left, self.top)
+    }
+
+    /// The origin and the pixels, for laying the layer over a buffer.
+    pub fn into_parts(self) -> (u32, u32, RgbaImage) {
+        (self.left, self.top, self.image)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -102,11 +116,13 @@ impl Layer {
             return;
         }
         let last = (WIDTH * HEIGHT) as usize - 1;
+        let stride = self.image.width() as usize;
         let (text, frame): (&[u8], &mut [u8]) = (&self.image, frame);
         for y in b.top as usize..b.bottom as usize {
             for x in b.left as usize..b.right as usize {
-                let i = y * WIDTH as usize + x;
-                let j = if turned { last - i } else { i };
+                let i = (y - self.top as usize) * stride + (x - self.left as usize);
+                let j = y * WIDTH as usize + x;
+                let j = if turned { last - j } else { j };
                 let (src, dst) = (&text[i * 4..i * 4 + 4], &mut frame[j * 3..j * 3 + 3]);
                 let a = src[3] as u32;
                 if a == 0 {
@@ -128,7 +144,7 @@ impl Layer {
         let outline = if w.outline.width > 0.0 { w.outline.width.min(MAX_OUTLINE) } else { 0.0 };
         // how far beyond the glyphs the outline can reach
         let pad = if outline > 0.0 { outline.ceil() as i32 + 1 } else { 0 };
-        let Some(mut mask) = coverage(&font.glyphs, size, &layout(&font, w, size), pad) else { return };
+        let Some(mut mask) = coverage(&font.glyphs, size, &layout(&font, w, size), pad, w.clip) else { return };
         let mut ring = (outline > 0.0).then(|| dilate(&mask, outline));
         if w.crisp {
             // each mask on its own, so the fill and outline meet with a hard edge, like the studio's
@@ -141,15 +157,16 @@ impl Layer {
     }
 
     /// Paints the fill over the outline (if any), then the two as one over the layer at `opacity`, so
-    /// the outline doesn't show through faint text. `clip` is where it may draw, in panel pixels: not
-    /// applied yet, so only the panel's edges cut it.
+    /// the outline doesn't show through faint text. `clip` is where it may draw, in panel pixels (the
+    /// panel's edges cut it anyway).
     fn paint(&mut self, mask: &Mask, fill: [u8; 3], ring: Option<(&[f32], [u8; 3])>, opacity: f32, clip: Option<Rect>) {
-        let _ = clip;
-        if self.image.width() == 0 {
-            self.image = RgbaImage::new(WIDTH, HEIGHT);
+        let (cl, ct, cr, cb) = visible(clip);
+        let (x0, x1) = (mask.left.max(cl), (mask.left + mask.width as i32).min(cr));
+        let (y0, y1) = (mask.top.max(ct), (mask.top + mask.height as i32).min(cb));
+        if x0 >= x1 || y0 >= y1 {
+            return;
         }
-        let (x0, x1) = (mask.left.max(0), (mask.left + mask.width as i32).min(WIDTH as i32));
-        let (y0, y1) = (mask.top.max(0), (mask.top + mask.height as i32).min(HEIGHT as i32));
+        self.reserve(x0, y0, x1, y1);
         let mut drawn: Option<Bounds> = None;
         for y in y0..y1 {
             for x in x0..x1 {
@@ -161,7 +178,7 @@ impl Layer {
                     continue;
                 }
                 let color = [0, 1, 2].map(|c| (fill[c] as f32 * body + edge_color[c] as f32 * edge) / alpha);
-                let px = self.image.get_pixel_mut(x as u32, y as u32);
+                let px = self.image.get_pixel_mut(x as u32 - self.left, y as u32 - self.top);
                 over(px, color, alpha * opacity);
                 if px[3] > 0 {
                     let (x, y) = (x as u32, y as u32);
@@ -173,6 +190,34 @@ impl Layer {
             self.bounds = Some(drawn.union(self.bounds));
         }
     }
+
+    /// Makes the image cover the box (panel pixels, inside the panel), keeping what's drawn: the first
+    /// text's box, then the union with each later one's.
+    fn reserve(&mut self, x0: i32, y0: i32, x1: i32, y1: i32) {
+        if self.image.width() == 0 {
+            self.image = RgbaImage::new((x1 - x0) as u32, (y1 - y0) as u32);
+            (self.left, self.top) = (x0 as u32, y0 as u32);
+            return;
+        }
+        let (l, t) = (self.left as i32, self.top as i32);
+        let (r, b) = (l + self.image.width() as i32, t + self.image.height() as i32);
+        if x0 >= l && y0 >= t && x1 <= r && y1 <= b {
+            return;
+        }
+        let (nl, nt, nr, nb) = (l.min(x0), t.min(y0), r.max(x1), b.max(y1));
+        let mut bigger = RgbaImage::new((nr - nl) as u32, (nb - nt) as u32);
+        image::imageops::replace(&mut bigger, &self.image, (l - nl) as i64, (t - nt) as i64);
+        self.image = bigger;
+        (self.left, self.top) = (nl as u32, nt as u32);
+    }
+}
+
+/// Where text may show: the clip cut to the panel, or the panel. Left and top inclusive, right and
+/// bottom exclusive; an empty box when nothing can show.
+fn visible(clip: Option<Rect>) -> (i32, i32, i32, i32) {
+    let (w, h) = (WIDTH as i64, HEIGHT as i64);
+    let [l, t, r, b] = clip.unwrap_or([0, 0, w, h]);
+    (l.clamp(0, w) as i32, t.clamp(0, h) as i32, r.clamp(0, w) as i32, b.clamp(0, h) as i32)
 }
 
 /// Paints `color` at `alpha` over a pixel (source-over, not premultiplied).
@@ -286,8 +331,9 @@ struct Mask {
 }
 
 /// The glyphs' coverage, over the area they cover plus `pad` all round, cut down to what can still
-/// show on the panel.
-fn coverage(font: &Font, size: f32, glyphs: &[Placed], pad: i32) -> Option<Mask> {
+/// show: inside the clip (or the panel) by `pad`, so the outline is right at the clip's edge and hidden
+/// text isn't rasterized.
+fn coverage(font: &Font, size: f32, glyphs: &[Placed], pad: i32, clip: Option<Rect>) -> Option<Mask> {
     // where each glyph's bitmap goes: pen positions round to whole pixels
     let whole = |v: f32| v.clamp(-1e6, 1e6).round() as i32;
     let boxes: Vec<(u16, i32, i32, Metrics)> = glyphs
@@ -299,11 +345,12 @@ fn coverage(font: &Font, size: f32, glyphs: &[Placed], pad: i32) -> Option<Mask>
                 .then(|| (g.index, whole(g.x) + m.xmin, whole(g.y) - m.ymin - m.height as i32, m))
         })
         .collect();
-    // beyond the panel's edge by more than the outline reaches, nothing can show
-    let left = (boxes.iter().map(|b| b.1).min()? - pad).max(-pad);
-    let top = (boxes.iter().map(|b| b.2).min()? - pad).max(-pad);
-    let right = (boxes.iter().map(|b| b.1 + b.3.width as i32).max()? + pad).min(WIDTH as i32 + pad);
-    let bottom = (boxes.iter().map(|b| b.2 + b.3.height as i32).max()? + pad).min(HEIGHT as i32 + pad);
+    // beyond the edge by more than the outline reaches, nothing can show
+    let (cl, ct, cr, cb) = visible(clip);
+    let left = (boxes.iter().map(|b| b.1).min()? - pad).max(cl - pad);
+    let top = (boxes.iter().map(|b| b.2).min()? - pad).max(ct - pad);
+    let right = (boxes.iter().map(|b| b.1 + b.3.width as i32).max()? + pad).min(cr + pad);
+    let bottom = (boxes.iter().map(|b| b.2 + b.3.height as i32).max()? + pad).min(cb + pad);
     if left >= right || top >= bottom {
         return None;
     }
@@ -537,6 +584,131 @@ mod tests {
         Path::new(DEFAULT_FONT).exists()
     }
 
+    impl Layer {
+        /// The pixel at a panel position: transparent outside the image.
+        fn at(&self, x: u32, y: u32) -> Rgba<u8> {
+            let (l, t) = self.origin();
+            if x < l || y < t || x - l >= self.image.width() || y - t >= self.image.height() {
+                return Rgba([0, 0, 0, 0]);
+            }
+            *self.image.get_pixel(x - l, y - t)
+        }
+    }
+
+    /// Lays the layer onto a black frame: what it draws, as a whole-panel picture.
+    fn flat(layer: &Layer) -> RgbImage {
+        let mut frame = RgbImage::new(WIDTH, HEIGHT);
+        layer.draw_onto(&mut frame);
+        frame
+    }
+
+    /// The texts drawn as the player drew them while every layer was a whole 1600x720 image: the same
+    /// coverage, outline and blend, painted at panel positions, with only the panel's edges cutting them.
+    fn whole_panel(texts: &[&Text]) -> RgbaImage {
+        let mut image = RgbaImage::new(WIDTH, HEIGHT);
+        for w in texts {
+            let font = font(&w.font).or_else(|| font(Path::new(DEFAULT_FONT))).unwrap();
+            let size = w.size.min(MAX_SIZE);
+            let outline = if w.outline.width > 0.0 { w.outline.width.min(MAX_OUTLINE) } else { 0.0 };
+            let pad = if outline > 0.0 { outline.ceil() as i32 + 1 } else { 0 };
+            let Some(mut mask) = coverage(&font.glyphs, size, &layout(&font, w, size), pad, None) else { continue };
+            let mut ring = (outline > 0.0).then(|| dilate(&mask, outline));
+            if w.crisp {
+                threshold(&mut mask.alpha);
+                ring.iter_mut().for_each(|r| threshold(r));
+            }
+            let (fill, edge) = (rgb(&w.color, [255, 255, 255]), rgb(&w.outline.color, [0, 0, 0]));
+            for y in mask.top.max(0)..(mask.top + mask.height as i32).min(HEIGHT as i32) {
+                for x in mask.left.max(0)..(mask.left + mask.width as i32).min(WIDTH as i32) {
+                    let i = (y - mask.top) as usize * mask.width + (x - mask.left) as usize;
+                    let body = mask.alpha[i];
+                    let rim = ring.as_ref().map_or(0.0, |r| r[i] * (1.0 - body));
+                    if body + rim <= 0.0 {
+                        continue;
+                    }
+                    let color = [0, 1, 2].map(|c| (fill[c] as f32 * body + edge[c] as f32 * rim) / (body + rim));
+                    over(image.get_pixel_mut(x as u32, y as u32), color, (body + rim) * w.opacity.min(1.0));
+                }
+            }
+        }
+        image
+    }
+
+    /// Every panel pixel of the layer equals the whole-panel drawing's.
+    fn same_as_whole_panel(layer: &Layer, texts: &[&Text]) {
+        let want = whole_panel(texts);
+        for (x, y, p) in want.enumerate_pixels() {
+            assert_eq!(layer.at(x, y), *p, "at {x},{y}");
+        }
+    }
+
+    /// A text's layer is the box its glyphs (and outline) cover, cut to the panel, not 1600x720, and it
+    /// draws exactly what the whole-panel layer drew; more texts grow it to the box holding them all.
+    #[test]
+    fn text_layer_is_small() {
+        if !have_default_font() {
+            return;
+        }
+        let outlined = Text { x: 300.0, y: 200.0, outline: playlist::Outline { color: "#ff0000".into(), width: 3.0 }, ..text("Small") };
+        let layer = Layer::render([&outlined]);
+        // the image is the mask's box: the glyphs plus the outline's reach
+        let font = font(Path::new(DEFAULT_FONT)).unwrap();
+        let mask = coverage(&font.glyphs, 100.0, &layout(&font, &outlined, 100.0), 4, None).unwrap();
+        assert_eq!(layer.origin(), (mask.left as u32, mask.top as u32));
+        assert_eq!(layer.image().dimensions(), (mask.width as u32, mask.height as u32));
+        assert!(mask.width < 400 && mask.height < 150, "{}x{}", mask.width, mask.height);
+        same_as_whole_panel(&layer, &[&outlined]);
+        // the same through draw_onto: the layer lands where the whole-panel one did
+        let mut frame = RgbImage::new(WIDTH, HEIGHT);
+        for (x, y, p) in whole_panel(&[&outlined]).enumerate_pixels() {
+            let a = p[3] as u32;
+            frame.put_pixel(x, y, Rgb([0, 1, 2].map(|c| ((p[c] as u32 * a + 127) / 255) as u8)));
+        }
+        assert!(flat(&layer) == frame);
+        // faint, crisp, and hanging off the panel's edges (cut there, as before)
+        for t in [Text { opacity: 0.4, ..outlined.clone() }, Text { crisp: true, ..outlined.clone() },
+                  Text { x: -30.0, y: -40.0, ..outlined.clone() }, Text { x: 1590.0, y: 690.0, ..outlined.clone() }] {
+            let layer = Layer::render([&t]);
+            let (w, h) = layer.image().dimensions();
+            assert!(w < 400 && h < 150, "{w}x{h}");
+            same_as_whole_panel(&layer, &[&t]);
+        }
+        // a second text far away grows the image to the box holding both; an overlapping one paints over
+        // the first as it did
+        let far = Text { x: 1200.0, y: 600.0, ..text("Far") };
+        let across = Text { x: 320.0, y: 230.0, color: "#00ff00".into(), opacity: 0.5, ..text("Over") };
+        let all = Layer::render([&outlined, &far, &across]);
+        let (l, t) = all.origin();
+        assert!(l <= layer.origin().0 && t <= layer.origin().1 && all.image().width() > 800 && all.image().height() > 300);
+        same_as_whole_panel(&all, &[&outlined, &far, &across]);
+    }
+
+    /// Inside its clip a text is drawn exactly as without one, outline and all; outside it nothing is.
+    #[test]
+    fn clipped_to_its_box() {
+        if !have_default_font() {
+            return;
+        }
+        let plain = Text { x: 100.0, y: 100.0, outline: playlist::Outline { color: "#00ff00".into(), width: 4.0 }, ..text("Clip me") };
+        let whole = Layer::render([&plain]);
+        let b = whole.bounds().unwrap();
+        let clip = [b.left as i64 + 20, b.top as i64 + 10, b.right as i64 - 30, b.bottom as i64 - 15];
+        let cut = Layer::render([&Text { clip: Some(clip), ..plain.clone() }]);
+        let c = cut.bounds().unwrap();
+        assert!(c.left as i64 >= clip[0] && c.top as i64 >= clip[1] && c.right as i64 <= clip[2] && c.bottom as i64 <= clip[3], "{c:?}");
+        assert!(cut.image().width() as i64 <= clip[2] - clip[0] && cut.image().height() as i64 <= clip[3] - clip[1]);
+        for (x, y, p) in flat(&whole).enumerate_pixels() {
+            let inside = (clip[0]..clip[2]).contains(&(x as i64)) && (clip[1]..clip[3]).contains(&(y as i64));
+            assert_eq!(cut.at(x, y), if inside { whole.at(x, y) } else { Rgba([0, 0, 0, 0]) }, "at {x},{y}: {p:?}");
+        }
+        // a clip holding the whole text changes nothing; one past the panel, or empty, draws nothing
+        let roomy = Layer::render([&Text { clip: Some([-50, -50, 2000, 1000]), ..plain.clone() }]);
+        assert!(roomy.image() == whole.image() && roomy.origin() == whole.origin());
+        assert!(Layer::render([&Text { clip: Some([-100, -100, -1, -1]), ..plain.clone() }]).is_empty());
+        assert!(Layer::render([&Text { clip: Some([200, 200, 200, 300]), ..plain.clone() }]).is_empty());
+        assert!(Layer::render([&Text { clip: Some([300, 300, 200, 200]), ..plain.clone() }]).is_empty());
+    }
+
     #[test]
     fn geometry() {
         assert_eq!(block_height(40.0, 10.0, 1, 60.0), 50.0);
@@ -601,7 +773,7 @@ mod tests {
         let w = Text { x: 800.0, y: 100.0, align: Align::Center, ..text("HH\nHHHH") };
         let layer = Layer::render([&w]);
         let row_span = |y: u32| {
-            let xs: Vec<u32> = (0..WIDTH).filter(|&x| layer.image.get_pixel(x, y)[3] > 0).collect();
+            let xs: Vec<u32> = (0..WIDTH).filter(|&x| layer.at(x, y)[3] > 0).collect();
             (xs[0] + xs[xs.len() - 1]) as f32 / 2.0
         };
         let mid_line = |i: f32| (100.0 + ascent + i * 120.0 - 30.0) as u32;
@@ -736,7 +908,7 @@ mod tests {
         let b = layer.bounds().unwrap();
         for (x, y, p) in frame.enumerate_pixels() {
             let inside = (b.left..b.right).contains(&x) && (b.top..b.bottom).contains(&y);
-            match layer.image.get_pixel(x, y)[3] {
+            match layer.at(x, y)[3] {
                 0 => assert_eq!(p.0, [0, 0, 255]),
                 255 => assert_eq!(p.0, [255, 255, 255]),
                 _ => assert!(inside && p[0] > 0 && p[0] < 255),
@@ -754,7 +926,7 @@ mod tests {
         for (width, size) in [(0.5, 30.0), (1.0, 40.0), (2.5, 40.0), (7.0, 60.0), (20.0, 80.0)] {
             let pad = (width as f32).ceil() as i32 + 1;
             let w = Text { x: 20.0, y: 20.0, ..text("Ag/o") };
-            let mask = coverage(&font.glyphs, size, &layout(&font, &w, size), pad).unwrap();
+            let mask = coverage(&font.glyphs, size, &layout(&font, &w, size), pad, None).unwrap();
             let fast = dilate(&mask, width);
             let (mw, mh, reach) = (mask.width as i64, mask.height as i64, pad as i64);
             let mut worst = 0f32;

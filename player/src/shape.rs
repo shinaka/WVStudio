@@ -119,7 +119,9 @@ impl Region<'_> {
 
 /// Draws the shape into `buf` (straight RGBA, its top-left at `origin` on the panel) at the object's
 /// opacity, as one group: the stroke covers the fill, and neither shows through the other where the
-/// object is translucent. Returns the pixel box it touched, in panel pixels, if any.
+/// object is translucent. Only pixels inside the object's clip (a widget copy's box) are drawn; the
+/// coverage of those is what it would be without the clip. Returns the pixel box it touched, in panel
+/// pixels, if any.
 pub fn draw(buf: &mut RgbaImage, origin: (i64, i64), o: &Object, s: &Shape) -> Option<(i64, i64, i64, i64)> {
     let fill_at = s.fill.as_ref().map(|paint| paint_fn(paint, o));
     let stroke = s.stroke.as_ref().filter(|st| st.width > 0.0).map(|st| (rgb(&st.color), st.width / 2.0));
@@ -138,11 +140,12 @@ pub fn draw(buf: &mut RgbaImage, origin: (i64, i64), o: &Object, s: &Shape) -> O
         a: (o.x, o.y),
         b: (o.x + o.w, o.y + o.h),
     };
-    // the buffer, in panel pixels
+    // the buffer, in panel pixels, cut to the clip
     let (bl, bt) = origin;
     let (br, bb) = (bl + buf.width() as i64, bt + buf.height() as i64);
+    let [cl, ct, cr, cb] = o.clip.unwrap_or([bl, bt, br, bb]);
     let (l, t, r, b) = bounds(o, s);
-    let (l, t, r, b) = (l.max(bl), t.max(bt), r.min(br), b.min(bb));
+    let (l, t, r, b) = (l.max(bl).max(cl), t.max(bt).max(ct), r.min(br).min(cr), b.min(bb).min(cb));
     if l >= r || t >= b {
         return None;
     }

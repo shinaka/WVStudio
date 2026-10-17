@@ -6,6 +6,10 @@
 //! above into one RGBA still, and only animated layers are drawn per frame, and then only when one of
 //! their objects' frames has changed. Static layer buffers are also kept across re-prepares, keyed on
 //! the layer's content, so editing one layer draws only that layer again.
+//!
+//! Objects from a widget's copy (docs/widgets.md, Drawing) are drawn like any other, each inside its
+//! clip. The translucent copies and widget layers they sit in are groups: their objects are drawn
+//! together into a buffer the size of the group's box, which is then laid over at the group's opacity.
 
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
@@ -19,8 +23,9 @@ use image::{RgbImage, RgbaImage};
 
 use crate::art::{self, HEIGHT, Options, Prepared, WIDTH};
 use crate::media::{self, Cursor, Source, View};
-use crate::playlist::{Fill, Kind, Layer, Object, Scene, Shape, Text, stamp};
+use crate::playlist::{Fill, Group, Kind, Layer, Object, Scene, Shape, Text, stamp};
 use crate::text::{self, DEFAULT_FONT};
+use crate::widget::rnd;
 use crate::{player, shape};
 
 /// Bump when drawing changes, so scenes prepared by an older player are drawn again.
@@ -37,6 +42,12 @@ const LAYER_BYTES: usize = 256 << 20;
 thread_local! {
     /// How many layer buffers this thread has drawn, for tests of what's reused.
     pub static RENDERS: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The size of every group buffer this thread has made, for tests of what groups cost.
+    static GROUP_SIZES: std::cell::RefCell<Vec<(u32, u32)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// A drawn layer: straight RGBA over the part of the canvas it touches.
@@ -61,22 +72,24 @@ impl Buf {
         self.image.len()
     }
 
-    /// The part of a whole-canvas buffer inside the pixel box.
-    fn crop(canvas: &RgbaImage, rect: Option<(i64, i64, i64, i64)>) -> Buf {
-        let Some((l, t, r, b)) = rect else { return Buf::empty() };
-        let (l, t) = (l.clamp(0, WIDTH as i64) as u32, t.clamp(0, HEIGHT as i64) as u32);
-        let (r, b) = (r.clamp(0, WIDTH as i64) as u32, b.clamp(0, HEIGHT as i64) as u32);
-        if l >= r || t >= b {
-            return Buf::empty();
-        }
-        Buf { left: l, top: t, image: image::imageops::crop_imm(canvas, l, t, r - l, b - t).to_image() }
+    /// The part of `canvas`, whose top-left is `origin` on the panel, inside the pixel box: cut to the
+    /// canvas, and to the panel, where a `Buf` always lies.
+    fn crop(canvas: &RgbaImage, origin: (i64, i64), rect: Option<(i64, i64, i64, i64)>) -> Buf {
+        let on_panel = overlap(extent(origin, canvas), PANEL);
+        let Some((l, t, r, b)) = rect.zip(on_panel).and_then(|(rect, canvas)| overlap(rect, canvas)) else { return Buf::empty() };
+        let (x, y) = ((l - origin.0) as u32, (t - origin.1) as u32);
+        let image = image::imageops::crop_imm(canvas, x, y, (r - l) as u32, (b - t) as u32).to_image();
+        Buf { left: l as u32, top: t as u32, image }
     }
 
-    /// `crop`, taking the canvas itself when the whole of it was touched.
-    fn take(canvas: RgbaImage, rect: Option<(i64, i64, i64, i64)>) -> Buf {
+    /// `crop`, taking the canvas itself when the whole of it was touched (and it lies on the panel).
+    fn take(canvas: RgbaImage, origin: (i64, i64), rect: Option<(i64, i64, i64, i64)>) -> Buf {
+        let whole = extent(origin, &canvas);
         match rect {
-            Some((l, t, r, b)) if l <= 0 && t <= 0 && r >= WIDTH as i64 && b >= HEIGHT as i64 => Buf { left: 0, top: 0, image: canvas },
-            _ => Buf::crop(&canvas, rect),
+            Some(rect) if overlap(rect, whole) == Some(whole) && overlap(whole, PANEL) == Some(whole) => {
+                Buf { left: origin.0 as u32, top: origin.1 as u32, image: canvas }
+            }
+            _ => Buf::crop(&canvas, origin, rect),
         }
     }
 
@@ -215,20 +228,20 @@ impl Slot<'_> {
     /// Draws the objects at `t`, bottom to top, into a fresh transparent buffer.
     fn render(&mut self, t: Duration) -> Buf {
         RENDERS.with(|r| r.set(r.get() + 1));
-        // the usual video layer: one opaque picture in its box is the buffer itself, with no drawing
+        // the usual video layer: one opaque picture in its box is the buffer itself, with no drawing (not
+        // for a picture in a group, or one its clip cuts)
         if let [obj] = &mut self.objects[..]
             && obj.object.opacity >= 1.0
+            && obj.object.groups.is_empty()
             && let index = obj.index_at(t)
             && let ObjKind::Media { cursor, fill: Fill::None, .. } = &mut obj.kind
         {
             let frame = cursor.frame(index);
-            if frame.pixels().all(|p| p[3] == 255) {
-                let (x, y) = (obj.object.x.round() as i64, obj.object.y.round() as i64);
-                let (l, t) = (x.max(0), y.max(0));
-                let (r, b) = ((x + frame.width() as i64).min(WIDTH as i64), (y + frame.height() as i64).min(HEIGHT as i64));
-                if l >= r || t >= b {
-                    return Buf::empty();
-                }
+            let (x, y) = media_at(obj.object, frame.dimensions());
+            let whole = (x, y, x + frame.width() as i64, y + frame.height() as i64);
+            let uncut = clip(obj.object).is_none_or(|c| overlap(whole, c) == Some(whole));
+            if uncut && frame.pixels().all(|p| p[3] == 255) {
+                let Some((l, t, r, b)) = overlap(whole, PANEL) else { return Buf::empty() };
                 let image = image::imageops::crop_imm(&*frame, (l - x) as u32, (t - y) as u32, (r - l) as u32, (b - t) as u32).to_image();
                 return Buf { left: l as u32, top: t as u32, image };
             }
@@ -267,30 +280,82 @@ impl Slot<'_> {
 /// Draws `objs` at `t` into a transparent buffer whose top-left is `origin` on the panel and whose size is
 /// `size`, opening and closing their groups below `depth` (the ones already open are the caller's).
 fn render_objects(objs: &mut [Obj], t: Duration, depth: usize, origin: (i64, i64), size: (u32, u32)) -> Buf {
-    let _ = depth; // no object is in a group yet
-    let mut canvas = RgbaImage::new(size.0, size.1);
-    let mut touched: Option<(i64, i64, i64, i64)> = None;
+    let mut base = Canvas { image: RgbaImage::new(size.0, size.1), origin, touched: None };
+    // the groups open now, outermost first, each with its own buffer
+    let mut open: Vec<(Group, Canvas)> = Vec::new();
     for obj in objs {
+        let groups = obj.object.groups.get(depth..).unwrap_or_default();
+        // close the groups this object isn't in, innermost first; then open its own
+        let kept = open.iter().zip(groups).take_while(|((g, _), h)| g.id == h.id).count();
+        while open.len() > kept {
+            close(&mut open, &mut base);
+        }
+        for g in &groups[kept..] {
+            let canvas = Canvas::group(g, open.last().map_or(&base, |(_, c)| c));
+            open.push((g.clone(), canvas));
+        }
+        open.last_mut().map_or(&mut base, |(_, c)| c).draw(obj, t);
+    }
+    while !open.is_empty() {
+        close(&mut open, &mut base);
+    }
+    Buf::take(base.image, base.origin, base.touched)
+}
+
+/// Lays the innermost open group over what holds it, at the group's opacity.
+fn close(open: &mut Vec<(Group, Canvas)>, base: &mut Canvas) {
+    let Some((group, canvas)) = open.pop() else { return };
+    let Some(touched) = canvas.touched else { return };
+    let below = open.last_mut().map_or(base, |(_, c)| c);
+    // a group's buffer lies on the panel (Canvas::group), so it is a Buf as it stands
+    let buf = Buf { left: canvas.origin.0 as u32, top: canvas.origin.1 as u32, image: canvas.image };
+    let laid = buf.onto_rgba(&mut below.image, below.origin, group.opacity).and_then(|r| overlap(r, touched));
+    below.touched = union(below.touched, laid);
+}
+
+/// A transparent buffer being drawn into, whose top-left is `origin` on the panel, and the box (in panel
+/// pixels) of what's been drawn into it.
+struct Canvas {
+    image: RgbaImage,
+    origin: (i64, i64),
+    touched: Option<(i64, i64, i64, i64)>,
+}
+
+impl Canvas {
+    /// A group's buffer: its box, cut to the panel and to the buffer it will be laid over, since nothing
+    /// beyond them can show. Empty when nothing is left.
+    fn group(g: &Group, below: &Canvas) -> Canvas {
+        let [l, t, r, b] = g.rect;
+        let (l, t, r, b) = overlap((l, t, r, b), PANEL)
+            .and_then(|rect| overlap(rect, extent(below.origin, &below.image)))
+            .unwrap_or((0, 0, 0, 0));
+        #[cfg(test)]
+        GROUP_SIZES.with(|s| s.borrow_mut().push(((r - l) as u32, (b - t) as u32)));
+        Canvas { image: RgbaImage::new((r - l) as u32, (b - t) as u32), origin: (l, t), touched: None }
+    }
+
+    /// Draws one object at `t`, inside its clip.
+    fn draw(&mut self, obj: &mut Obj, t: Duration) {
         let index = obj.index_at(t);
         let object = obj.object;
         let rect = match &mut obj.kind {
             ObjKind::Media { cursor, fill, .. } => {
                 let frame = cursor.frame(index);
-                draw_media(&mut canvas, origin, object, &frame, *fill)
+                draw_media(&mut self.image, self.origin, object, &frame, *fill)
             }
+            // the text's own layer covers its text (cut to its clip), with its own origin
             ObjKind::Text(w) => {
                 let layer = text::Layer::render([*w]);
-                layer.bounds().map(|b| {
-                    let buf = Buf::crop(layer.image(), Some((b.left as i64, b.top as i64, b.right as i64, b.bottom as i64)));
-                    buf.onto_rgba(&mut canvas, origin, 1.0);
-                    (b.left as i64, b.top as i64, b.right as i64, b.bottom as i64)
+                layer.bounds().and_then(|b| {
+                    let (left, top, image) = layer.into_parts();
+                    let laid = Buf { left, top, image }.onto_rgba(&mut self.image, self.origin, 1.0)?;
+                    overlap(laid, (b.left as i64, b.top as i64, b.right as i64, b.bottom as i64))
                 })
             }
-            ObjKind::Shape(s) => shape::draw(&mut canvas, origin, object, s),
+            ObjKind::Shape(s) => shape::draw(&mut self.image, self.origin, object, s),
         };
-        touched = union(touched, rect);
+        self.touched = union(self.touched, rect);
     }
-    Buf::take(canvas, touched)
 }
 
 fn union(a: Option<(i64, i64, i64, i64)>, b: Option<(i64, i64, i64, i64)>) -> Option<(i64, i64, i64, i64)> {
@@ -301,26 +366,75 @@ fn union(a: Option<(i64, i64, i64, i64)>, b: Option<(i64, i64, i64, i64)>) -> Op
     }
 }
 
+/// Where two pixel boxes (left, top, right, bottom) meet, if they do.
+fn overlap(a: (i64, i64, i64, i64), b: (i64, i64, i64, i64)) -> Option<(i64, i64, i64, i64)> {
+    let (l, t, r, b) = (a.0.max(b.0), a.1.max(b.1), a.2.min(b.2), a.3.min(b.3));
+    (l < r && t < b).then_some((l, t, r, b))
+}
+
+/// The panel, as a pixel box.
+const PANEL: (i64, i64, i64, i64) = (0, 0, WIDTH as i64, HEIGHT as i64);
+
+/// The pixel box a buffer covers, with its top-left at `origin`.
+fn extent(origin: (i64, i64), image: &RgbaImage) -> (i64, i64, i64, i64) {
+    (origin.0, origin.1, origin.0 + image.width() as i64, origin.1 + image.height() as i64)
+}
+
+/// Where an object may draw, when it's part of a widget's copy.
+fn clip(o: &Object) -> Option<(i64, i64, i64, i64)> {
+    o.clip.map(|[l, t, r, b]| (l, t, r, b))
+}
+
+/// Where an image's frame goes on the panel: its box's top-left in whole pixels, or with `keep_aspect`, the
+/// frame (the file fitted inside the box, as `slots` sized it) centred in the box (docs/widgets.md,
+/// Images in a box).
+fn media_at(o: &Object, frame: (u32, u32)) -> (i64, i64) {
+    let (x, y) = (rnd(o.x), rnd(o.y));
+    match &o.kind {
+        Kind::Media(m) if m.keep_aspect => {
+            let (bw, bh) = (rnd(o.w).max(1), rnd(o.h).max(1));
+            (x + (bw - frame.0 as i64).div_euclid(2), y + (bh - frame.1 as i64).div_euclid(2))
+        }
+        _ => (x, y),
+    }
+}
+
+/// The box an image or video is drawn at, in whole pixels (docs/widgets.md, Images in a box): `(x, y, w,
+/// h)` is its placed box, and a file of `fw` x `fh` (after turning) is fitted inside it, keeping its shape,
+/// and centred. The renderers share it, with the vectors in tests/widgets/aspect.json.
+pub fn fit_aspect(x: i64, y: i64, w: i64, h: i64, fw: i64, fh: i64) -> (i64, i64, i64, i64) {
+    if w <= 0 || h <= 0 || fw <= 0 || fh <= 0 {
+        return (x, y, w, h);
+    }
+    let q = (w as f64 / fw as f64).min(h as f64 / fh as f64);
+    let (vw, vh) = (rnd(fw as f64 * q).max(1), rnd(fh as f64 * q).max(1));
+    (x + (w - vw).div_euclid(2), y + (h - vh).div_euclid(2), vw, vh)
+}
+
 /// Draws a turned and scaled frame at the object's box, repeated outward as its fill mode says, at the
-/// object's opacity, into `canvas`, whose top-left is `origin` on the panel. Returns the pixel box touched,
-/// in panel pixels.
+/// object's opacity, into `canvas`, whose top-left is `origin` on the panel, inside the object's clip. The
+/// repeats cover the clip, or the canvas when there's none; their pattern stays anchored to the object.
+/// Returns the pixel box touched, in panel pixels.
 fn draw_media(canvas: &mut RgbaImage, origin: (i64, i64), o: &Object, frame: &RgbaImage, fill: Fill) -> Option<(i64, i64, i64, i64)> {
-    let (x, y) = (o.x.round() as i64, o.y.round() as i64);
+    let (x, y) = media_at(o, frame.dimensions());
     let (w, h) = (frame.width() as i64, frame.height() as i64);
     let k = (o.opacity.clamp(0.0, 1.0) * 256.0).round() as u32;
     if w == 0 || h == 0 || k == 0 {
         return None;
     }
-    // the canvas, in panel pixels
-    let (cl, ct) = origin;
-    let (cr, cb) = (cl + canvas.width() as i64, ct + canvas.height() as i64);
+    // where it may draw: the canvas, cut to the clip
+    let area = match clip(o) {
+        Some(c) => overlap(extent(origin, canvas), c)?,
+        None => extent(origin, canvas),
+    };
     let (l, t, r, b) = match fill {
-        Fill::None => (x.max(cl), y.max(ct), (x + w).min(cr), (y + h).min(cb)),
-        _ => (cl, ct, cr, cb),
+        Fill::None => overlap((x, y, x + w, y + h), area)?,
+        _ => area,
     };
     if l >= r || t >= b {
         return None;
     }
+    let (cl, ct) = origin;
     let map = |d: i64, n: i64| -> usize {
         match fill {
             Fill::None | Fill::Extend => d.clamp(0, n - 1) as usize,
@@ -380,8 +494,15 @@ fn slots<'a>(scene: &'a Scene, global: &'a [Layer], opts: &Options) -> Vec<Slot<
                             continue;
                         }
                     };
-                    let view = View { rotate: o.rotate, flip: o.flip, w: o.w.round().max(1.0) as u32, h: o.h.round().max(1.0) as u32, smooth: m.smooth,
-                                      tint: None };
+                    // its box in whole pixels; with keep_aspect, the file's own size (turned) fitted inside it
+                    let (mut w, mut h) = (rnd(o.w).max(1), rnd(o.h).max(1));
+                    if m.keep_aspect {
+                        let (fw, fh) = if o.rotate % 180 == 90 { (source.height, source.width) } else { (source.width, source.height) };
+                        (_, _, w, h) = fit_aspect(rnd(o.x), rnd(o.y), w, h, fw as i64, fh as i64);
+                    }
+                    let size = |v: i64| v.clamp(1, u32::MAX as i64) as u32;
+                    let tint = m.tint.as_deref().and_then(shape::parse_rgb);
+                    let view = View { rotate: o.rotate, flip: o.flip, w: size(w), h: size(h), smooth: m.smooth, tint };
                     let durations = source.durations();
                     let mut starts = Vec::with_capacity(durations.len());
                     let mut at = Duration::ZERO;
@@ -578,7 +699,7 @@ fn flatten(slots: &mut [Slot]) -> Buf {
         let buf = slot.render_cached();
         touched = union(touched, buf.onto_rgba(&mut canvas, (0, 0), slot.opacity));
     }
-    Buf::take(canvas, touched)
+    Buf::take(canvas, (0, 0), touched)
 }
 
 /// The scene's cycle of frames, encoded for the panel, plus the still kept over its live text.
@@ -917,8 +1038,530 @@ mod tests {
 }
 
 /// Groups, clips, rounding, keep_aspect and tint (docs/widgets.md, Drawing). Owned by work package P2.
+///
+/// The leaves of copies are built by hand here, as the reader would make them: ordinary objects with a
+/// clip and the groups they sit in.
 #[cfg(test)]
-mod drawing_tests {}
+mod drawing_tests {
+    use super::*;
+    use crate::playlist::{self, Playlist, Rect};
+    use image::codecs::gif::GifEncoder;
+    use image::{Delay, Rgba};
+    use jpeg_encoder::SamplingFactor;
+    use serde_json::{Value, json};
+    use std::path::PathBuf;
+
+    /// A folder of its own for each test's media.
+    struct Scratch {
+        dir: PathBuf,
+    }
+
+    impl Scratch {
+        fn new(name: &str) -> Scratch {
+            let dir = std::env::temp_dir().join(format!("wvplay-drawing-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Scratch { dir }
+        }
+
+        fn png(&self, name: &str, w: u32, h: u32, pixel: impl Fn(u32, u32) -> [u8; 4]) {
+            RgbaImage::from_fn(w, h, |x, y| Rgba(pixel(x, y))).save(self.dir.join(name)).unwrap();
+        }
+
+        /// `two.png`: red, green side by side.
+        fn two(&self) {
+            self.png("two.png", 2, 1, |x, _| if x == 0 { [255, 0, 0, 255] } else { [0, 255, 0, 255] });
+        }
+
+        /// Scenes of the given layers, bottom first, each a list of objects at an opacity.
+        fn playlist(&self, scenes: &[&[(f64, Vec<Value>)]], global: &[(f64, Vec<Value>)]) -> Playlist {
+            let layers = |list: &[(f64, Vec<Value>)]| -> Vec<Value> {
+                list.iter().enumerate().map(|(i, (opacity, objects))| json!({ "id": format!("l{i}"), "opacity": opacity, "objects": objects })).collect()
+            };
+            let scenes: Vec<Value> = scenes.iter().enumerate()
+                .map(|(i, l)| json!({ "id": format!("s{i}"), "background": "#000000", "layers": layers(l) }))
+                .collect();
+            let file = json!({ "version": 2, "global": { "layers": layers(global) }, "scenes": scenes });
+            playlist::parse(file.to_string().as_bytes(), &self.dir, 30.0, Path::new("ffmpeg")).unwrap()
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn opts() -> Options {
+        Options { rotate180: false, quality: 95, ffmpeg: PathBuf::from("ffmpeg") }
+    }
+
+    fn rect(x: f64, y: f64, w: f64, h: f64, color: &str) -> Value {
+        json!({ "id": "r", "type": "shape", "x": x, "y": y, "w": w, "h": h, "crisp": true, "fill": { "type": "solid", "color": color } })
+    }
+
+    fn image(src: &str, x: f64, y: f64, w: f64, h: f64) -> Value {
+        json!({ "id": "i", "type": "image", "src": src, "x": x, "y": y, "w": w, "h": h })
+    }
+
+    /// Sets a key on an object made by `rect` or `image`.
+    fn with(mut o: Value, key: &str, value: Value) -> Value {
+        o[key] = value;
+        o
+    }
+
+    /// Makes objects the leaves of a copy, as the reader does: each inside `clip`, in `groups` (outermost
+    /// first, as `(id, opacity, rect)`).
+    fn leaves(objects: &mut [Object], clip: Rect, groups: &[(&str, f32, Rect)]) {
+        for o in objects {
+            o.clip = Some(clip);
+            o.groups = groups.iter().map(|(id, opacity, rect)| Group { id: id.to_string(), opacity: *opacity, rect: *rect }).collect();
+            if let Kind::Text(t) = &mut o.kind {
+                t.clip = Some(clip);
+            }
+        }
+    }
+
+    fn media(o: &mut Object) -> &mut playlist::Media {
+        match &mut o.kind {
+            Kind::Media(m) => m,
+            _ => panic!("{} isn't an image", o.id),
+        }
+    }
+
+    /// Scene `i` as the cooler shows it at `t`.
+    fn draw_at(p: &Playlist, i: usize, t: u64) -> RgbImage {
+        render_at(&p.scenes[i], &p.global, &opts(), Duration::from_millis(t), &[])
+    }
+
+    fn draw(p: &Playlist) -> RgbImage {
+        draw_at(p, 0, 0)
+    }
+
+    /// Layer `i` of the first scene drawn afresh (not from the layer cache), and the group buffers that took.
+    fn layer_buf(p: &Playlist, i: usize) -> (Buf, Vec<(u32, u32)>) {
+        GROUP_SIZES.with(|s| s.take());
+        let buf = slots(&p.scenes[0], &p.global, &opts())[i].render(Duration::ZERO);
+        (buf, GROUP_SIZES.with(|s| s.take()))
+    }
+
+    fn px(im: &RgbImage, x: u32, y: u32) -> [u8; 3] {
+        im.get_pixel(x, y).0
+    }
+
+    /// A copy below 100% is drawn as a whole, like a layer: where its parts overlap, the lower one doesn't
+    /// show through. Its buffer covers its box, not the panel.
+    #[test]
+    fn copy_opacity_is_a_group() {
+        let s = Scratch::new("copy-group");
+        let parts = vec![rect(10.0, 10.0, 20.0, 20.0, "#ff0000"), rect(20.0, 10.0, 20.0, 20.0, "#0000ff")];
+        let alone = rect(50.0, 10.0, 10.0, 10.0, "#00ff00");
+        let mut p = s.playlist(&[&[(1.0, vec![parts[0].clone(), parts[1].clone(), alone.clone()])]], &[]);
+        leaves(&mut p.scenes[0].layers[0].objects[..2], [5, 5, 45, 40], &[("c", 0.5, [5, 5, 45, 40])]);
+        let im = draw(&p);
+        assert_eq!(px(&im, 25, 15), [0, 0, 128]); // overlap: only blue, at half
+        assert_eq!(px(&im, 15, 15), [128, 0, 0]);
+        assert_eq!(px(&im, 55, 15), [0, 255, 0]); // not in the copy: as it is
+        // exactly what a layer at 0.5 holding the two draws
+        let layered = s.playlist(&[&[(0.5, parts.clone()), (1.0, vec![alone.clone()])]], &[]);
+        assert!(draw(&layered) == im);
+        assert_eq!(layer_buf(&p, 0).1, [(40, 35)]);
+        // an object's own opacity still multiplies within the copy: red shows through a half blue
+        let half_blue = with(parts[1].clone(), "opacity", json!(0.5));
+        let mut p = s.playlist(&[&[(1.0, vec![parts[0].clone(), half_blue.clone()])]], &[]);
+        leaves(&mut p.scenes[0].layers[0].objects, [5, 5, 45, 40], &[("c", 0.5, [5, 5, 45, 40])]);
+        let layered = s.playlist(&[&[(0.5, vec![parts[0].clone(), half_blue])]], &[]);
+        assert!(draw(&p) == draw(&layered));
+        assert!(px(&draw(&p), 25, 15)[0] > 0);
+        // two copies side by side are two groups; neighbours given the same id by hand are one
+        let mut p = s.playlist(&[&[(1.0, parts.clone())]], &[]);
+        let objects = &mut p.scenes[0].layers[0].objects;
+        leaves(&mut objects[..1], [0, 0, 100, 100], &[("c", 0.5, [0, 0, 100, 100])]);
+        leaves(&mut objects[1..], [0, 0, 100, 100], &[("d", 0.5, [0, 0, 100, 100])]);
+        let (_, sizes) = layer_buf(&p, 0);
+        assert_eq!(sizes.len(), 2);
+        assert!(px(&draw(&p), 25, 15)[0] > 0); // two groups: red shows under the second
+        p.scenes[0].layers[0].objects[1].groups[0].id = "c".into();
+        assert_eq!(layer_buf(&p, 0).1.len(), 1);
+        assert_eq!(px(&draw(&p), 25, 15), [0, 0, 128]);
+    }
+
+    /// A widget layer below 100% is a group inside its copy, as a scene layer is; groups nest.
+    #[test]
+    fn widget_layer_opacity_is_a_group() {
+        let s = Scratch::new("layer-group");
+        let parts = vec![rect(10.0, 10.0, 20.0, 20.0, "#ff0000"), rect(20.0, 10.0, 20.0, 20.0, "#0000ff")];
+        let top = rect(35.0, 20.0, 20.0, 20.0, "#00ff00");
+        // an opaque copy whose widget has a layer at 0.5 (red, blue) under one at 1 (green)
+        let mut p = s.playlist(&[&[(1.0, vec![parts[0].clone(), parts[1].clone(), top.clone()])]], &[]);
+        let objects = &mut p.scenes[0].layers[0].objects;
+        leaves(&mut objects[..2], [0, 0, 60, 50], &[("c/l1", 0.5, [0, 0, 60, 50])]);
+        leaves(&mut objects[2..], [0, 0, 60, 50], &[]);
+        let im = draw(&p);
+        assert_eq!(px(&im, 25, 15), [0, 0, 128]);
+        assert_eq!(px(&im, 15, 15), [128, 0, 0]);
+        assert_eq!(px(&im, 37, 25), [0, 255, 0]);
+        let layered = s.playlist(&[&[(0.5, parts.clone()), (1.0, vec![top.clone()])]], &[]);
+        assert!(draw(&layered) == im);
+        // the same copy at 0.8: its layer's group sits inside the copy's, and the two fade together
+        let mut p = s.playlist(&[&[(1.0, vec![parts[0].clone(), parts[1].clone(), top.clone()])]], &[]);
+        let objects = &mut p.scenes[0].layers[0].objects;
+        leaves(&mut objects[..2], [0, 0, 60, 50], &[("c", 0.8, [0, 0, 60, 50]), ("c/l1", 0.5, [0, 0, 60, 50])]);
+        leaves(&mut objects[2..], [0, 0, 60, 50], &[("c", 0.8, [0, 0, 60, 50])]);
+        let im = draw(&p);
+        assert_eq!(px(&im, 25, 15)[2].abs_diff(102), 1); // 0.8 x 0.5 of blue, to a level
+        assert_eq!(px(&im, 37, 25), [0, 204, 0]); // green over half blue, both in the copy at 0.8
+        assert_eq!(layer_buf(&p, 0).1, [(60, 50), (60, 50)]);
+    }
+
+    /// A copy at 100% isn't a buffer of its own: its parts are drawn straight into the layer, giving the
+    /// same bytes as the same objects placed directly.
+    #[test]
+    fn opaque_copy_costs_nothing() {
+        let s = Scratch::new("opaque");
+        s.two();
+        s.png("half.png", 3, 2, |x, y| [x as u8 * 80, y as u8 * 120, 40, 100 + 70 * x as u8]);
+        let mut objects = vec![
+            image("two.png", 5.0, 5.0, 8.0, 4.0),
+            with(image("half.png", 20.0, 3.0, 9.0, 6.0), "opacity", json!(0.7)),
+            json!({ "id": "e", "type": "shape", "shape": "ellipse", "x": 12, "y": 2, "w": 30, "h": 20,
+                    "fill": { "type": "linear", "angle": 30, "stops": [ { "at": 0, "color": "#ff0000" }, { "at": 1, "color": "#0000ff" } ] },
+                    "stroke": { "color": "#ffffff", "width": 3 }, "opacity": 0.8 }),
+        ];
+        if Path::new(DEFAULT_FONT).exists() {
+            objects.push(json!({ "id": "t", "type": "text", "text": "Hi", "x": 30, "y": 10, "size": 40, "outline": { "width": 2 } }));
+        }
+        let direct = s.playlist(&[&[(1.0, objects.clone())]], &[]);
+        let mut copy = s.playlist(&[&[(1.0, objects)]], &[]);
+        leaves(&mut copy.scenes[0].layers[0].objects, [0, 0, 300, 200], &[]);
+        let (want, _) = layer_buf(&direct, 0);
+        let (got, groups) = layer_buf(&copy, 0);
+        assert!(!want.is_empty() && got == want);
+        assert!(groups.is_empty());
+        // one opaque picture: the layer is the picture itself, in a copy or not
+        let direct = s.playlist(&[&[(1.0, vec![image("two.png", 5.0, 5.0, 8.0, 4.0)])]], &[]);
+        let mut copy = direct.clone();
+        leaves(&mut copy.scenes[0].layers[0].objects, [5, 5, 13, 9], &[]);
+        let (want, got) = (layer_buf(&direct, 0).0, layer_buf(&copy, 0).0);
+        assert!((want.left, want.top, want.image.dimensions()) == (5, 5, (8, 4)) && got == want);
+    }
+
+    /// A copy draws only inside its box, and a copy inside another inside both; fills cover the box;
+    /// a translucent copy hanging off the panel's edges draws what's on the panel.
+    #[test]
+    fn copy_clips() {
+        let s = Scratch::new("clips");
+        s.two();
+        // a rect and a picture reaching past the box are cut at its edge
+        let mut p = s.playlist(&[&[(1.0, vec![rect(150.0, 100.0, 100.0, 40.0, "#ffffff"), image("two.png", 190.0, 140.0, 20.0, 20.0)])]], &[]);
+        leaves(&mut p.scenes[0].layers[0].objects, [100, 100, 200, 150], &[]);
+        let im = draw(&p);
+        assert_eq!((px(&im, 199, 120), px(&im, 200, 120), px(&im, 150, 99)), ([255; 3], [0; 3], [0; 3]));
+        assert_eq!((px(&im, 190, 149), px(&im, 200, 149), px(&im, 190, 150)), ([255, 0, 0], [0; 3], [0; 3]));
+        // a tiled picture fills exactly the box, its pattern anchored to the picture; so do mirror and extend
+        for (fill, at_100, at_101) in [("tile", [255, 0, 0], [0, 255, 0]), ("mirror", [0, 255, 0], [255, 0, 0]), ("extend", [255, 0, 0], [255, 0, 0])] {
+            let mut p = s.playlist(&[&[(1.0, vec![with(image("two.png", 110.0, 110.0, 2.0, 1.0), "fill", json!(fill))])]], &[]);
+            leaves(&mut p.scenes[0].layers[0].objects, [100, 100, 140, 120], &[]);
+            let im = draw(&p);
+            for (x, y, c) in im.enumerate_pixels() {
+                let inside = (100..140).contains(&x) && (100..120).contains(&y);
+                assert_eq!(c.0 != [0; 3], inside, "{fill} at {x},{y}");
+            }
+            assert_eq!((px(&im, 100, 105), px(&im, 101, 105)), (at_100, at_101), "{fill}");
+            assert_eq!((px(&im, 110, 110), px(&im, 111, 110)), ([255, 0, 0], [0, 255, 0]), "{fill}");
+        }
+        // copies inside copies: the clip is the boxes' intersection, and the groups nest, each its own size
+        let mut p = s.playlist(&[&[(1.0, vec![rect(0.0, 0.0, 1600.0, 720.0, "#ffffff")])]], &[]);
+        leaves(&mut p.scenes[0].layers[0].objects, [150, 250, 200, 300], &[("c", 0.5, [100, 200, 200, 300]), ("c/w", 0.5, [150, 250, 200, 300])]);
+        let im = draw(&p);
+        assert_eq!(px(&im, 175, 275), [64; 3]);
+        for (x, y) in [(149, 275), (175, 249), (200, 275), (175, 300), (120, 220)] {
+            assert_eq!(px(&im, x, y), [0; 3], "at {x},{y}");
+        }
+        assert_eq!(layer_buf(&p, 0).1, [(100, 100), (50, 50)]);
+        // hanging off the panel's top-left and bottom-right, at half: no panic, and the buffers are what's
+        // on the panel
+        for (clip, inside, outside, size) in [([-50, -30, 40, 40], (0, 0), (40, 10), (40, 40)), ([1580, 700, 1700, 800], (1599, 719), (1579, 710), (20, 20))] {
+            let objects = vec![rect(-60.0, -60.0, 1800.0, 900.0, "#ffffff"), with(image("two.png", -45.0, -25.0, 2.0, 1.0), "fill", json!("tile"))];
+            let mut p = s.playlist(&[&[(1.0, objects)]], &[]);
+            leaves(&mut p.scenes[0].layers[0].objects, clip, &[("c", 0.5, clip)]);
+            let im = draw(&p);
+            assert!(px(&im, inside.0, inside.1) != [0; 3] && px(&im, outside.0, outside.1) == [0; 3], "{clip:?}");
+            assert_eq!(layer_buf(&p, 0).1, [size]);
+        }
+    }
+
+    /// A copy's picture is resampled once, from the file, at its final size: pixel art in a 3x copy is the
+    /// same as the picture placed at 3x in a scene.
+    #[test]
+    fn one_resample() {
+        let s = Scratch::new("resample");
+        s.two();
+        // the widget's picture is at 0, 0, 2 x 1; the copy is at 30, 30 at scale 3
+        let mut copy = s.playlist(&[&[(1.0, vec![image("two.png", 30.0, 30.0, 6.0, 3.0)])]], &[]);
+        leaves(&mut copy.scenes[0].layers[0].objects, [30, 30, 36, 33], &[("c", 0.999, [30, 30, 36, 33])]);
+        let placed = s.playlist(&[&[(0.999, vec![image("two.png", 30.0, 30.0, 6.0, 3.0)])]], &[]);
+        let im = draw(&copy);
+        assert!(im == draw(&placed));
+        let row: Vec<[u8; 3]> = (29..37).map(|x| px(&im, x, 31)).collect();
+        assert_eq!(row, [[0; 3], [255, 0, 0], [255, 0, 0], [255, 0, 0], [0, 255, 0], [0, 255, 0], [0, 255, 0], [0; 3]]);
+    }
+
+    /// A copy's text is laid out again at its scaled size, so it stays sharp: a 2x copy's text is the text
+    /// placed directly at the scaled anchor and size, not the 1x text enlarged.
+    #[test]
+    fn text_in_copies_is_redrawn() {
+        if !Path::new(DEFAULT_FONT).exists() {
+            return;
+        }
+        let s = Scratch::new("text");
+        let text = |x: f64, y: f64, size: f64, outline: f64| {
+            json!({ "id": "t", "type": "text", "text": "Hg", "x": x, "y": y, "size": size, "color": "#ffcc00", "outline": { "color": "#0000ff", "width": outline } })
+        };
+        // the widget's text is at 10, 5, size 30, outline 1; copies at 200, 100, at scales 2 and 1
+        let mut copy = s.playlist(&[&[(1.0, vec![text(220.0, 110.0, 60.0, 2.0)])], &[(1.0, vec![text(210.0, 105.0, 30.0, 1.0)])]], &[]);
+        leaves(&mut copy.scenes[0].layers[0].objects, [200, 100, 600, 300], &[]);
+        leaves(&mut copy.scenes[1].layers[0].objects, [200, 100, 400, 200], &[]);
+        let placed = s.playlist(&[&[(1.0, vec![text(220.0, 110.0, 60.0, 2.0)])]], &[]);
+        let big = draw_at(&copy, 0, 0);
+        assert!(big == draw(&placed));
+        // the 1x copy enlarged 2x isn't it
+        let small = draw_at(&copy, 1, 0);
+        let enlarged = |x: u32, y: u32| px(&small, 200 + (x - 200) / 2, 100 + (y - 100) / 2);
+        let differ = (200..600).flat_map(|x| (100..300).map(move |y| (x, y))).filter(|&(x, y)| enlarged(x, y) != px(&big, x, y)).count();
+        assert!(differ > 50, "{differ}");
+    }
+
+    /// A GIF in a copy animates the scene like any other, and layers are drawn only when they change.
+    #[test]
+    fn copy_animation() {
+        let s = Scratch::new("anim");
+        let mut gif = GifEncoder::new(std::fs::File::create(s.dir.join("a.gif")).unwrap());
+        for shade in [40u8, 80, 120] {
+            let im = RgbaImage::from_pixel(4, 4, Rgba([shade, 0, 0, 255]));
+            gif.encode_frame(image::Frame::from_parts(im, 0, 0, Delay::from_numer_denom_ms(100, 1))).unwrap();
+        }
+        drop(gif);
+        let bottom = (1.0, vec![rect(0.0, 0.0, 50.0, 50.0, "#0000ff")]);
+        let top = (1.0, vec![rect(100.0, 0.0, 50.0, 50.0, "#00ff00")]);
+        let anim = (1.0, vec![rect(60.0, 0.0, 10.0, 10.0, "#ffffff"), image("a.gif", 60.0, 0.0, 4.0, 4.0)]);
+        let mut p = s.playlist(&[&[bottom, anim, top]], &[]);
+        // the copy at 0.5 is 60, 0 to 63, 3: the GIF's last row and column are past it
+        leaves(&mut p.scenes[0].layers[1].objects, [60, 0, 63, 3], &[("c", 0.5, [60, 0, 63, 3])]);
+        let ms = Duration::from_millis;
+        assert_eq!(times(&p.scenes[0], &p.global, &opts()), [(ms(0), ms(100)), (ms(100), ms(100)), (ms(200), ms(100))]);
+        let count = |f: &dyn Fn()| {
+            let before = RENDERS.with(Cell::get);
+            f();
+            RENDERS.with(Cell::get) - before
+        };
+        // first time: the two static layers, and the copy's layer for each of the GIF's frames; then only those
+        assert_eq!(count(&|| { prepare(&p.scenes[0], &p.global, &opts()).unwrap(); }), 2 + 3);
+        assert_eq!(count(&|| { prepare(&p.scenes[0], &p.global, &opts()).unwrap(); }), 3);
+        // each frame shows the GIF's, at half, inside the copy's box
+        for (t, shade) in [(0, 20), (100, 40), (250, 60)] {
+            let im = draw_at(&p, 0, t);
+            assert_eq!((px(&im, 60, 0), px(&im, 63, 0), px(&im, 60, 3)), ([shade, 0, 0], [0; 3], [0; 3]), "at {t} ms");
+        }
+    }
+
+    /// Positions round half up, as the studio's do: a picture at x -0.5 lands at 0 (it was at -1).
+    #[test]
+    fn rounding_at_the_top() {
+        let s = Scratch::new("rounding");
+        s.two();
+        let red = [255, 0, 0];
+        let green = [0, 255, 0];
+        for (x, first) in [(-0.5, red), (-1.5, green), (-1.4, green), (0.5, [0; 3]), (-0.6, green)] {
+            // one opaque picture (the layer is the picture itself), and the same tiled (drawn)
+            let p = s.playlist(&[&[(1.0, vec![image("two.png", x, -0.5, 2.0, 1.0)])], &[(1.0, vec![with(image("two.png", x, 0.0, 2.0, 1.0), "fill", json!("tile"))])]], &[]);
+            assert_eq!(px(&draw_at(&p, 0, 0), 0, 0), first, "at {x}");
+            let tiled = draw_at(&p, 1, 0);
+            let anchor = rnd(x);
+            assert_eq!(px(&tiled, 0, 0), if anchor.rem_euclid(2) == 0 { red } else { green }, "tiled at {x}");
+        }
+        // sizes round the same way
+        let p = s.playlist(&[&[(1.0, vec![image("two.png", 0.0, 0.0, 2.5, 1.5)])]], &[]);
+        assert_eq!((px(&draw(&p), 2, 1), px(&draw(&p), 3, 1), px(&draw(&p), 0, 2)), (green, [0; 3], [0; 3]));
+    }
+
+    /// JPEG frames keep full colour unless video is drawn, in the scene's layers or the global ones.
+    #[test]
+    fn sampling_sees_global_video() {
+        let s = Scratch::new("sampling");
+        let still = (1.0, vec![image("a.png", 0.0, 0.0, 10.0, 10.0)]);
+        let video = (1.0, vec![json!({ "id": "v", "type": "video", "src": "v.mp4", "w": 10, "h": 10 })]);
+        let p = s.playlist(&[&[still.clone()]], &[]);
+        assert_eq!(art::sampling(&p.scenes[0], &p.global), SamplingFactor::R_4_4_4);
+        let p = s.playlist(&[&[still.clone()]], &[video.clone()]);
+        assert_eq!(art::sampling(&p.scenes[0], &p.global), SamplingFactor::R_4_2_0);
+        let p = s.playlist(&[&[still, video]], &[]);
+        assert_eq!(art::sampling(&p.scenes[0], &p.global), SamplingFactor::R_4_2_0);
+    }
+
+    /// The shared vectors: the box a file of its own size takes inside its placed box.
+    #[test]
+    fn fit_aspect_vectors() {
+        let rows: Vec<Value> = serde_json::from_str(include_str!("../tests/widgets/aspect.json")).unwrap();
+        assert!(rows.len() > 10);
+        let n = |v: &Value, i: usize| v[i].as_i64().unwrap();
+        for row in &rows {
+            let (b, native) = (&row["box"], &row["native"]);
+            let (fw, fh) = match row["rotate"].as_i64().unwrap() {
+                90 | 270 => (n(native, 1), n(native, 0)),
+                _ => (n(native, 0), n(native, 1)),
+            };
+            let got = fit_aspect(n(b, 0), n(b, 1), n(b, 2), n(b, 3), fw, fh);
+            let r = &row["result"];
+            assert_eq!(got, (n(r, 0), n(r, 1), n(r, 2), n(r, 3)), "{row}");
+        }
+    }
+
+    /// keep_aspect is worked out when the file is opened: a 30 x 10 picture in a 40 x 40 box draws at
+    /// 40 x 13, 13 down, and a tiled fill is anchored to that box.
+    #[test]
+    fn keep_aspect_fits_when_opened() {
+        let s = Scratch::new("aspect");
+        // each row its own colour
+        s.png("wide.png", 30, 10, |_, y| [y as u8 * 20, 255 - y as u8 * 20, 0, 255]);
+        let row = |r: u8| [r * 20, 255 - r * 20, 0];
+        let objects = vec![image("wide.png", 100.0, 200.0, 40.0, 40.0), with(image("wide.png", 300.0, 200.0, 40.0, 40.0), "rotate", json!(90)),
+                           with(image("wide.png", 500.0, 200.0, 40.0, 40.0), "fill", json!("tile"))];
+        let mut p = s.playlist(&[&[(1.0, objects)]], &[]);
+        for o in &mut p.scenes[0].layers[0].objects {
+            media(o).keep_aspect = true;
+        }
+        // the tiled one is a copy's leaf, filling its box
+        leaves(&mut p.scenes[0].layers[0].objects[2..], [500, 200, 540, 240], &[]);
+        let im = draw(&p);
+        // 40 x 13 at 100, 213: rows 0 to 9 of the file, nearest
+        let drawn: Vec<u32> = (190..250).filter(|y| px(&im, 120, *y) != [0; 3]).collect();
+        assert_eq!(drawn, (213..226).collect::<Vec<_>>());
+        assert_eq!((px(&im, 100, 213), px(&im, 139, 225), px(&im, 99, 220), px(&im, 140, 220)), (row(0), row(9), [0; 3], [0; 3]));
+        // turned a quarter: 13 x 40 at 313, 200
+        let drawn: Vec<u32> = (290..350).filter(|x| px(&im, *x, 220) != [0; 3]).collect();
+        assert_eq!(drawn, (313..326).collect::<Vec<_>>());
+        // tiled from the fitted box: the row above it is the fitted picture's last row, file row 9
+        assert_eq!((px(&im, 520, 213), px(&im, 520, 212), px(&im, 520, 200), px(&im, 520, 239), px(&im, 520, 240)), (row(0), row(9), row(0), row(0), [0; 3]));
+    }
+
+    /// A tint recolours every pixel the file draws and keeps its transparency, after the one resample; the
+    /// same file untinted, in the same scene, keeps its own colours.
+    #[test]
+    fn tint_recolours() {
+        let s = Scratch::new("tint");
+        // white, clear; half-transparent white, black
+        let icon = |x: u32, y: u32| match (x, y) {
+            (0, 0) => [255, 255, 255, 255],
+            (1, 0) => [0, 0, 0, 0],
+            (0, _) => [255, 255, 255, 128],
+            _ => [0, 0, 0, 255],
+        };
+        s.png("a.png", 2, 2, icon);
+        s.png("b.png", 2, 2, icon);
+        // tinted first, then the same file untinted; and the other way round with another file
+        for (file, tinted_first) in [("a.png", true), ("b.png", false)] {
+            let objects = vec![image(file, 0.0, 0.0, 2.0, 2.0), image(file, 10.0, 0.0, 2.0, 2.0), image(file, 20.0, 0.0, 4.0, 4.0)];
+            let mut p = s.playlist(&[&[(1.0, objects)]], &[]);
+            let (red, plain) = if tinted_first { (0, 1) } else { (1, 0) };
+            let layer = &mut p.scenes[0].layers[0].objects;
+            media(&mut layer[red]).tint = Some("#ff0000".into());
+            media(&mut layer[2]).tint = Some("#00ff00".into());
+            layer[red].x = 0.0;
+            layer[plain].x = 10.0;
+            let im = draw(&p);
+            assert_eq!([px(&im, 0, 0), px(&im, 1, 0), px(&im, 0, 1), px(&im, 1, 1)], [[255, 0, 0], [0; 3], [128, 0, 0], [255, 0, 0]], "{file}");
+            assert_eq!([px(&im, 10, 0), px(&im, 11, 0), px(&im, 10, 1), px(&im, 11, 1)], [[255; 3], [0; 3], [128; 3], [0; 3]], "{file}");
+            // scaled first (2x, nearest), then tinted
+            assert_eq!([px(&im, 21, 1), px(&im, 22, 1), px(&im, 21, 2)], [[0, 255, 0], [0; 3], [0, 128, 0]], "{file}");
+            // the layer keeps the half-transparent pixel's alpha
+            let (buf, _) = layer_buf(&p, 0);
+            let alpha = |x: u32, y: u32| buf.image.get_pixel(x - buf.left, y - buf.top)[3];
+            assert_eq!((alpha(0, 0), alpha(1, 0), alpha(0, 1)), (255, 0, 128));
+        }
+    }
+
+    /// A video is fitted by its own size and tinted like a picture, frame by frame. Needs ffmpeg: the
+    /// one in $WV_TEST_FFMPEG.
+    #[test]
+    fn video_fits_and_tints() {
+        let Some(ffmpeg) = std::env::var_os("WV_TEST_FFMPEG").map(PathBuf::from) else {
+            eprintln!("video_fits_and_tints skipped: set WV_TEST_FFMPEG to an ffmpeg to run it");
+            return;
+        };
+        let s = Scratch::new("video");
+        let made = std::process::Command::new(&ffmpeg)
+            .args(["-v", "error", "-f", "lavfi", "-i", "color=c=white:s=30x10:r=10:d=0.3", "-c:v", "mpeg4", "-pix_fmt", "yuv420p"])
+            .arg(s.dir.join("v.mp4"))
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let video = |x: f64| json!({ "id": "v", "type": "video", "src": "v.mp4", "x": x, "y": 200, "w": 40, "h": 40 });
+        let mut p = s.playlist(&[&[(1.0, vec![video(100.0), video(300.0)])]], &[]);
+        let objects = &mut p.scenes[0].layers[0].objects;
+        media(&mut objects[0]).keep_aspect = true;
+        media(&mut objects[0]).tint = Some("#ff0000".into());
+        media(&mut objects[1]).keep_aspect = true;
+        let o = Options { ffmpeg, ..opts() };
+        let im = render_at(&p.scenes[0], &p.global, &o, Duration::from_millis(100), &[]);
+        let drawn: Vec<u32> = (190..250).filter(|y| px(&im, 120, *y) != [0; 3]).collect();
+        assert_eq!(drawn, (213..226).collect::<Vec<_>>());
+        assert!((213..226).all(|y| (100..140).all(|x| px(&im, x, y) == [255, 0, 0])));
+        assert!((213..226).all(|y| (300..340).all(|x| px(&im, x, y).iter().all(|c| *c > 240))));
+    }
+
+    /// Groups already open are the caller's: drawn below `depth`, a copy's parts give what the copy's own
+    /// buffer held, so its group can be laid over later.
+    #[test]
+    fn groups_below_depth_are_the_callers() {
+        let s = Scratch::new("depth");
+        let parts = vec![rect(10.0, 10.0, 20.0, 20.0, "#ff0000"), rect(20.0, 10.0, 20.0, 20.0, "#0000ff"), rect(30.0, 30.0, 5.0, 5.0, "#ffffff")];
+        let mut p = s.playlist(&[&[(1.0, parts)]], &[]);
+        let objects = &mut p.scenes[0].layers[0].objects;
+        leaves(&mut objects[..2], [5, 5, 45, 40], &[("c", 0.5, [5, 5, 45, 40]), ("c/l1", 0.5, [5, 5, 45, 40])]);
+        leaves(&mut objects[2..], [5, 5, 45, 40], &[("c", 0.5, [5, 5, 45, 40])]);
+        let whole = layer_buf(&p, 0).0;
+        let mut slot = slots(&p.scenes[0], &p.global, &opts()).remove(0);
+        let inner = render_objects(&mut slot.objects, Duration::ZERO, 1, (5, 5), (40, 35));
+        let mut canvas = RgbaImage::new(WIDTH, HEIGHT);
+        let touched = inner.onto_rgba(&mut canvas, (0, 0), 0.5);
+        assert!(Buf::take(canvas, (0, 0), touched) == whole);
+    }
+
+    /// Editing a widget changes the keys of exactly the scenes that draw it; a live input's words change
+    /// none. (Leaves built by hand: these are the scenes as the reader expands them.)
+    #[test]
+    fn cache_keys_follow_widgets() {
+        let s = Scratch::new("keys");
+        let copy = vec![rect(0.0, 0.0, 50.0, 20.0, "#102030"), json!({ "id": "t", "type": "text", "text": "{pc.cpu.temp:d}°C", "x": 5, "y": 2 })];
+        let p = s.playlist(&[&[(1.0, copy)], &[(1.0, vec![rect(0.0, 0.0, 5.0, 5.0, "#ffffff")])]], &[]);
+        let expanded = |edit: &dyn Fn(&mut Vec<Object>)| {
+            let mut p = p.clone();
+            leaves(&mut p.scenes[0].layers[0].objects, [0, 0, 50, 20], &[("c", 0.5, [0, 0, 50, 20])]);
+            edit(&mut p.scenes[0].layers[0].objects);
+            (key(&p.scenes[0], &p.global, &opts()), key(&p.scenes[1], &p.global, &opts()))
+        };
+        let (user, other) = expanded(&|_| {});
+        // the widget's panel recoloured, moved inside the copy, or the copy faded
+        let edits: [&dyn Fn(&mut Vec<Object>); 3] = [
+            &|o: &mut Vec<Object>| {
+                o[0].kind = Kind::Shape(playlist::Shape { fill: Some(playlist::Paint::Solid { color: "#203040".into() }), ..playlist::Shape::default() })
+            },
+            &|o: &mut Vec<Object>| o[0].x = 1.0,
+            &|o: &mut Vec<Object>| o.iter_mut().for_each(|o| o.groups[0].opacity = 0.6),
+        ];
+        for edit in edits {
+            assert_eq!(expanded(edit).1, other);
+            assert_ne!(expanded(edit).0, user);
+        }
+        // a copy whose live input reads another sensor: the same place, other words
+        let words = expanded(&|o: &mut Vec<Object>| match &mut o[1].kind {
+            Kind::Text(t) => t.text = "{pc.gpu.temp:d}°C".into(),
+            _ => panic!(),
+        });
+        assert_eq!(words, (user, other));
+    }
+}
 
 /// Live text laid over the frames: the over list (docs/widgets.md, Live text). Owned by work package P3.
 #[cfg(test)]
