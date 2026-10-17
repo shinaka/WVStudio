@@ -85,8 +85,19 @@ each one provides, with live values (click a key to insert it):
   To write your own, follow the guide in [docs/plugins.md](docs/plugins.md).
 
 Each source has its own interval (default 60 s). Write a placeholder as `{key}`, `{key:d}`, `{key:.1f}`,
-`{time:%H:%M}` or `{key|fallback}`. The full spec is in `docs/data.md`, `docs/sources.md` and `docs/text.md`. Settings are
+`{time:%H:%M}` or `{key|fallback}`. The full spec is in `docs/data.md`, `docs/sources.md` and `docs/text.md`, and widgets in `docs/widgets.md`. Settings are
 in `playlist/data.json`.
+
+## Widgets
+
+A **widget** is a small reusable piece, made in the studio like a scene: images, text with live values,
+shapes and other widgets, with a fixed size and, if it wants, **inputs** (a label, a colour, a picture) that
+each copy sets for itself. Place copies on scenes or on the global layer from the studio's **Widgets** tab;
+editing the widget changes every copy. Each widget is a folder in `widgets/` (next to `playlist/`), so one
+can be copied to another PC or shared: **Export** makes a zip, **Import** takes one, or just copy the
+folder. `widgets/example-temp-badge/` (a label, an icon and a live temperature, with inputs) and
+`widgets/example-claude-usage/` (two live texts, no inputs) ship as examples; the studio opens them
+read-only, with Duplicate to edit. The spec is [docs/widgets.md](docs/widgets.md).
 
 ## Using the studio from other devices
 
@@ -163,7 +174,8 @@ durations are kept.
 ## Notes
 
 - **TRCC kills any program named `ffmpeg`.** That's in its code (the decompile shows it), and it's why
-  `wv.py` runs ffmpeg through a renamed copy at `.cache/wv-ffmpeg.exe`.
+  `wv.py` runs ffmpeg through a renamed copy at `.cache/wv-ffmpeg.exe`. If no ffmpeg can be found but that
+  copy is still there, the studio uses it.
 - Pieces are lossless up to the player, which sends JPEG at quality 95 with full-resolution colour (4:4:4)
   for art, and 4:2:0 for video.
 - GIFs and PNGs get an exact palette built from the art when it has 256 colours or fewer, so nothing is

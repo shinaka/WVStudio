@@ -1,0 +1,157 @@
+{
+  "version": 1,
+  "name": "Temp badge",
+  "description": "A label, an icon and a live temperature.",
+  "w": 360,
+  "h": 120,
+  "background": null,
+  "fonts": {
+    "bahnschrift.ttf": {
+      "family": "Bahnschrift",
+      "style": "Regular"
+    }
+  },
+  "inputs": [
+    {
+      "id": "label",
+      "name": "Label",
+      "type": "text",
+      "default": "CPU"
+    },
+    {
+      "id": "value",
+      "name": "Value",
+      "type": "text",
+      "default": "{pc.cpu.temp:d}°C"
+    },
+    {
+      "id": "accent",
+      "name": "Accent",
+      "type": "color",
+      "default": "#ff7a1a"
+    },
+    {
+      "id": "icon",
+      "name": "Icon",
+      "type": "image",
+      "default": "media/thermometer-6d3b9a52.png"
+    }
+  ],
+  "layers": [
+    {
+      "id": "l1",
+      "name": "Back",
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "objects": [
+        {
+          "id": "s1",
+          "type": "shape",
+          "name": "Panel",
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "x": 0,
+          "y": 0,
+          "w": 360,
+          "h": 120,
+          "rotate": 0,
+          "flip": false,
+          "shape": "rect",
+          "radius": 18,
+          "crisp": false,
+          "fill": {
+            "type": "solid",
+            "color": "#101418"
+          },
+          "stroke": {
+            "color": "{$accent}",
+            "width": 3
+          }
+        },
+        {
+          "id": "i1",
+          "type": "image",
+          "name": "Icon",
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "x": 20,
+          "y": 28,
+          "w": 64,
+          "h": 64,
+          "rotate": 0,
+          "flip": false,
+          "src": "{$icon}",
+          "smooth": false,
+          "fill": "none",
+          "pixel": 4,
+          "keep_aspect": true,
+          "tint": null
+        }
+      ]
+    },
+    {
+      "id": "l2",
+      "name": "Text",
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "objects": [
+        {
+          "id": "t1",
+          "type": "text",
+          "name": "Label",
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "x": 104,
+          "y": 22,
+          "w": 0,
+          "h": 0,
+          "rotate": 0,
+          "flip": false,
+          "text": "{$label}",
+          "font": "bahnschrift.ttf",
+          "size": 30,
+          "color": "#9aa4b2",
+          "align": "left",
+          "valign": "top",
+          "line_height": 1.2,
+          "outline": {
+            "color": "#000000",
+            "width": 0
+          },
+          "crisp": false
+        },
+        {
+          "id": "t2",
+          "type": "text",
+          "name": "Value",
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "x": 104,
+          "y": 54,
+          "w": 0,
+          "h": 0,
+          "rotate": 0,
+          "flip": false,
+          "text": "{$value}",
+          "font": "bahnschrift.ttf",
+          "size": 48,
+          "color": "{$accent}",
+          "align": "left",
+          "valign": "top",
+          "line_height": 1.2,
+          "outline": {
+            "color": "#000000",
+            "width": 0
+          },
+          "crisp": false
+        }
+      ]
+    }
+  ]
+}

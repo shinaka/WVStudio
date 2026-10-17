@@ -1,0 +1,112 @@
+{
+  "version": 1,
+  "name": "Claude usage",
+  "description": "Your Claude session and weekly usage, and when the session resets.",
+  "w": 520,
+  "h": 140,
+  "background": null,
+  "fonts": {
+    "bahnschrift.ttf": {
+      "family": "Bahnschrift",
+      "style": "Regular"
+    }
+  },
+  "inputs": [],
+  "layers": [
+    {
+      "id": "l1",
+      "name": "Back",
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "objects": [
+        {
+          "id": "s1",
+          "type": "shape",
+          "name": "Panel",
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "x": 0,
+          "y": 0,
+          "w": 520,
+          "h": 140,
+          "rotate": 0,
+          "flip": false,
+          "shape": "rect",
+          "radius": 18,
+          "crisp": false,
+          "fill": {
+            "type": "solid",
+            "color": "#101418"
+          },
+          "stroke": {
+            "color": "#d97757",
+            "width": 3
+          }
+        }
+      ]
+    },
+    {
+      "id": "l2",
+      "name": "Text",
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "objects": [
+        {
+          "id": "t1",
+          "type": "text",
+          "name": "Session",
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "x": 24,
+          "y": 26,
+          "w": 0,
+          "h": 0,
+          "rotate": 0,
+          "flip": false,
+          "text": "Claude {claude.session:d}% · resets in {claude.session_resets_in}",
+          "font": "bahnschrift.ttf",
+          "size": 34,
+          "color": "#f2ede6",
+          "align": "left",
+          "valign": "top",
+          "line_height": 1.2,
+          "outline": {
+            "color": "#000000",
+            "width": 0
+          },
+          "crisp": false
+        },
+        {
+          "id": "t2",
+          "type": "text",
+          "name": "Week",
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "x": 24,
+          "y": 82,
+          "w": 0,
+          "h": 0,
+          "rotate": 0,
+          "flip": false,
+          "text": "this week {claude.week:d}%",
+          "font": "bahnschrift.ttf",
+          "size": 30,
+          "color": "#9aa4b2",
+          "align": "left",
+          "valign": "top",
+          "line_height": 1.2,
+          "outline": {
+            "color": "#000000",
+            "width": 0
+          },
+          "crisp": false
+        }
+      ]
+    }
+  ]
+}
