@@ -87,7 +87,8 @@ def native_size(probe):
     if not m:
         return None
     w, h = int(m[1]), int(m[2])
-    turn = (re.search(r"displaymatrix: rotation of (-?\d+(?:\.\d+)?) degrees", probe)
+    # older ffmpeg says "displaymatrix: rotation of -90.00 degrees", ffmpeg 8 "Display Matrix: rotation of 90.00 degrees"
+    turn = (re.search(r"display ?matrix: rotation of (-?\d+(?:\.\d+)?) degrees", probe, re.I)
             or re.search(r"\brotate\s*:\s*(-?\d+(?:\.\d+)?)", probe))
     if turn and round(abs(float(turn[1]))) % 180 == 90:
         w, h = h, w
@@ -265,10 +266,17 @@ def write_file(path, data):
             raise
 
 
+def strict_json(text):
+    """JSON as the player and the page read it: NaN and Infinity aren't numbers there, so here they're refused too."""
+    def refuse(name):
+        raise ValueError(f"{name} isn't a JSON number")
+    return json.loads(text, parse_constant=refuse)
+
+
 def write_atomic(path, data):
     """Writes JSON all at once (indent 2, UTF-8 without a byte-order mark, Windows line ends as ever), so the player
     never reads half a file."""
-    text = json.dumps(data, indent=2, ensure_ascii=False)
+    text = json.dumps(data, indent=2, ensure_ascii=False, allow_nan=False)
     write_file(path, text.replace("\n", os.linesep).encode("utf-8"))  # a newline inside a string is written \n
 
 
@@ -803,7 +811,9 @@ def font_file(path):
     of a widget names it there): no other file is served."""
     font_list()
     found = fonts_seen[2].get(os.path.normcase(path))
-    return found if found is not None or not carried_font(path) else Path(path)
+    if found is None and carried_font(path):
+        found = Path(path)
+    return found
 
 
 def carried_font(path):
@@ -839,7 +849,6 @@ INPUT_TYPES = ("text", "color", "image")
 MAX_INPUTS = 32
 MAX_OBJECTS = 2000
 MAX_WIDGET_JSON = 1 << 20
-MAX_DEPTH = 8  # copies inside copies; deeper ones don't draw
 TRASH_NAME = re.compile(r"(?P<id>.+)-(?P<when>\d{8}-\d{6})(?:-(?P<n>\d+))?")  # in .deleted: <id>-<yyyymmdd-hhmmss>[-n]
 DEFAULT_LAYER = {"id": "l1", "name": "Layer 1", "visible": True, "locked": False, "opacity": 1, "objects": []}
 EXAMPLES_READ_ONLY = "The examples are read-only: duplicate it to edit."
@@ -1029,7 +1038,7 @@ def read_widget(folder):
     except OSError as e:
         return None, None, f"Its widget.json can't be read ({e.strerror or e})."
     try:
-        w = json.loads(text)
+        w = strict_json(text)
     except ValueError as e:
         return None, None, f"Its widget.json isn't valid JSON ({e})."
     if not isinstance(w, dict):
@@ -1129,6 +1138,7 @@ def font_names(font):
 
 
 def names_in(read, size):
+    """font_names, from `read(offset, n)` and the font's size: every offset is checked against what was read."""
     at, length = font_tables(read(0, 12 + 16 * 64), size).get(b"name", (0, 0))
     table = read(at, min(length, 1 << 20))
     best = {}  # name id -> (rank, text): the lowest rank wins
@@ -1188,6 +1198,17 @@ def find_font(folder, name):
         if inside(p, folder) if folder and d == folder / "fonts" else p.is_file():
             return p
     return None
+
+
+def widget_font(wid, name):
+    """GET /api/font?widget=<id>&name=<file>: the file that widget's font name means, found as the player finds it."""
+    folder = widget_folder(wid)
+    if not font_name_ok(name):
+        raise ValueError(f"{name[:100]!r} isn't a font file's name.")
+    path = find_font(folder, name)
+    if path is None:
+        raise Refused(404, f"{name} isn't on this PC.")
+    return path
 
 
 def is_windows_font(path):
@@ -1287,7 +1308,7 @@ def list_widgets():
     folders that can't be widgets, with why; and the widgets in .deleted that can be restored."""
     folder = widgets_dir()
     out = {"folder": str(folder.absolute()), "widgets": [], "problems": [], "deleted": []}
-    with playlist_lock:
+    with playlist_lock:  # each widget.json as one save left it
         try:
             entries = sorted(os.scandir(folder), key=lambda e: e.name)
         except OSError:
@@ -1309,10 +1330,12 @@ def list_widgets():
                 out["problems"].append({"folder": e.name, "problem": problem})
                 continue
             out["widgets"].append({"id": e.name, "widget": w, "stamp": stamp,
-                                   "resolved_fonts": resolved_fonts(path, w), "own_fonts": own_fonts(path),
                                    "read_only": "example" if is_example(e.name) else "newer" if newer(w) else None})
             note_used(media_files(path, w))
         out["deleted"] = deleted_widgets()
+    for entry in out["widgets"]:  # fonts are looked up outside the lock: the first lookup reads every font's name
+        path = folder / entry["id"]
+        entry["resolved_fonts"], entry["own_fonts"] = resolved_fonts(path, entry["widget"]), own_fonts(path)
     return out
 
 
@@ -1502,9 +1525,12 @@ def save_widget(req):
 
 def move_folder(src, dst, name):
     """Moves a widget's folder, whole or not at all. Windows won't while a program has a file in it open (the
-    player's ffmpeg, an Explorer preview): that's tried for about 2 s, then refused with 409 and nothing changed."""
+    player's ffmpeg, an Explorer preview): that's tried for about 2 s, then refused with 409 and nothing changed.
+    A folder already at `dst` (Windows would refuse that the same way) is a FileExistsError."""
     deadline = time.monotonic() + 2
     while True:
+        if os.path.lexists(dst):
+            raise FileExistsError(errno.EEXIST, "there's a folder there already", str(dst))
         try:
             return os.replace(src, dst)
         except OSError as e:
@@ -1618,13 +1644,15 @@ def duplicate_widget(req):
             raise ValueError(f"{wid} can't be duplicated: {problem}")
         if target is not None and target.casefold() in taken_ids():
             raise Refused(409, f"widgets\\{target} is taken, by a widget or one in Recently deleted: choose another name.")
-        new = target if target is not None else fresh_id(name or w.get("name") or wid)
-        w["name"] = name or new
+        w["name"] = name or shown_name(w, wid)
+        new = target if target is not None else fresh_id(w["name"])
         staging = staging_folder("new")
         try:
             shutil.copytree(src, staging / "w", ignore=skip_on_copy)
             write_atomic(staging / "w" / "widget.json", w)
             move_folder(staging / "w", widgets_dir() / new, w["name"])
+        except FileExistsError:
+            raise Refused(409, f"widgets\\{new} was made meanwhile: try again.") from None
         finally:
             shutil.rmtree(staging, ignore_errors=True)
         note_used(all_media(widgets_dir() / new))
@@ -1658,6 +1686,8 @@ def check_image(f, suffix):
                 frames = getattr(im, "n_frames", 1)
     except ValueError:
         raise
+    except Image.DecompressionBombError:
+        raise ValueError(f"it's too big: a picture can be at most {MAX_SIDE} pixels across and down") from None
     except Exception:
         raise ValueError(f"it isn't a {suffix[1:].upper()} file, whatever its name says") from None
     if frames * w * h * 4 > MAX_DECODED:
@@ -1726,7 +1756,7 @@ def to_png(data):
     path = scratch_file(data, ".aseprite")
     try:
         frames = wv.load_frames(path)
-    except (SystemExit, subprocess.CalledProcessError, OSError, ValueError) as e:  # wv's helpers exit on failure
+    except (SystemExit, subprocess.CalledProcessError, OSError, ValueError, KeyError) as e:  # wv's helpers exit on failure
         raise ValueError(f"Aseprite couldn't turn it into a PNG ({e})") from None
     finally:
         path.unlink(missing_ok=True)
@@ -1972,7 +2002,6 @@ def new_widget(req):
         from_id, from_folder = holder_of(req["from"])
         bring_selection(widget, from_id, from_folder, files, fonts, missing)
     with playlist_lock:
-        wid = fresh_id(name)
         staging = staging_folder("new")
         try:
             for file, data in files.items():
@@ -1980,9 +2009,16 @@ def new_widget(req):
             for font, data in fonts.items():
                 write_file(staging / "w" / "fonts" / font, data)
             (staging / "w").mkdir(exist_ok=True)
-            widget = check_widget(widget, wid, staging / "w")
-            write_atomic(staging / "w" / "widget.json", widget)
-            move_folder(staging / "w", widgets_dir() / wid, widget["name"])
+            taken = taken_ids()
+            while True:
+                wid = fresh_id(name, taken)
+                widget = check_widget(widget, wid, staging / "w")
+                write_atomic(staging / "w" / "widget.json", widget)
+                try:
+                    move_folder(staging / "w", widgets_dir() / wid, widget["name"])
+                    break
+                except FileExistsError:  # made by hand meanwhile: the next one
+                    taken.add(wid.casefold())
         finally:
             shutil.rmtree(staging, ignore_errors=True)
         note_used(widgets_dir() / wid / "media" / file for file in files)
@@ -2343,7 +2379,7 @@ def read_zip(body, zip_name):
     for x in found:
         label = x["folder"] or x["id"]
         try:
-            x["widget"] = json.loads(x["files"]["widget.json"].decode("utf-8"))
+            x["widget"] = strict_json(x["files"]["widget.json"].decode("utf-8"))
         except (UnicodeDecodeError, ValueError) as e:
             raise ValueError(f"{label}: its widget.json isn't valid JSON ({e}): the import is refused.") from None
         if not isinstance(x["widget"], dict):
@@ -3000,16 +3036,13 @@ class Handler(BaseHTTPRequestHandler):
         elif url.path == "/api/fonts":
             self.json(font_list())
         elif url.path == "/api/font" and "widget" in (query := parse_qs(url.query)):
-            # a widget's font by name, found as the player finds it (its own fonts/ first)
             try:
-                folder = widget_folder(query["widget"][0])
-                name = query.get("name", [""])[0]
-                if not font_name_ok(name):
-                    raise ValueError(f"{name[:100]!r} isn't a font file's name.")
-            except ValueError as e:
-                return self.json({"error": str(e)}, 400)
-            if not (path := find_font(folder, name)):
-                return self.json({"error": f"{name} isn't on this PC."}, 404)
+                path = widget_font(query["widget"][0], query.get("name", [""])[0])
+            except KeyboardInterrupt:
+                raise
+            except BaseException as e:
+                code, out = failure(e)
+                return self.json(out, code)
             self.send_file(path, "font/otf" if path.suffix.lower() == ".otf" else "font/ttf")
         elif url.path == "/api/font" and (path := font_file(parse_qs(url.query).get("path", [""])[0])):
             self.send_file(path, "font/otf" if path.suffix.lower() == ".otf" else "font/ttf")
