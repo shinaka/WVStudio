@@ -44,7 +44,7 @@ objects overlap, they don't show through each other. A hidden layer isn't drawn.
 - `x`, `y`, `w`, `h`:
   - For image, video and shape objects: the box in panel pixels, as drawn after rotation. For a
     90°/270° rotation, `w`/`h` are the box's on-screen size.
-  - For text: `x`/`y` are the anchor (widgets.md), and `w`/`h` are ignored.
+  - For text: `x`/`y` are the anchor (text.md), and `w`/`h` are ignored.
 - `rotate` is 0, 90, 180 or 270 (clockwise), and `flip` mirrors left to right after rotating. Text
   ignores both for now.
 - `opacity` is 0..1, and multiplies within the layer's buffer.
@@ -67,8 +67,8 @@ objects overlap, they don't show through each other. A hidden layer isn't drawn.
     30 fps or less, and only its first 60 s are used.
   - `pixel` is how many source pixels make one art pixel. Only the editor uses it, to offer whole-number
     sizes; it's 1 for photos and video.
-- **text:** the widget keys from widgets.md (text, font, size, color, align, valign, line_height, outline
-  and crisp, with `x`/`y` as the anchor), plus the common keys. Its `opacity` replaces the widget's own.
+- **text:** the text keys from text.md (text, font, size, color, align, valign, line_height, outline
+  and crisp, with `x`/`y` as the anchor), plus the common keys. Its `opacity` replaces the one in text.md.
   Live placeholders work as described in data.md.
 - **shape**
   - `"shape": "rect" | "ellipse" | "line"`, plus `"radius": 0` (corner radius, for rects).
