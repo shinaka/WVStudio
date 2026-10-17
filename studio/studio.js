@@ -2735,7 +2735,7 @@ $("addScene").addEventListener("click", addScene);
 // --- The player -------------------------------------------------------------------------------------
 
 function showPlayer(state) {
-  if (widgetsOn && "widgets" in state) notePlayer(undefined, state.running ? state.widgets : null);  // its version
+  if (widgetsOn) notePlayer(undefined, state.running && "widgets" in state ? state.widgets : null);  // its version
   const waiting = (state.log || "").match(/(?:waiting for the panel|nothing to play yet): (.*)/);
   const el = $("playerState");
   el.className = `${waiting ? "warn" : state.running ? "info" : "muted"}`;
@@ -3497,9 +3497,11 @@ function tidyDocument() {
   for (const h of [doc.global, ...doc.scenes]) refreshCopySizes(h);
 }
 const hasCopies = () => [doc.global, ...doc.scenes].some((h) => layersOf(h).some((l) => (l.objects || []).some((o) => o?.type === "widget")));
-// The player's version (docs/widgets.md, Compatibility): said once a session, and again when it changes.
-const playerNote = { built: null, running: null };
-function notePlayer(built, running) {
+// The player's version (docs/widgets.md, Compatibility): said once a session, and again when it changes, once the
+// document has copies. `built` is whether the build for Play and Export PNG draws them (from /api/config), `running`
+// whether the player running does (polled with /api/player); null for no such player.
+const playerNote = { built: null, running: null, config: null };
+function notePlayer(built = playerNote.config, running) {
   if (!widgetsOn || !hasCopies()) return;
   if (built === false && playerNote.built !== false) {
     message("The player was built before widgets: rebuild it (cargo build --release in player\\) to see them on the cooler and in Export PNG.", "warn");
@@ -3549,7 +3551,8 @@ const domReady = new Promise((ok) => (document.readyState === "loading" ? docume
     if (widgetsOn && lib.has(want.get("widget"))) openHolder(`widget:${want.get("widget")}`);
     else showScene(want.get("scene") === "global" || sceneById(want.get("scene")) ? want.get("scene") : doc.scenes[0]?.id ?? "global");
     if (want.get("sel") && find(want.get("sel"))) select([want.get("sel")]);
-    notePlayer(cfg.player_widgets === false ? false : undefined, undefined);
+    playerNote.config = cfg.player_widgets ?? null;
+    notePlayer();
     if (cfg.initial) {
       if (!doc.scenes.length) addScene();
       placeMedia(cfg.initial);
