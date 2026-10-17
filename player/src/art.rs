@@ -75,7 +75,7 @@ pub fn sampling(scene: &Scene, global: &[Layer]) -> SamplingFactor {
 /// each frame is decoded, drawn on (where it belongs on a turned frame) and encoded again, on every
 /// core. A frame that won't decode or encode goes out as it was.
 pub fn overlay(scene: &Scene, prepared: &Prepared, text: &crate::text::Layer, opts: &Options) -> Vec<Frame> {
-    let sampling = sampling(scene, &[]); // as prepare chose it, while the global layers don't count
+    let sampling = sampling(scene, &[]); // prepare also counts the global layers, which work package P3 passes here
     let redraw = |frame: &Frame| {
         let jpeg = image::load_from_memory_with_format(&frame.jpeg, ImageFormat::Jpeg).ok().and_then(|im| {
             let mut rgb = im.into_rgb8();
