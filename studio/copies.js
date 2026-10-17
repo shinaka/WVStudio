@@ -121,14 +121,23 @@
     }));
     pop.hidden = false;
     popFor = opener;
-    const r = opener.getBoundingClientRect(), w = pop.offsetWidth, h = pop.offsetHeight;
-    pop.style.left = `${Math.max(8, Math.min(r.left, innerWidth - w - 8))}px`;
-    pop.style.top = `${r.bottom + 2 + h > innerHeight - 8 ? Math.max(8, r.top - h - 2) : r.bottom + 2}px`;
+    placePop();
   }
   function closePop() {
     pop.hidden = true;
     popFor = null;
   }
+  /** The popup under its button (over it when there's no room below), again whenever the panel holding the button
+   *  changes or scrolls; closed when the button has gone. */
+  function placePop() {
+    if (pop.hidden || !popFor) return;
+    if (!popFor.isConnected || !popFor.getClientRects().length) return closePop();
+    const r = popFor.getBoundingClientRect(), w = pop.offsetWidth, h = pop.offsetHeight;
+    pop.style.left = `${Math.max(8, Math.min(r.left, innerWidth - w - 8))}px`;
+    pop.style.top = `${r.bottom + 2 + h > innerHeight - 8 ? Math.max(8, r.top - h - 2) : r.bottom + 2}px`;
+  }
+  document.addEventListener("scroll", placePop, true);
+  addEventListener("resize", placePop);
 
   // --- The W tool and its menu (docs/widgets.md, Placing copies) -----------------------------------------------
 
@@ -180,7 +189,12 @@
     if (!items.length) items.push(make("div", "wm-empty", lib.size ? "No widget's name has those words." : "No widgets yet: make one in the Widgets tab."));
     wmList.replaceChildren(...items);
     drawMenuThumbs();
+    if (liveTexts().join("\n") !== live.asked) resolveSoon();  // the live values their pictures show
   }
+  // the live text the menu's pictures show, filled in with the rest while it's open
+  WV.texts.push(() => (menu.hidden ? [] : [...wmList.querySelectorAll("canvas[data-widget]")]
+    .flatMap((cv) => widgetView(cv.dataset.widget, null).flatMap((e) => e.leaves))
+    .filter((l) => l.type === "text" && l.live).map((l) => l.text)));
   const thumbFull = document.createElement("canvas");
   /** Each widget in the menu drawn at its defaults, letterboxed (the checks behind it are its canvas's CSS). */
   function drawMenuThumbs() {
@@ -409,6 +423,14 @@
     $("mTintNone").setAttribute("aria-pressed", !tint && !bound);
     set("mTint", tint ?? "#ffffff");
     $("mKeepAspect").checked = p.keep_aspect === true;
+    const ref = isWidgetHolder() ? WV.refOf(p.src) : null;
+    if (ref === null) return;
+    // a picture bound to an input has no file of its own: what the editor shows is the input's
+    const input = openDef()?.inputs.find((i) => i.id === ref && i.type === "image"), file = input ? openScope()?.image.get(ref) ?? "" : "";
+    const info = file ? getMedia(file)?.info : null;
+    $("mInfo").textContent = !input ? `{$${ref}} isn't an image input of this widget: nothing is drawn.`
+      : !file ? `${input.name} has no picture: nothing is drawn.`
+      : `The picture of the input ${input.name}${info ? `: ${info.width} × ${info.height} file` : ""}.`;
   }
   $("mTint").addEventListener("input", () => {
     const p = primary();
@@ -932,7 +954,7 @@
     showMediaRows(p);
     showCopyObject(p);
     for (const b of binds) if (b.isConnected) b.update(); else binds.delete(b);
-    if (popFor && !popFor.isConnected) closePop();
+    placePop();
   });
 
   WV.hooks.key.push((e, typing) => {
@@ -985,6 +1007,7 @@
   setInterval(() => {
     if (!widgetsOn) return;
     refreshCopyNotes();
+    placePop();
     if (!menu.hidden && placing.thumbs !== `${libEpoch}|${mediaVersion}|${fontsArrived}|${live.version}`) drawMenuThumbs();
   }, 500);
 
