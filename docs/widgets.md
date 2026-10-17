@@ -566,6 +566,9 @@ Editing a widget used in the global layer prepares every scene again, as any edi
 | scale | 0.01–16 (the studio offers 0.05–8) | clamped |
 | inputs | 32 per widget | the rest are ignored |
 | objects | 2000 per `widget.json` | the studio refuses to save more |
+| file | 1 MiB per `widget.json` | the studio refuses to save more; the player doesn't read a bigger one, and its copies draw nothing (section 5.11) |
+| text | a copy's text value: 2000 characters, counted again once the values passed down to it are filled in, so it stays within 2000 at any depth. A text inside a widget: 4000 characters once its values are filled in, before it's read for live placeholders | the rest is cut, by whole characters (never half an emoji). Texts in a scene's own objects aren't cut |
+| ids | 64 characters of a copy's id, and of a layer's or an object's id inside a widget | the rest is ignored: two copies whose ids start with the same 64 characters can be drawn as one group (section 5.5) |
 
 **Counting work.** The budget decides which leaves exist, so both renderers count it exactly alike. Steps are
 taken in drawing order (the holder's layers bottom first, each layer's objects bottom first, into each copy as
@@ -592,8 +595,8 @@ your widgets (the import window says so first, section 6.8). The player logs eac
 ### 5.11 Missing and broken widgets
 
 - **The player:** a copy whose widget folder is missing (or named in other letter case, section 2.3), or whose
-  `widget.json` is missing, not JSON, not an object, or from a newer studio, draws nothing. The player logs it
-  once per read: `widget temp-badge: no widgets\temp-badge\widget.json`. It watches the missing file and the
+  `widget.json` is missing, not JSON, not an object, over 1 MiB, or from a newer studio, draws nothing. The
+  player logs it once per read: `widget temp-badge: no widgets\temp-badge\widget.json`. It watches the missing file and the
   `widgets\` folder itself, so putting the folder in place, or renaming it, makes it read the playlist again.
 - **The studio:** the copy shows as a red dashed box at its stored `x`, `y`, `w`, `h`, labelled with the reason
   ("Missing widget: temp-badge", "Made by a newer studio: temp-badge"), on the editor's overlay only (never in
