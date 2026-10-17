@@ -404,10 +404,10 @@ impl<'a> Node<'a> {
 }
 
 /// The whole panel, as a group's rect.
-const PANEL: Rect = [0, 0, WIDTH as i64, HEIGHT as i64];
+const PANEL_RECT: Rect = [0, 0, WIDTH as i64, HEIGHT as i64];
 
 /// Where two rects meet, or None when they don't.
-fn overlap(a: Rect, b: Rect) -> Option<Rect> {
+fn meet(a: Rect, b: Rect) -> Option<Rect> {
     let r = [a[0].max(b[0]), a[1].max(b[1]), a[2].min(b[2]), a[3].min(b[3])];
     (r[0] < r[2] && r[1] < r[3]).then_some(r)
 }
@@ -496,7 +496,7 @@ fn split_live<'a>(mut slots: Vec<Slot<'a>>, opts: &Options) -> Plan<'a> {
     let upper = slot.objects.split_off(start);
     let mut index = 0;
     if slot.opacity < 1.0 {
-        over.push(Node::Group { opacity: slot.opacity, rect: PANEL, depth: 0, children: nodes(upper, 0, &mut index) });
+        over.push(Node::Group { opacity: slot.opacity, rect: PANEL_RECT, depth: 0, children: nodes(upper, 0, &mut index) });
     } else {
         if !slot.objects.is_empty() {
             slots.push(slot); // what's below S, at the layer's opacity of 1
@@ -507,7 +507,7 @@ fn split_live<'a>(mut slots: Vec<Slot<'a>>, opts: &Options) -> Plan<'a> {
         if !slot.objects.iter().any(Obj::live) {
             over.push(Node::Slot(slot));
         } else if slot.opacity < 1.0 {
-            over.push(Node::Group { opacity: slot.opacity, rect: PANEL, depth: 0, children: nodes(slot.objects, 0, &mut index) });
+            over.push(Node::Group { opacity: slot.opacity, rect: PANEL_RECT, depth: 0, children: nodes(slot.objects, 0, &mut index) });
         } else {
             over.extend(nodes(slot.objects, 0, &mut index));
         }
@@ -546,7 +546,7 @@ fn nodes<'a>(objects: Vec<Obj<'a>>, depth: usize, index: &mut usize) -> Vec<Node
             while let Some(o) = objects.next_if(|o| o.object.groups.get(depth).is_some_and(|g| g.id == group.id)) {
                 members.push(o);
             }
-            match overlap(group.rect, PANEL) {
+            match meet(group.rect, PANEL_RECT) {
                 Some(rect) => out.push(Node::Group { opacity: group.opacity, rect, depth: depth + 1, children: nodes(members, depth + 1, index) }),
                 None => *index += members.iter().filter(|o| o.live()).count(),
             }
@@ -615,7 +615,7 @@ fn still(run: Vec<Node>, depth: usize, rect: Rect) -> Option<Arc<Buf>> {
                 touched = union(touched, buf.onto_rgba(&mut canvas, origin, *opacity));
             }
             touched?;
-            Some(Arc::new(if rect == PANEL {
+            Some(Arc::new(if rect == PANEL_RECT {
                 Buf::take(canvas, touched)
             } else {
                 Buf { left: rect[0] as u32, top: rect[1] as u32, image: canvas }
@@ -637,7 +637,7 @@ pub(crate) fn bake(over: &[Over], texts: &[Text]) -> Buf {
                 Over::Text { index, fold } => {
                     texts.get(*index).and_then(|w| text_buf(&Text { opacity: w.opacity * fold, ..w.clone() }).onto_rgba(canvas, origin, 1.0))
                 }
-                Over::Group { opacity, rect, children } => overlap(*rect, PANEL).and_then(|[l, t, r, b]| {
+                Over::Group { opacity, rect, children } => meet(*rect, PANEL_RECT).and_then(|[l, t, r, b]| {
                     let mut group = RgbaImage::new((r - l) as u32, (b - t) as u32);
                     into(children, texts, &mut group, (l, t))?;
                     Buf { left: l as u32, top: t as u32, image: group }.onto_rgba(canvas, origin, *opacity)
@@ -660,7 +660,7 @@ fn text_buf(w: &Text) -> Buf {
     let layer = text::Layer::render([w]);
     let Some(b) = layer.bounds() else { return Buf::empty() };
     let drawn = [b.left as i64, b.top as i64, b.right as i64, b.bottom as i64];
-    let rect = overlap(drawn, w.clip.unwrap_or(PANEL)).map(|[l, t, r, b]| (l, t, r, b));
+    let rect = meet(drawn, w.clip.unwrap_or(PANEL_RECT)).map(|[l, t, r, b]| (l, t, r, b));
     Buf::crop(layer.image(), rect)
 }
 
@@ -864,7 +864,7 @@ pub fn prepare(scene: &Scene, global: &[Layer], opts: &Options) -> Result<Prepar
         }
     }
     frames.extend(art::encode_all(batch, Composite::compose, opts, sampling)?);
-    Ok(Prepared { frames, over: convert(plan.over, 0, PANEL) })
+    Ok(Prepared { frames, over: convert(plan.over, 0, PANEL_RECT) })
 }
 
 /// The scene at time `t`, upright, with `live` (its live text, filled in, as playlist::live_texts lists
@@ -876,7 +876,7 @@ pub fn render_at(scene: &Scene, global: &[Layer], opts: &Options, t: Duration, l
         let buf = if slot.animated() { Arc::new(slot.render(t)) } else { slot.render_cached() };
         buf.onto_rgb(&mut frame, slot.opacity, false);
     }
-    bake(&convert(plan.over, 0, PANEL), live).onto_rgb(&mut frame, 1.0, false);
+    bake(&convert(plan.over, 0, PANEL_RECT), live).onto_rgb(&mut frame, 1.0, false);
     frame
 }
 
@@ -1350,7 +1350,7 @@ mod over_tests {
         let over = over_of(&layered, &[]);
         assert_eq!(outline(&over), "G0.5[S T0 S] S G0.5[T1]");
         let Over::Group { rect: whole, .. } = &over[0] else { unreachable!() };
-        assert_eq!(*whole, PANEL);
+        assert_eq!(*whole, PANEL_RECT);
 
         // a copy hanging off the panel draws nothing, and its live text keeps its number
         let off = [-300, 0, -200, 40];
