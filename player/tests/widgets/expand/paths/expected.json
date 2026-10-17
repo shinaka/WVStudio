@@ -1,0 +1,34 @@
+{
+  "scenes": [
+    {
+      "id": "s1",
+      "leaves": [
+        {"id": "p/good", "type": "image", "x": 0, "y": 0, "w": 4, "h": 4, "opacity": 1, "clip": [0, 0, 40, 20], "groups": [], "src": "widgets/pics/media/ok-4b0edc2b.png", "keep_aspect": false, "tint": null},
+        {"id": "p/deep", "type": "image", "x": 4, "y": 0, "w": 4, "h": 4, "opacity": 1, "clip": [0, 0, 40, 20], "groups": [], "src": "widgets/pics/a/b/c/d.png", "keep_aspect": false, "tint": null},
+        {"id": "p/sp", "type": "image", "x": 0, "y": 4, "w": 4, "h": 4, "opacity": 1, "clip": [0, 0, 40, 20], "groups": [], "src": "widgets/pics/media/ok-4b0edc2b.png", "keep_aspect": false, "tint": null},
+        {"id": "p/in1", "type": "image", "x": 4, "y": 4, "w": 4, "h": 4, "opacity": 1, "clip": [0, 0, 40, 20], "groups": [], "src": "widgets/pics/media/ok-4b0edc2b.png", "keep_aspect": false, "tint": null},
+        {"id": "p/f1", "type": "text", "x": 0, "y": 10, "opacity": 1, "clip": [0, 0, 40, 20], "groups": [], "text": "a", "live": false, "size": 8, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "segoeui.ttf"},
+        {"id": "p/f2", "type": "text", "x": 6, "y": 10, "opacity": 1, "clip": [0, 0, 40, 20], "groups": [], "text": "b", "live": false, "size": 8, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "segoeui.ttf"},
+        {"id": "p/f3", "type": "text", "x": 12, "y": 10, "opacity": 1, "clip": [0, 0, 40, 20], "groups": [], "text": "c", "live": false, "size": 8, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "segoeui.ttf"},
+        {"id": "p/f4", "type": "text", "x": 18, "y": 10, "opacity": 1, "clip": [0, 0, 40, 20], "groups": [], "text": "d", "live": false, "size": 8, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "Orbitron Bold.ttf"},
+        {"id": "p/f5", "type": "text", "x": 24, "y": 10, "opacity": 1, "clip": [0, 0, 40, 20], "groups": [], "text": "e", "live": false, "size": 8, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "segoeui.ttf"},
+        {"id": "p/f6", "type": "text", "x": 30, "y": 10, "opacity": 1, "clip": [0, 0, 40, 20], "groups": [], "text": "f", "live": false, "size": 8, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "segoeui.ttf"},
+        {"id": "q/good", "type": "image", "x": 0, "y": 30, "w": 4, "h": 4, "opacity": 1, "clip": [0, 30, 40, 50], "groups": [], "src": "widgets/pics/media/ok-4b0edc2b.png", "keep_aspect": false, "tint": null},
+        {"id": "q/deep", "type": "image", "x": 4, "y": 30, "w": 4, "h": 4, "opacity": 1, "clip": [0, 30, 40, 50], "groups": [], "src": "widgets/pics/a/b/c/d.png", "keep_aspect": false, "tint": null},
+        {"id": "q/sp", "type": "image", "x": 0, "y": 34, "w": 4, "h": 4, "opacity": 1, "clip": [0, 30, 40, 50], "groups": [], "src": "widgets/pics/media/ok-4b0edc2b.png", "keep_aspect": false, "tint": null},
+        {"id": "q/in1", "type": "image", "x": 4, "y": 34, "w": 4, "h": 4, "opacity": 1, "clip": [0, 30, 40, 50], "groups": [], "src": "widgets/pics/media/ok-4b0edc2b.png", "keep_aspect": false, "tint": null},
+        {"id": "q/in2", "type": "image", "x": 8, "y": 34, "w": 4, "h": 4, "opacity": 1, "clip": [0, 30, 40, 50], "groups": [], "src": "playlist/inputs/fe20a98c93d7.png", "keep_aspect": false, "tint": null},
+        {"id": "q/f1", "type": "text", "x": 0, "y": 40, "opacity": 1, "clip": [0, 30, 40, 50], "groups": [], "text": "a", "live": false, "size": 8, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "segoeui.ttf"},
+        {"id": "q/f2", "type": "text", "x": 6, "y": 40, "opacity": 1, "clip": [0, 30, 40, 50], "groups": [], "text": "b", "live": false, "size": 8, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "segoeui.ttf"},
+        {"id": "q/f3", "type": "text", "x": 12, "y": 40, "opacity": 1, "clip": [0, 30, 40, 50], "groups": [], "text": "c", "live": false, "size": 8, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "segoeui.ttf"},
+        {"id": "q/f4", "type": "text", "x": 18, "y": 40, "opacity": 1, "clip": [0, 30, 40, 50], "groups": [], "text": "d", "live": false, "size": 8, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "Orbitron Bold.ttf"},
+        {"id": "q/f5", "type": "text", "x": 24, "y": 40, "opacity": 1, "clip": [0, 30, 40, 50], "groups": [], "text": "e", "live": false, "size": 8, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "segoeui.ttf"},
+        {"id": "q/f6", "type": "text", "x": 30, "y": 40, "opacity": 1, "clip": [0, 30, 40, 50], "groups": [], "text": "f", "live": false, "size": 8, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "segoeui.ttf"}
+      ]
+    }
+  ],
+  "global": {
+    "leaves": [
+    ]
+  }
+}

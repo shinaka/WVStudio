@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "name": "CPU badge",
+  "description": "",
+  "w": 10,
+  "h": 10,
+  "background": null,
+  "fonts": {},
+  "inputs": [],
+  "layers": [
+    {
+      "id": "l1",
+      "name": "l1",
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "objects": [
+        {
+          "id": "r",
+          "type": "shape",
+          "shape": "rect",
+          "x": 0,
+          "y": 0,
+          "w": 10,
+          "h": 10,
+          "fill": {
+            "type": "solid",
+            "color": "#ff0000"
+          },
+          "crisp": true
+        }
+      ]
+    }
+  ]
+}

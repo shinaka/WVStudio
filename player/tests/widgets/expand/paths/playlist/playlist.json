@@ -1,0 +1,56 @@
+{
+  "version": 2,
+  "seconds": 30,
+  "global": {
+    "layers": []
+  },
+  "scenes": [
+    {
+      "id": "s1",
+      "name": "s1",
+      "seconds": 30,
+      "background": "#000000",
+      "layers": [
+        {
+          "id": "l1",
+          "name": "l1",
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "objects": [
+            {
+              "id": "p",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 0,
+              "y": 0,
+              "w": 40,
+              "h": 20,
+              "scale": 1,
+              "widget": "pics"
+            },
+            {
+              "id": "q",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 0,
+              "y": 30,
+              "w": 40,
+              "h": 20,
+              "scale": 1,
+              "inputs": {
+                "pic": "../x.png",
+                "bad": "inputs/fe20a98c93d7.png"
+              },
+              "widget": "pics"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

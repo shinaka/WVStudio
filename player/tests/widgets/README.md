@@ -47,6 +47,13 @@ Each case is a playlist and its widgets, as they'd sit on disk: `playlist/playli
 | `inputs` | text, colour and image inputs and their defaults; values that aren't colours; fallbacks inside the widget; a bound tint; unknown and wrong-type references; values made safe; a reference that builds a placeholder; image paths from the playlist and from the widget; `""`; `{$x}` values at the top level |
 | `nested` | a copy inside a widget, with values passed down by `{$id}` and inline; nested placement, clips and group ids |
 | `limits` | scenes `cycle` (A in A, A → B → A), `deep` (9 deep), `budget` (the work count, cut part way through a copy), `sizes` (placed media over 6400 × 2880, `scale` from `w`, clamping) |
+| `missing` | copies that draw nothing: no folder, a folder `CPU-Badge` for the id `cpu-badge`, ids that aren't ids (`../x`, `Gauge`, `con`, none at all), a `widget.json` that isn't JSON or isn't an object, `version: 2`, a folder without `widget.json`; the rest of a widget around a missing inner copy still draws, in a scene and in the global layer |
+| `paths` | `src` values left out (`../x.png`, `C:/x.png`, `/x.png`, `\\host\x.png`, `media\x.png`, `media./x.png`, five parts, `media/CON.png`) and kept (four parts, spaces around it); an image input whose default isn't a path, set by a copy; fonts that aren't one file name fall back to Segoe UI, `Orbitron Bold.ttf` is kept |
+| `fills` | tile, mirror and extend inside a small container, at 1, 1.5 and nested at 2: each leaf keeps its own placed box (one wholly outside the container too) and gets the container as its clip, which is the fill area; a translucent copy hanging off the panel's top-left |
+| `aspect` | `keep_aspect` and `tint` carried on the leaves: bound tints, `#ABC` and spaces made `#rrggbb`, tints that aren't colours (`blue`, `{$nope}`, an image input, a number) and a `keep_aspect` that isn't `true` dropped; a scene image's own |
+
+The last four came later, worked out by hand from the spec in the same way and checked against an independent
+reference. Their `placement` comes with the live text work.
 
 `expected.json` lists, for each scene and for the global layers, every object drawn, in drawing order, with
 copies expanded. A top-level object that isn't a copy comes out as it is, with no clip and no groups.
