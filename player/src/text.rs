@@ -347,6 +347,9 @@ fn coverage(font: &Font, size: f32, glyphs: &[Placed], pad: i32, clip: Option<Re
         .collect();
     // beyond the edge by more than the outline reaches, nothing can show
     let (cl, ct, cr, cb) = visible(clip);
+    if cl >= cr || ct >= cb {
+        return None;
+    }
     let left = (boxes.iter().map(|b| b.1).min()? - pad).max(cl - pad);
     let top = (boxes.iter().map(|b| b.2).min()? - pad).max(ct - pad);
     let right = (boxes.iter().map(|b| b.1 + b.3.width as i32).max()? + pad).min(cr + pad);
