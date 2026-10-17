@@ -2053,10 +2053,8 @@ mod over_tests {
     }
 
     /// In place, the frames and the baked over list draw exactly what the scene would with its live text
-    /// written in as static text, for every kind of group the text can sit in. Needs work package P2's
-    /// drawing of groups and clips (render_objects) for the static side and the stills in groups.
+    /// written in as static text, for every kind of group the text can sit in.
     #[test]
-    #[ignore = "until P2 merges"]
     fn live_in_place_is_exact() {
         if !have_font() {
             return;
