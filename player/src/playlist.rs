@@ -34,8 +34,8 @@ pub struct Playlist {
     /// Drawn over every scene, above its own layers.
     pub global: Vec<Layer>,
     pub scenes: Vec<Scene>,
-    /// Every file whose change means reading again, with the stamp it had when the read looked at it.
-    /// Empty for now: `fingerprint` still finds them itself.
+    /// Every file whose change means reading again, with the stamp it had when the read looked at it,
+    /// sorted: the target, the widgets' files (docs/widgets.md), and every media file and font drawn.
     pub watch: Vec<(PathBuf, Option<Stamp>)>,
 }
 
@@ -140,12 +140,12 @@ pub struct Media {
     /// Lanczos instead of nearest neighbour.
     pub smooth: bool,
     pub fill: Fill,
-    /// The file fitted inside its box, keeping its shape, and centred (docs/widgets.md). Not read yet.
-    #[serde(skip_serializing_if = "std::ops::Not::not", skip_deserializing)]
+    /// The file fitted inside its box, keeping its shape, and centred, when it's opened (docs/widgets.md).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub keep_aspect: bool,
     /// `#rrggbb`: every pixel the file draws takes this colour, keeping its own transparency
-    /// (docs/widgets.md). Not read yet.
-    #[serde(skip_serializing_if = "Option::is_none", skip_deserializing)]
+    /// (docs/widgets.md). A tint that isn't a colour is none.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tint: Option<String>,
 }
 
@@ -381,24 +381,60 @@ impl Default for SceneKeys {
 
 /// Media files, when read while playing: the pieces' sizes come from them.
 pub fn read(target: &Path, default_seconds: f64, ffmpeg: &Path) -> Result<Playlist, Box<dyn Error>> {
-    let playlist = if target.is_dir() {
-        let mut paths: Vec<PathBuf> = std::fs::read_dir(target)?
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| p.is_file() && is_image(p))
-            .collect();
-        paths.sort_by_key(|p| p.file_name().map(|n| n.to_string_lossy().to_lowercase()));
-        let scenes = paths.into_iter().enumerate().map(|(i, p)| piece(&p, i, default_seconds, ffmpeg)).collect();
-        Playlist { seconds: default_seconds, global: Vec::new(), scenes, watch: Vec::new() }
-    } else if target.extension().is_some_and(|e| e.eq_ignore_ascii_case("json")) {
+    // stamped before it's read, so a save that lands during the read is seen as a change next time
+    let before = stamp(target);
+    let mut playlist = if is_json(target) {
         parse(&std::fs::read(target)?, target.parent().unwrap_or(Path::new(".")), default_seconds, ffmpeg)?
     } else {
-        let scenes = vec![piece(target, 0, default_seconds, ffmpeg)];
-        Playlist { seconds: default_seconds, global: Vec::new(), scenes, watch: Vec::new() }
+        let mut paths = if target.is_dir() { images(target)? } else { vec![target.to_path_buf()] };
+        paths.sort_by_key(|p| p.file_name().map(|n| n.to_string_lossy().to_lowercase()));
+        let scenes = paths.into_iter().enumerate().map(|(i, p)| piece(&p, i, default_seconds, ffmpeg)).collect();
+        let mut playlist = Playlist { seconds: default_seconds, global: Vec::new(), scenes, watch: Vec::new() };
+        watch_files(&mut playlist);
+        playlist
     };
     if playlist.scenes.is_empty() {
         return Err(format!("nothing to play in {}", target.display()).into());
     }
+    playlist.watch.insert(0, (target.to_path_buf(), before));
+    sort_watch(&mut playlist.watch);
     Ok(playlist)
+}
+
+fn is_json(target: &Path) -> bool {
+    target.extension().is_some_and(|e| e.eq_ignore_ascii_case("json")) && !target.is_dir()
+}
+
+/// The images and videos in a folder target.
+fn images(folder: &Path) -> std::io::Result<Vec<PathBuf>> {
+    Ok(std::fs::read_dir(folder)?.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.is_file() && is_image(p)).collect())
+}
+
+/// Adds every media file and font the playlist draws to its watch list, stamped now, then sorts the list.
+fn watch_files(playlist: &mut Playlist) {
+    let mut files: Vec<&Path> = playlist
+        .scenes
+        .iter()
+        .flat_map(|s| &s.layers)
+        .chain(&playlist.global)
+        .flat_map(|l| &l.objects)
+        .filter_map(|o| match &o.kind {
+            Kind::Media(m) => Some(m.src.as_path()),
+            Kind::Text(t) => Some(t.font.as_path()),
+            Kind::Shape(_) => None,
+        })
+        .collect();
+    files.sort();
+    files.dedup();
+    let stamped: Vec<(PathBuf, Option<Stamp>)> = files.into_iter().map(|p| (p.to_path_buf(), stamp(p))).collect();
+    playlist.watch.extend(stamped);
+    sort_watch(&mut playlist.watch);
+}
+
+/// Sorted by path, each path once, with the stamp it was first given.
+fn sort_watch(watch: &mut Vec<(PathBuf, Option<Stamp>)>) {
+    watch.sort_by(|a, b| a.0.cmp(&b.0));
+    watch.dedup_by(|later, first| later.0 == first.0);
 }
 
 /// A playlist file's scenes, with paths relative to `base`. Version 1 files are converted as they're read.
@@ -410,7 +446,7 @@ pub fn parse(json: &[u8], base: &Path, default_seconds: f64, ffmpeg: &Path) -> R
     let fallback = file.get("seconds").and_then(Value::as_f64).unwrap_or(default_seconds);
     let file = if version >= 2 { file } else { convert(file, base, ffmpeg) };
     let mut library = Library::new(widget::widgets_for(base));
-    let mut expander = Expander::new(&mut library, ffmpeg, "the global layers");
+    let mut expander = Expander::new(&mut library, "the global layer");
     let global = layers(file.get("global").and_then(|g| g.get("layers")), base, &mut expander);
     let scenes = file
         .get("scenes")
@@ -422,7 +458,7 @@ pub fn parse(json: &[u8], base: &Path, default_seconds: f64, ffmpeg: &Path) -> R
         .filter_map(|(i, value)| {
             let keys: SceneKeys = lenient(value, "scene")?;
             let id = if keys.id.is_empty() { format!("s{i}") } else { keys.id };
-            let mut expander = Expander::new(&mut library, ffmpeg, &format!("scene {id}"));
+            let mut expander = Expander::new(&mut library, &format!("scene {id}"));
             Some(Scene {
                 id,
                 name: keys.name,
@@ -432,7 +468,9 @@ pub fn parse(json: &[u8], base: &Path, default_seconds: f64, ffmpeg: &Path) -> R
             })
         })
         .collect();
-    Ok(Playlist { seconds: fallback, global, scenes, watch: Vec::new() })
+    let mut playlist = Playlist { seconds: fallback, global, scenes, watch: library.watch };
+    watch_files(&mut playlist);
+    Ok(playlist)
 }
 
 /// Version 1 (items with a file, a layout and their text `widgets`, plus an overlay) as version 2, in memory. See
@@ -585,8 +623,8 @@ fn layers(list: Option<&Value>, base: &Path, expander: &mut Expander) -> Vec<Lay
 }
 
 /// An object, or None for one of a type this player doesn't know (skipped, rather than stopping the
-/// whole playlist from playing).
-fn object(value: Value, base: &Path) -> Option<Object> {
+/// whole playlist from playing). Also how a widget's objects are read, once its copy's values are in.
+pub(crate) fn object(value: Value, base: &Path) -> Option<Object> {
     let common: Common = lenient(value.clone(), "object")?;
     let kind = match common.kind.as_str() {
         "image" | "video" => {
@@ -595,6 +633,7 @@ fn object(value: Value, base: &Path) -> Option<Object> {
                 return None;
             }
             media.src = base.join(&media.src);
+            media.tint = media.tint.as_deref().and_then(widget::color);
             Kind::Media(media)
         }
         "text" => {
@@ -646,18 +685,14 @@ fn is_image(path: &Path) -> bool {
         .is_some_and(|e| IMAGE_TYPES.iter().chain(&crate::art::VIDEO_TYPES).any(|t| e.eq_ignore_ascii_case(t)))
 }
 
-/// Changes whenever the playlist, the folder's contents, any media file or any font the text uses
-/// changes.
-pub fn fingerprint(target: &Path, playlist: &Playlist) -> Vec<(PathBuf, Option<(SystemTime, u64)>)> {
-    let mut paths = vec![target.to_path_buf()];
-    if target.is_dir() {
-        if let Ok(entries) = std::fs::read_dir(target) {
-            paths.extend(entries.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| is_image(p)));
-        }
-    }
-    let global = Scene { id: String::new(), name: String::new(), seconds: 0.0, background: String::new(), layers: playlist.global.clone() };
-    for scene in playlist.scenes.iter().chain([&global]) {
-        paths.extend(scene.media().chain(scene.fonts()).map(Path::to_path_buf));
+/// The paths of `playlist.watch` (and a folder target's images, as they are now), each with its stamp
+/// now: it differs from `playlist.watch` exactly when the playlist, the folder's contents, a widget, a
+/// media file or a font changed since the read. Only stats: the list was made once, by the read.
+pub fn fingerprint(target: &Path, playlist: &Playlist) -> Vec<(PathBuf, Option<Stamp>)> {
+    let mut paths: Vec<PathBuf> = playlist.watch.iter().map(|(p, _)| p.clone()).collect();
+    paths.push(target.to_path_buf());
+    if !target.extension().is_some_and(|e| e.eq_ignore_ascii_case("json")) && target.is_dir() {
+        paths.extend(images(target).unwrap_or_default());
     }
     paths.sort();
     paths.dedup();
@@ -835,6 +870,410 @@ mod tests {
 #[cfg(test)]
 mod expand_tests {
     use super::*;
+    use serde_json::json;
+    use std::time::Duration;
+
+    /// A scratch root of its own for one test, with `playlist\` and `widgets\` in it, removed afterwards.
+    struct Root {
+        dir: PathBuf,
+    }
+
+    impl Root {
+        fn new(name: &str) -> Root {
+            let dir = std::env::temp_dir().join(format!("wvplay-expand-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(dir.join("playlist")).unwrap();
+            std::fs::create_dir_all(dir.join("widgets")).unwrap();
+            Root { dir }
+        }
+
+        fn write(&self, path: &str, text: &str) -> PathBuf {
+            let path = self.dir.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, text).unwrap();
+            path
+        }
+
+        /// A widget whose one layer holds `objects`, with `keys` (each followed by a comma) besides.
+        fn widget(&self, id: &str, keys: &str, objects: &str) {
+            self.write(&format!("widgets/{id}/widget.json"),
+                       &format!(r#"{{ "version": 1, {keys} "layers": [ {{ "id": "l1", "objects": [{objects}] }} ] }}"#));
+        }
+
+        fn target(&self) -> PathBuf {
+            self.dir.join(r"playlist\playlist.json")
+        }
+
+        /// A playlist of one scene whose one layer holds `objects`, written, then read.
+        fn read(&self, objects: &str) -> Playlist {
+            self.write("playlist/playlist.json",
+                       &format!(r#"{{ "version": 2, "scenes": [ {{ "id": "s1", "layers": [ {{ "id": "l1", "objects": [{objects}] }} ] }} ] }}"#));
+            self.again()
+        }
+
+        fn again(&self) -> Playlist {
+            read(&self.target(), 30.0, Path::new("ffmpeg")).unwrap()
+        }
+    }
+
+    impl Drop for Root {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn leaves(p: &Playlist) -> &[Object] {
+        &p.scenes[0].layers[0].objects
+    }
+
+    fn ids(p: &Playlist) -> Vec<&str> {
+        leaves(p).iter().map(|o| o.id.as_str()).collect()
+    }
+
+    fn text(o: &Object) -> &Text {
+        match &o.kind {
+            Kind::Text(t) => t,
+            _ => panic!("{} isn't text", o.id),
+        }
+    }
+
+    fn shape(o: &Object) -> &Shape {
+        match &o.kind {
+            Kind::Shape(s) => s,
+            _ => panic!("{} isn't a shape", o.id),
+        }
+    }
+
+    fn media(o: &Object) -> &Media {
+        match &o.kind {
+            Kind::Media(m) => m,
+            _ => panic!("{} isn't media", o.id),
+        }
+    }
+
+    #[test]
+    fn copy_expands_in_place() {
+        let root = Root::new("in-place");
+        root.widget("w", r##""w": 10, "h": 10, "background": "#102030","##, r#"{ "id": "r", "type": "shape", "w": 2, "h": 2 }"#);
+        let p = root.read(r#"{ "id": "a", "type": "shape" }, { "id": "c", "type": "widget", "widget": "w", "x": 5, "y": 6 },
+                             { "id": "b", "type": "shape" }"#);
+        assert_eq!(ids(&p), ["a", "c/background", "c/r", "b"]);
+        let l = leaves(&p);
+        // the scene's own objects as they were; the copy's parts in its box, clipped to it
+        assert_eq!((l[0].clip, l[0].groups.len(), l[3].clip), (None, 0, None));
+        assert_eq!((l[1].x, l[1].y, l[1].w, l[1].h, l[1].clip), (5.0, 6.0, 10.0, 10.0, Some([5, 6, 15, 16])));
+        assert_eq!(shape(&l[1]), &Shape { shape: ShapeKind::Rect, radius: 0.0, fill: Some(Paint::Solid { color: "#102030".into() }), stroke: None, crisp: true });
+        assert_eq!((l[2].x, l[2].y, l[2].w, l[2].h, l[2].clip), (5.0, 6.0, 2.0, 2.0, Some([5, 6, 15, 16])));
+    }
+
+    #[test]
+    fn transform_after_defaults() {
+        let root = Root::new("defaults");
+        root.widget("w", r#""w": 10, "h": 10,"#,
+                    r##"{ "id": "t", "type": "text", "text": "x", "x": 1, "y": 2 },
+                        { "id": "o", "type": "text", "text": "y", "outline": { "color": "#ffffff" } },
+                        { "id": "s", "type": "shape", "w": 3, "h": 4, "stroke": {} },
+                        { "id": "e", "type": "shape", "shape": "ellipse", "radius": 2, "stroke": { "width": 1.5 } }"##);
+        let p = root.read(r#"{ "id": "c", "type": "widget", "widget": "w", "x": 10, "y": 20, "scale": 2 }"#);
+        let t = text(&leaves(&p)[0]);
+        // the default size, then scaled
+        assert_eq!((t.size, t.x, t.y, t.outline.width), (96.0, 12.0, 24.0, 0.0));
+        assert_eq!((leaves(&p)[0].x, leaves(&p)[0].y), (12.0, 24.0));
+        assert_eq!(t.clip, Some([10, 20, 30, 40]));
+        assert_eq!(t.id, "c/t");
+        assert_eq!(text(&leaves(&p)[1]).outline, Outline { color: "#ffffff".into(), width: 0.0 });
+        let s = shape(&leaves(&p)[2]);
+        assert_eq!((s.radius, s.stroke.clone()), (0.0, Some(Stroke { color: "#000000".into(), width: 2.0 })));
+        assert_eq!((leaves(&p)[2].w, leaves(&p)[2].h), (6.0, 8.0));
+        let e = shape(&leaves(&p)[3]);
+        assert_eq!((e.radius, e.stroke.as_ref().unwrap().width, e.fill.clone()), (4.0, 3.0, Some(Paint::Solid { color: "#ffffff".into() })));
+    }
+
+    #[test]
+    fn inputs_make_text_live() {
+        let root = Root::new("live");
+        root.widget("g", r#""inputs": [ { "id": "v", "name": "Value", "type": "text", "default": "plain" } ],"#,
+                    r#"{ "id": "t", "type": "text", "text": "{$v}" }"#);
+        let p = root.read(r#"{ "id": "a", "type": "widget", "widget": "g", "inputs": { "v": "{pc.gpu.temp}" } },
+                             { "id": "b", "type": "widget", "widget": "g", "inputs": { "v": "GPU" } },
+                             { "id": "c", "type": "widget", "widget": "g", "inputs": { "v": 5 } }"#);
+        let shown: Vec<(&str, bool)> = leaves(&p).iter().map(|o| (text(o).text.as_str(), text(o).live)).collect();
+        // live in the one copy only; a value that isn't a string isn't set
+        assert_eq!(shown, [("{pc.gpu.temp}", true), ("GPU", false), ("plain", false)]);
+    }
+
+    #[test]
+    fn values_are_made_safe() {
+        let root = Root::new("safe");
+        root.widget("g", r#""inputs": [ { "id": "v", "type": "text" } ],"#,
+                    r#"{ "id": "t", "type": "text", "text": "{$v}{pc.cpu.temp}" }, { "id": "u", "type": "text", "text": "[{$v}]" }"#);
+        let long = format!("{}😀", "a".repeat(1999));
+        let p = root.read(&format!(r#"{{ "id": "a", "type": "widget", "widget": "g", "inputs": {{ "v": "{{$x}}" }} }},
+                                      {{ "id": "b", "type": "widget", "widget": "g", "inputs": {{ "v": "x{{" }} }},
+                                      {{ "id": "c", "type": "widget", "widget": "g", "inputs": {{ "v": "5}}" }} }},
+                                      {{ "id": "d", "type": "widget", "widget": "g", "inputs": {{ "v": "{long}x" }} }}"#));
+        let shown: Vec<(&str, bool)> = leaves(&p).iter().map(|o| (text(o).text.as_str(), text(o).live)).collect();
+        assert_eq!(&shown[..6], [
+            // a reference in a value shows as written, and makes nothing live
+            ("{{$x}}{pc.cpu.temp}", true), ("[{$x}]", false),
+            // a value can't join with the text around it
+            ("x{{{pc.cpu.temp}", true), ("[x{]", false),
+            ("5}}{pc.cpu.temp}", true), ("[5}]", false),
+        ]);
+        // cut to 2000 characters, never in the middle of one
+        assert_eq!(shown[7].0, format!("[{long}]"));
+    }
+
+    #[test]
+    fn reference_builds_placeholder() {
+        let root = Root::new("placeholder");
+        root.widget("g", r#""inputs": [ { "id": "sensor", "type": "text", "default": "cpu" } ],"#,
+                    r#"{ "id": "t", "type": "text", "text": "{pc.{$sensor}.temp:d}°C" }"#);
+        let p = root.read(r#"{ "id": "a", "type": "widget", "widget": "g", "inputs": { "sensor": "gpu" } },
+                             { "id": "b", "type": "widget", "widget": "g" }"#);
+        let shown: Vec<(&str, bool)> = leaves(&p).iter().map(|o| (text(o).text.as_str(), text(o).live)).collect();
+        assert_eq!(shown, [("{pc.gpu.temp:d}°C", true), ("{pc.cpu.temp:d}°C", true)]);
+    }
+
+    fn stamp_of<'a>(p: &'a Playlist, path: &Path) -> Option<&'a Option<Stamp>> {
+        p.watch.iter().find(|(q, _)| q == path).map(|(_, s)| s)
+    }
+
+    #[test]
+    fn missing_widget_is_watched() {
+        let root = Root::new("missing");
+        root.write("widgets/other/widget.json", "{}");
+        let p = root.read(r#"{ "id": "c", "type": "widget", "widget": "gone" }"#);
+        let (target, widgets) = (root.target(), root.dir.join("widgets"));
+        assert!(leaves(&p).is_empty());
+        assert_eq!(stamp_of(&p, &widgets.join(r"gone\widget.json")), Some(&None));
+        assert!(stamp_of(&p, &widgets).is_some_and(Option::is_some));
+        assert_eq!(fingerprint(&target, &p), p.watch);
+
+        // the widget put in place
+        std::thread::sleep(Duration::from_millis(30));
+        root.widget("gone", "", r#"{ "id": "t", "type": "text", "text": "x", "font": "arial.ttf" }"#);
+        assert_ne!(fingerprint(&target, &p), p.watch);
+        let p = root.again();
+        assert_eq!(ids(&p), ["c/t"]);
+        assert_eq!(fingerprint(&target, &p), p.watch);
+
+        // another folder in widgets\ renamed
+        std::thread::sleep(Duration::from_millis(30));
+        std::fs::rename(widgets.join("other"), widgets.join("other2")).unwrap();
+        assert_ne!(fingerprint(&target, &p), p.watch);
+        let p = root.again();
+        assert_eq!(fingerprint(&target, &p), p.watch);
+
+        // a font dropped into the widget's fonts\ later, where the lookup tried first
+        assert_eq!(stamp_of(&p, &widgets.join(r"gone\fonts\arial.ttf")), Some(&None));
+        assert_eq!(text(&leaves(&p)[0]).font, Path::new(r"C:\Windows\Fonts\arial.ttf"));
+        root.write("widgets/gone/fonts/arial.ttf", "x");
+        assert_ne!(fingerprint(&target, &p), p.watch);
+        assert_eq!(text(&leaves(&root.again())[0]).font, widgets.join(r"gone\fonts\arial.ttf"));
+    }
+
+    #[test]
+    fn stamps_before_reading() {
+        let root = Root::new("stamps");
+        root.widget("w", "", r#"{ "id": "r", "type": "shape" }"#);
+        let p = root.read(r#"{ "id": "c", "type": "widget", "widget": "w" }"#);
+        let target = root.target();
+        let file = root.dir.join(r"widgets\w\widget.json");
+        assert_eq!(stamp_of(&p, &file), Some(&stamp(&file)));
+        // a save of the widget that the read didn't see: the stamp it took before reading tells
+        root.widget("w", r#""w": 99,"#, r#"{ "id": "r", "type": "shape" }"#);
+        let next = fingerprint(&target, &p);
+        assert_ne!(next, p.watch);
+        // (stamping only after the read, as the playlist used to be, would have taken this as seen)
+        assert_eq!(fingerprint(&target, &p), next);
+
+        // the playlist itself is stamped before it's read too
+        let before = stamp(&target);
+        assert_eq!(stamp_of(&root.again(), &target), Some(&before));
+    }
+
+    #[test]
+    fn fingerprint_only_stats() {
+        let root = Root::new("stats");
+        let objects: Vec<String> = (0..100).map(|i| format!(r#"{{ "id": "t{i}", "type": "text", "text": "x", "font": "arial.ttf" }}"#)).collect();
+        root.widget("w", "", &objects.join(","));
+        let copies: Vec<String> = (0..5).map(|i| format!(r#"{{ "id": "c{i}", "type": "widget", "widget": "w" }}"#)).collect();
+        let p = root.read(&copies.join(","));
+        assert_eq!(leaves(&p).len(), 500);
+        let target = root.target();
+        let widgets = root.dir.join("widgets");
+        let paths: Vec<PathBuf> = p.watch.iter().map(|(p, _)| p.clone()).collect();
+        let mut want = vec![target.clone(), widgets.clone(), widgets.join(r"w\fonts\arial.ttf"), widgets.join(r"w\widget.json"),
+                            PathBuf::from(r"C:\Windows\Fonts\arial.ttf")];
+        want.sort();
+        assert_eq!(paths, want);
+        let found = fingerprint(&target, &p);
+        assert_eq!(found, p.watch);
+        // it walks no leaves: the list was made by the read
+        let bare = Playlist { scenes: Vec::new(), global: Vec::new(), ..p.clone() };
+        assert_eq!(fingerprint(&target, &bare), found);
+    }
+
+    #[test]
+    fn scene_tint_is_read() {
+        let root = Root::new("tint");
+        let p = root.read(r##"{ "id": "a", "type": "image", "src": "a.png", "tint": "#ABC", "keep_aspect": true },
+                              { "id": "b", "type": "video", "src": "b.mp4", "tint": "aé123" },
+                              { "id": "c", "type": "image", "src": "c.png", "tint": null, "keep_aspect": "yes" }"##);
+        let read: Vec<(Option<&str>, bool)> = leaves(&p).iter().map(|o| (media(o).tint.as_deref(), media(o).keep_aspect)).collect();
+        assert_eq!(read, [(Some("#aabbcc"), true), (None, false), (None, false)]);
+        let json = serde_json::to_string(&leaves(&p)[0].kind).unwrap();
+        assert!(json.ends_with(r##""fill":"none","keep_aspect":true,"tint":"#aabbcc"}"##), "{json}");
+    }
+
+    /// Whatever a hand-edited or downloaded widget.json holds, reading it never panics, and stays bounded.
+    #[test]
+    fn hostile_widgets_dont_panic() {
+        let root = Root::new("hostile");
+        let deep = format!("{}1{}", "[".repeat(200), "]".repeat(200));
+        let bodies = [
+            deep.as_str(),
+            "",
+            "\u{feff}{}",
+            "null",
+            r#"{ "version": "2", "w": "wide", "h": [], "background": {}, "inputs": {}, "layers": {} }"#,
+            r#"{ "version": 1e308, "w": 1e308 }"#,
+            r#"{ "w": -1e308, "h": 1e308, "background": "aé123", "inputs": [ { "id": "a", "type": "color", "default": "é" },
+                 { "id": "b", "type": "image", "default": "\\\\host\\x.png" }, { "id": "t", "type": "text", "default": "{$t}" } ],
+               "layers": [ 5, "x", null, { "opacity": "x", "visible": 3, "objects": [ 1, null, "x", [],
+                 { "id": "big", "type": "image", "src": "a.png", "x": 1e308, "y": -1e308, "w": 1e308, "h": 1e308 },
+                 { "id": "s", "type": "shape", "x": -1e308, "w": 1e308, "radius": 1e308, "stroke": { "width": 1e308, "color": "{$a}" },
+                   "fill": { "type": "linear", "stops": [ { "color": "{$a}" }, 5, { "at": "x" } ] } },
+                 { "id": "t", "type": "text", "text": "{$t}{$", "size": 1e308, "x": 1e308, "color": "{$b}", "outline": "x", "font": "é:.ttf" },
+                 { "id": "v", "type": "video", "src": "{$b}", "tint": "{$a}" },
+                 { "id": "w", "type": "widget", "widget": "evil", "scale": 1e308, "x": -1e308, "inputs": { "a": 5, "t": ["x"] } },
+                 { "id": "w2", "type": "widget", "widget": "evil", "scale": -1e-308, "w": 1e308 } ] } ] }"#,
+        ];
+        for (i, body) in bodies.iter().enumerate() {
+            root.write("widgets/evil/widget.json", body);
+            let p = root.read(r##"{ "id": "c", "type": "widget", "widget": "evil", "x": 1e308, "scale": 1e308, "inputs": { "a": "#fff" } },
+                                  { "id": "d", "type": "widget", "widget": "evil", "x": -9007199254740993, "y": 1e-308, "inputs": [] }"##);
+            assert!(leaves(&p).len() <= widget::BUDGET, "body {i}");
+        }
+        // a wide tree of copies, 60 × 60 × 60: the budget caps the work
+        for (outer, inner) in [("fan1", "fan2"), ("fan2", "fan3"), ("fan3", "leaf")] {
+            let many: Vec<String> = (0..60).map(|i| format!(r#"{{ "id": "w{i}", "type": "widget", "widget": "{inner}" }}"#)).collect();
+            root.widget(outer, r#""w": 4, "h": 4,"#, &format!(r#"{{ "id": "r", "type": "shape" }}, {}"#, many.join(",")));
+        }
+        root.widget("leaf", r#""w": 4, "h": 4,"#, r#"{ "id": "r", "type": "shape" }"#);
+        let started = std::time::Instant::now();
+        let p = root.read(r#"{ "id": "top", "type": "widget", "widget": "fan1" }, { "id": "after", "type": "shape" }"#);
+        assert!(leaves(&p).len() > 1000 && leaves(&p).len() < widget::BUDGET);
+        assert_eq!(leaves(&p).last().unwrap().id, "after");
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    /// The leaf form of player/tests/widgets/README.md.
+    fn leaf_form(o: &Object, case: &Path) -> Value {
+        let rel = |p: &Path| match p.strip_prefix(case) {
+            Ok(r) => r.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join("/"),
+            Err(_) => p.display().to_string(),
+        };
+        let groups: Vec<Value> = o.groups.iter().map(|g| json!([g.id, g.opacity, g.rect])).collect();
+        let mut leaf = json!({ "id": o.id, "opacity": o.opacity, "clip": o.clip, "groups": groups });
+        let more = match &o.kind {
+            Kind::Media(m) => json!({ "type": "image", "x": o.x, "y": o.y, "w": o.w, "h": o.h, "src": rel(&m.src),
+                                      "keep_aspect": m.keep_aspect, "tint": m.tint }),
+            Kind::Text(t) => {
+                assert_eq!((t.x, t.y), (o.x as f32, o.y as f32), "{}: the text's anchor is its object's", o.id);
+                let font = t.font.file_name().map(|f| f.to_string_lossy().into_owned());
+                json!({ "type": "text", "x": o.x, "y": o.y, "text": t.text, "live": t.live, "size": t.size,
+                        "outline_width": t.outline.width, "color": t.color, "outline_color": t.outline.color, "font": font })
+            }
+            Kind::Shape(s) => {
+                let color = match &s.fill {
+                    Some(Paint::Solid { color }) => Some(color.clone()),
+                    _ => None,
+                };
+                json!({ "type": "shape", "x": o.x, "y": o.y, "w": o.w, "h": o.h, "shape": s.shape, "radius": s.radius, "color": color,
+                        "stroke_width": s.stroke.as_ref().map(|s| s.width), "stroke_color": s.stroke.as_ref().map(|s| s.color.clone()),
+                        "crisp": s.crisp })
+            }
+        };
+        leaf.as_object_mut().unwrap().extend(more.as_object().unwrap().clone());
+        leaf
+    }
+
+    /// What's drawn of a holder's layers (decision 2 of the build: hidden layers, layers at opacity 0 and
+    /// hidden objects at the top level aren't listed).
+    fn drawn(layers: &[Layer], case: &Path) -> Vec<Value> {
+        layers.iter().filter(|l| l.visible && l.opacity > 0.0).flat_map(|l| &l.objects).filter(|o| o.visible).map(|o| leaf_form(o, case)).collect()
+    }
+
+    /// Numbers as numbers, opacities to 6 decimals.
+    fn same(key: &str, a: &Value, b: &Value) -> bool {
+        let six = |v: f64| (v * 1e6).round();
+        match (a, b) {
+            (Value::Number(x), Value::Number(y)) => {
+                let (x, y) = (x.as_f64().unwrap(), y.as_f64().unwrap());
+                if key == "opacity" { six(x) == six(y) } else { x == y }
+            }
+            (Value::Array(x), Value::Array(y)) if key == "groups" => {
+                x.len() == y.len()
+                    && x.iter().zip(y).all(|(g, h)| g[0] == h[0] && same("opacity", &g[1], &h[1]) && same("rect", &g[2], &h[2]))
+            }
+            (Value::Array(x), Value::Array(y)) => x.len() == y.len() && x.iter().zip(y).all(|(x, y)| same(key, x, y)),
+            _ => a == b,
+        }
+    }
+
+    /// Every `expand/<case>` gives exactly the leaves its `expected.json` lists (its `placement` is the
+    /// live text work's).
+    #[test]
+    fn fixtures_match() {
+        let cases = Path::new(env!("CARGO_MANIFEST_DIR")).join(r"tests\widgets\expand");
+        let mut problems = Vec::new();
+        let mut checked = Vec::new();
+        let mut entries: Vec<PathBuf> = std::fs::read_dir(&cases).unwrap().map(|e| e.unwrap().path()).collect();
+        entries.sort();
+        for case in entries {
+            let Ok(file) = std::fs::read(case.join("expected.json")) else { continue };
+            let name = case.file_name().unwrap().to_string_lossy().into_owned();
+            let expected: Value = serde_json::from_slice(&file).unwrap();
+            let p = read(&case.join(r"playlist\playlist.json"), 30.0, Path::new("ffmpeg")).unwrap();
+            let mut got: Vec<(String, Vec<Value>)> = p.scenes.iter().map(|s| (s.id.clone(), drawn(&s.layers, &case))).collect();
+            got.push(("global".into(), drawn(&p.global, &case)));
+            let mut want: Vec<(String, Vec<Value>)> = expected["scenes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| (s["id"].as_str().unwrap().to_string(), s["leaves"].as_array().unwrap().clone()))
+                .collect();
+            want.push(("global".into(), expected["global"]["leaves"].as_array().cloned().unwrap_or_default()));
+            let scenes = |list: &[(String, Vec<Value>)]| list.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>();
+            if scenes(&got) != scenes(&want) {
+                problems.push(format!("{name}: scenes {:?}, expected {:?}", scenes(&got), scenes(&want)));
+                continue;
+            }
+            for ((holder, mine), (_, theirs)) in got.iter().zip(&want) {
+                let id_list = |leaves: &[Value]| leaves.iter().map(|l| l["id"].as_str().unwrap_or_default().to_string()).collect::<Vec<_>>();
+                if id_list(mine) != id_list(theirs) {
+                    problems.push(format!("{name}/{holder}: leaves {:?},\n    expected {:?}", id_list(mine), id_list(theirs)));
+                    continue;
+                }
+                for (m, t) in mine.iter().zip(theirs) {
+                    let (m, t) = (m.as_object().unwrap(), t.as_object().unwrap());
+                    for key in m.keys().chain(t.keys().filter(|k| !m.contains_key(*k) && *k != "note")) {
+                        let (a, b) = (m.get(key).unwrap_or(&Value::Null), t.get(key));
+                        if b.is_none() || !same(key, a, b.unwrap()) {
+                            problems.push(format!("{name}/{holder} {}: {key} is {a}, expected {}", m["id"], b.map_or("nothing".into(), Value::to_string)));
+                        }
+                    }
+                }
+            }
+            checked.push(name);
+        }
+        assert!(problems.is_empty(), "{} differences:\n{}", problems.len(), problems.join("\n"));
+        for case in ["basic", "inputs", "nested", "limits", "missing", "paths", "fills", "aspect"] {
+            assert!(checked.iter().any(|c| c == case), "no expand/{case}");
+        }
+    }
 
     /// A scene without copies is the same JSON as before widgets (so the same cache keys, but for
     /// scene::VERSION): no clip, groups, keep_aspect or tint is written for it.
