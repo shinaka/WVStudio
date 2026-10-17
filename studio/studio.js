@@ -233,8 +233,9 @@ function turnedFrame(m, o, i) {
 
 /** Nearest neighbour exactly as docs/scenes.md has it: pixel u shows source pixel floor((2u + 1) * sw / (2 * w)), and
  *  the same for rows. (The canvas's own nearest can pick the neighbour where that lands right on a pixel's edge, as
- *  at 1.5x.) Drawn in runs, columns then rows: each run of pixels that shows one source column (or row) is that
- *  column stretched, which copies it exactly. No pixels are read back, so a video can do it every frame. */
+ *  at 1.5x.) Drawn in runs, across then down or the other way round, whichever needs the smaller canvas between: each
+ *  run of pixels that shows one source column (or row) is that column stretched, which copies it exactly. No pixels
+ *  are read back, so a video can do it every frame. */
 const nearestCv = document.createElement("canvas");
 function nearest(g, src, dw, dh) {
   const sw = src.width, sh = src.height;
@@ -251,13 +252,19 @@ function nearest(g, src, dw, dh) {
     }
     return out;
   };
-  if (nearestCv.width !== dw || nearestCv.height !== sh) { nearestCv.width = dw; nearestCv.height = sh; }
+  const across = dw * sh <= sw * dh, [mw, mh] = across ? [dw, sh] : [sw, dh];
+  if (nearestCv.width !== mw || nearestCv.height !== mh) { nearestCv.width = mw; nearestCv.height = mh; }
   const mid = nearestCv.getContext("2d");
   mid.setTransform(1, 0, 0, 1, 0, 0);
-  mid.clearRect(0, 0, dw, sh);
+  mid.clearRect(0, 0, mw, mh);
   mid.imageSmoothingEnabled = false;
-  for (const [s, u, n] of runs(dw, sw)) mid.drawImage(src, s, 0, 1, sh, u, 0, n, sh);
-  for (const [s, v, n] of runs(dh, sh)) g.drawImage(nearestCv, 0, s, dw, 1, 0, v, dw, n);
+  if (across) {
+    for (const [s, u, n] of runs(dw, sw)) mid.drawImage(src, s, 0, 1, sh, u, 0, n, sh);
+    for (const [s, v, n] of runs(dh, sh)) g.drawImage(nearestCv, 0, s, dw, 1, 0, v, dw, n);
+  } else {
+    for (const [s, v, n] of runs(dh, sh)) mid.drawImage(src, 0, s, sw, 1, 0, v, sw, n);
+    for (const [s, u, n] of runs(dw, sw)) g.drawImage(nearestCv, s, 0, 1, dh, u, 0, n, dh);
+  }
 }
 
 /** The frame scaled to the object's box: nearest neighbour unless smooth (the player's rule, pixel for pixel), once,
