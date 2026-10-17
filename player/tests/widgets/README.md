@@ -51,15 +51,16 @@ Each case is a playlist and its widgets, as they'd sit on disk: `playlist/playli
 | `paths` | `src` values left out (`../x.png`, `C:/x.png`, `/x.png`, `\\host\x.png`, `media\x.png`, `media./x.png`, five parts, `media/CON.png`) and kept (four parts, spaces around it); an image input whose default isn't a path, set by a copy; fonts that aren't one file name fall back to Segoe UI, `Orbitron Bold.ttf` is kept |
 | `fills` | tile, mirror and extend inside a small container, at 1, 1.5 and nested at 2: each leaf keeps its own placed box (one wholly outside the container too) and gets the container as its clip, which is the fill area; a translucent copy hanging off the panel's top-left |
 | `aspect` | `keep_aspect` and `tint` carried on the leaves: bound tints, `#ABC` and spaces made `#rrggbb`, tints that aren't colours (`blue`, `{$nope}`, an image input, a number) and a `keep_aspect` that isn't `true` dropped; a scene image's own. Also colours that aren't strings (a number, `null`, `false`, a list, an object) in a fill, a gradient stop, a stroke, a text and its outline: each is its fallback, and the stroke or gradient it's in stays |
+| `live` | where live text is drawn: two gauge copies in one layer (in place, cut at the first value), a copy at 0.5 (cut at the copy), a scene layer at 0.5 (cut at the layer), a GIF above (on top), a hidden layer's live text (left out), and a scene whose only live text is the global clock |
 
-The last four came later, worked out by hand from the spec in the same way and checked against an independent
-reference. Their `placement` comes with the live text work.
+The last five came later, worked out by hand from the spec in the same way and checked against an independent
+reference.
 
 `expected.json` lists, for each scene and for the global layers, every object drawn, in drawing order, with
 copies expanded. A top-level object that isn't a copy comes out as it is, with no clip and no groups.
 
 ```json
-{ "scenes": [ { "id": "s1", "leaves": [ <leaf> ] } ], "global": { "leaves": [ <leaf> ] } }
+{ "scenes": [ { "id": "s1", "placement": { "on_top": false, "cut": null }, "leaves": [ <leaf> ] } ], "global": { "leaves": [ <leaf> ] } }
 ```
 
 A leaf's keys depend on its type:
@@ -78,7 +79,11 @@ A leaf's keys depend on its type:
 Colours are as the leaf holds them: lowercase `#rrggbb`, with fallbacks written out. Compare numbers as
 numbers (4 and 4.0 are equal); opacities to 6 decimals. `outline_color`, `stroke_color`, `shape` and `crisp` go
 beyond the spec's list, so that a fallback in an outline or a stroke, and the background's crisp rect, are
-checked too. Each scene gets a `placement` later, from the live text work.
+checked too.
+
+Each scene's `placement` says where its live text is drawn (docs/widgets.md, Live text): `on_top`, and `cut`,
+the id of the first leaf of S, where the first live text's group starts. A scene without live text has
+`{"on_top": false, "cut": null}`.
 
 ## `parity/`
 

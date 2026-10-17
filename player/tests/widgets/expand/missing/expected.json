@@ -2,6 +2,7 @@
   "scenes": [
     {
       "id": "s1",
+      "placement": {"on_top": false, "cut": null},
       "leaves": [
         {"id": "before", "type": "shape", "x": 0, "y": 0, "w": 4, "h": 4, "opacity": 1, "clip": null, "groups": [], "shape": "rect", "radius": 0, "color": "#ffffff", "stroke_width": null, "stroke_color": null, "crisp": true},
         {"id": "ok/a", "type": "shape", "x": 20, "y": 0, "w": 5, "h": 5, "opacity": 1, "clip": [20, 0, 30, 10], "groups": [], "shape": "rect", "radius": 0, "color": "#00ff00", "stroke_width": null, "stroke_color": null, "crisp": true},

@@ -2,6 +2,7 @@
   "scenes": [
     {
       "id": "s1",
+      "placement": {"on_top": false, "cut": null},
       "leaves": [
         {"id": "a/t", "type": "image", "x": 2, "y": 2, "w": 4, "h": 4, "opacity": 1, "clip": [0, 0, 20, 10], "groups": [], "src": "widgets/tiles/media/tile-9866f247.png", "keep_aspect": false, "tint": null},
         {"id": "a/m", "type": "image", "x": 8, "y": 2, "w": 4, "h": 3, "opacity": 1, "clip": [0, 0, 20, 10], "groups": [], "src": "widgets/tiles/media/tile-9866f247.png", "keep_aspect": false, "tint": null},

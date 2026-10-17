@@ -2,6 +2,7 @@
   "scenes": [
     {
       "id": "s1",
+      "placement": {"on_top": false, "cut": null},
       "leaves": [
         {"id": "x/k1", "type": "image", "x": 0, "y": 0, "w": 40, "h": 40, "opacity": 1, "clip": [0, 0, 40, 40], "groups": [], "src": "widgets/icon/media/wide-cae7d6d1.png", "keep_aspect": true, "tint": null},
         {"id": "x/k2", "type": "image", "x": 0, "y": 0, "w": 20, "h": 20, "opacity": 1, "clip": [0, 0, 40, 40], "groups": [], "src": "widgets/icon/media/wide-cae7d6d1.png", "keep_aspect": true, "tint": "#ff7a1a"},
