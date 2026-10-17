@@ -211,12 +211,12 @@ impl Player {
     /// Whether a redraw of the live text may start at `now`: the last one started at least `redraw_wait`
     /// ago (docs/widgets.md, Live text). A wait past 5 s is logged once per version of a scene.
     fn may_redraw(&mut self, now: Instant) -> bool {
-        let Some(live) = &self.current.live else { return true };
+        // when a redraw over these frames that's still on its way started
+        let coming = self.composing.as_ref().filter(|c| Arc::ptr_eq(&c.base, &self.current.frames)).map(|c| c.started);
+        // no live frames yet (a version taken from the memory cache): its cost isn't known, so one at a time
+        let Some(live) = &self.current.live else { return coming.is_none() };
         // the last start: a redraw still on its way, else the one showing; the cost is the last known
-        let started = match &self.composing {
-            Some(c) if Arc::ptr_eq(&c.base, &self.current.frames) => c.started,
-            _ => live.started,
-        };
+        let started = coming.unwrap_or(live.started);
         let frames = self.current.frames.frames.len();
         let wait = redraw_wait(frames, live.cost);
         if wait > Duration::from_secs(5) && self.slow.insert(self.current.key) {
@@ -945,6 +945,59 @@ mod tests {
             assert!(eventually(|| p.update_live(false, start + ms(500))));
         }
         assert!(!p.slow.contains(&p.current.key));
+    }
+
+    /// A version taken back from the memory cache has no live frames, so what its redraw costs isn't known
+    /// yet: its first redraw starts at once, changes wait while it's on its way (rather than each starting
+    /// another over the whole cycle), and from then on its cost holds the next back.
+    #[test]
+    fn redraw_budget_after_cache_hit() {
+        if !Path::new(text::DEFAULT_FONT).exists() {
+            return;
+        }
+        let ms = Duration::from_millis;
+        let s = Scratch::new("budget-hit");
+        set("wvtest.hit", 0.0);
+        let sized = |size: u32| {
+            format!(r#"{{ "seconds": 1, "overlay": [ {{ "id": "clock", "type": "text", "text": "n={{wvtest.hit}}", "size": {size} }} ],
+                          "items": [ {{ "file": "a.gif", "widgets": [] }} ] }}"#)
+        };
+        std::fs::write(&s.list, sized(100)).unwrap();
+        let mut p = s.player();
+        p.settle = ms(50);
+        // another version, swapped in, then back to the first: still in memory, with other frames
+        std::fs::write(&s.list, sized(80)).unwrap();
+        read(&mut p);
+        assert!(eventually(|| p.tick()));
+        std::fs::write(&s.list, sized(100)).unwrap();
+        assert!(read(&mut p));
+        assert!(p.reload.is_none(), "the first version isn't taken from the memory cache");
+        assert!(p.current.live.is_none());
+        assert_eq!(p.current.frames.frames.len(), 3);
+        // the first redraw isn't held back; here it's kept on its way, with a fake cost of 1 s
+        let t0 = whenever();
+        p.update_live(true, t0);
+        let coming = p.composing.as_mut().expect("the first redraw was held back");
+        let (go, wait) = std::sync::mpsc::channel::<()>();
+        let frames = Arc::new(p.current.frames.frames.clone());
+        coming.job = std::thread::spawn(move || {
+            let _ = wait.recv();
+            (frames, ms(1000))
+        });
+        let first = coming.job.thread().id();
+        // values changing every look wait for it
+        for k in 1..=6u32 {
+            set("wvtest.hit", k as f64);
+            p.update_live(true, t0 + ms(500) * k);
+            assert_eq!(p.composing.as_ref().map(|c| c.job.thread().id()), Some(first), "another redraw started at look {k}");
+        }
+        go.send(()).unwrap();
+        assert!(eventually(|| p.update_live(false, t0 + ms(3000))));
+        // then its cost holds the next back until 50 s after it started, and that one shows the last value
+        p.update_live(true, t0 + ms(49_900));
+        assert!(p.composing.is_none());
+        p.update_live(true, t0 + ms(50_000));
+        assert_eq!(p.composing.as_ref().expect("no redraw after 50 s").texts[0].text, "n=6");
     }
 
     /// The memory cache counts the stills laid over a scene's frames, not only its JPEGs, so scenes with
