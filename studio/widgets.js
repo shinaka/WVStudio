@@ -213,12 +213,13 @@ window.WV = WV;
       } else {
         let src = null;  // not set: the default
         if (v !== null) {
-          const ref = refOf(v);
+          const t = spaces(v), ref = refOf(t);
           if (ref !== null) src = outer.image.has(ref) ? outer.image.get(ref) : null;
-          else if (spaces(v) === "") src = "";
-          else if (pathOk(v)) src = folder + v;
+          else if (t === "") src = "";
+          else if (pathOk(t)) src = folder + t;
         }
-        if (src === null) src = pathOk(input.default) ? def.folder + input.default : "";
+        const d = spaces(input.default);
+        if (src === null) src = pathOk(d) ? def.folder + d : "";
         scope.image.set(input.id, src);
       }
     }
@@ -319,13 +320,14 @@ window.WV = WV;
                         depth: frame.depth + 1, path, wid, top,
                         groups: lop < 1 ? [...groups, { id: path + lid, opacity: lop, rect: meet(clip, this.panel) }] : groups };
         for (const x of Array.isArray(layer.objects) ? layer.objects : []) {
-          if (plainObject(x) && x.type === "widget") {
+          if (!plainObject(x)) continue;  // not an object at all: nothing, no step
+          if (x.type === "widget") {
             this.copy(x, child, out, marks);
             continue;
           }
-          if (plainObject(x) && x.visible === false) continue;
+          if (x.visible === false) continue;
           if (!this.step()) return;  // out of budget: the rest of this copy is skipped
-          const leaf = plainObject(x) ? this.leaf(x, child) : null;
+          const leaf = this.leaf(x, child);
           if (leaf) out.push(leaf);
         }
       }
@@ -354,7 +356,7 @@ window.WV = WV;
                      clip: f.clip, groups: f.groups, top: f.top ?? oid };
       if (type === "image" || type === "video") {
         if (typeof o.src !== "string") return null;
-        const ref = refOf(o.src), src = ref !== null ? f.scope.image.get(ref) ?? "" : pathOk(o.src) ? f.folder + o.src : "";
+        const raw = spaces(o.src), ref = refOf(raw), src = ref !== null ? f.scope.image.get(ref) ?? "" : pathOk(raw) ? f.folder + raw : "";
         if (!src) return null;  // "", a path outside the folder, or a reference that isn't an image input
         const [x0, y0, dw, dh] = edges();
         Object.assign(leaf, { x: x0, y: y0, w: Math.max(1, dw), h: Math.max(1, dh), src, smooth: o.smooth === true,

@@ -28,17 +28,28 @@ const uid = (prefix, taken) => {
 };
 function message(text, cls = "") { $("msg").textContent = text; $("msg").className = cls; }
 
+// The canvas being edited: the cooler's screen for a scene or Global, a widget's container while one is open
+// (useCanvas). Renderers size and clip by W and H.
 let W = 1600, H = 720, SAFE = { left: 0, right: 0, top: 0, bottom: 0 };  // replaced from the server
 let CAMERA = null;  // the camera punch-hole, {x, y, r}: no pixels there
 let DEFAULT_FONT = "C:\\Windows\\Fonts\\segoeui.ttf";
-const M = 140;  // off-screen margin shown around the screen, in screen px
+let PANEL = { w: 1600, h: 720, safe: { ...SAFE }, camera: null };  // the cooler's screen, from the server
+let M = 140;  // off-screen margin shown around the screen, in screen px
 const FRONT = () => ({ x: SAFE.left, y: SAFE.top, w: W - SAFE.left - SAFE.right, h: H - SAFE.top - SAFE.bottom });
 const WHOLE = () => ({ x: 0, y: 0, w: W, h: H });
 
 // Reusable widgets (docs/widgets.md) come from widgets.js (the model, `WV`), library.js and copies.js, loaded around
-// this file. They're used only while `widgetsOn`: when the studio server has widgets too and all three scripts loaded.
-// While it's false the page works exactly as without them, and nothing here calls into those files.
+// this file. They're used only while `widgetsOn`: when the studio server has widgets too and all three scripts loaded
+// (decided once the page has loaded). While it's false the page works exactly as without them, apart from showing
+// copies as boxes, and nothing here calls into those files.
 let widgetsOn = false;
+const lib = new Map();      // widget id -> its widget.json content, exactly as on disk
+const libMeta = new Map();  // id -> {stamp, gen, saved, resolvedFonts, ownFonts, readOnly}
+let libProblems = [];       // [{folder, problem}]: folders in widgets\ that aren't widgets
+let libDeleted = [];        // [{trash, id, name, when}]: Recently deleted
+let libEpoch = 0;           // bumped whenever the library may have changed: expansions and walks follow it
+const nav = [];             // [{key, ids}]: where ← Back returns to, last on top
+const rnd = (v) => (widgetsOn ? WV.rnd(v) : Math.round(v));  // the one rounding rule (docs/widgets.md, Geometry)
 
 /** Offers an event to the widget scripts first (`WV.hooks[kind]`: key, drop, dblclick, props), each function in
  *  turn. True once one returns true: it has handled the event, and the editor leaves it alone. Props hooks never
@@ -71,12 +82,26 @@ const stage = $("stage"), screenCv = $("screen"), ghostCv = $("ghost"), overlayC
 const sctx = screenCv.getContext("2d");
 
 function sceneById(id) { return doc.scenes.find((s) => s.id === id) || null; }
-/** What's being edited: a scene, or the global pseudo-scene. */
-function holder() { return sel.scene === "global" ? doc.global : sceneById(sel.scene); }
+/** What's being edited: a scene, the global pseudo-scene, or an open widget's content. */
+function holder() {
+  if (isWidgetHolder()) return lib.get(holderWidgetId()) || null;
+  return sel.scene === "global" ? doc.global : sceneById(sel.scene);
+}
 function isGlobal() { return sel.scene === "global"; }
-/** Whether a widget is open in the editor (`sel.scene` is "widget:<id>"), and its id. Never while widgets are off. */
-function isWidgetHolder() { return widgetsOn && typeof sel.scene === "string" && sel.scene.startsWith("widget:"); }
-function holderWidgetId() { return isWidgetHolder() ? sel.scene.slice("widget:".length) : null; }
+/** Whether a widget is open in the editor (`sel.scene` is "widget:<id>"), and its id. Never while widgets are off.
+ *  A scene id can't take that form: one that does (made by hand) gets a new id when the playlist is read. */
+function isWidgetHolder(key = sel.scene) { return widgetsOn && typeof key === "string" && key.startsWith("widget:"); }
+function holderWidgetId(key = sel.scene) { return isWidgetHolder(key) ? key.slice("widget:".length) : null; }
+/** Whether a holder key still names something: a scene, Global, or a widget in the library. */
+function holderExists(key) { return key === "global" || (isWidgetHolder(key) ? lib.has(holderWidgetId(key)) : !!sceneById(key)); }
+/** An example (tracked in git) or a widget from a newer studio: it opens for viewing, and nothing changes it. */
+function isReadOnly(id) {
+  if (!widgetsOn || typeof id !== "string") return false;
+  const w = lib.get(id);
+  return id.startsWith("example-") || !!libMeta.get(id)?.readOnly || (typeof w?.version === "number" && w.version > 1);
+}
+/** A widget's name as the page shows it. */
+function widgetName(id) { const n = lib.get(id)?.name; return typeof n === "string" && n.trim() ? n : id; }
 function layersOf(h = holder()) { return (h && Array.isArray(h.layers)) ? h.layers : []; }
 function layerById(id, h = holder()) { return layersOf(h).find((l) => l.id === id) || null; }
 /** {layer, obj, index} for an object id in the current holder, or null. */
@@ -104,10 +129,20 @@ const isMedia = (o) => o.type === "image" || o.type === "video";
 
 // --- Media: kept files, their frames and timing ------------------------------------------------
 
-const media = new Map();  // src -> {src, info, frames, video, ready, error, turned, scaled, total, starts}
+// Media are keyed by a ref: `sources/<file>` (a scene's src as it is), `inputs/<file>` (a picture chosen for a copy),
+// or `widgets/<id>/<path>` (a file in a widget's folder). Refs live only in the page: files keep the paths they're
+// written with, and a widget's own objects say `media/…`, relative to its folder.
+const media = new Map();  // ref -> {src, info, frames, video, ready, error, turned, scaled, total, starts}
 let mediaVersion = 0;     // bumps when a file arrives or fails, so what depends on it is drawn again
 const t0 = performance.now();
 const clock = () => (view.paused ? view.pausedAt : performance.now() - t0);
+
+/** The ref of a `src` written in a holder: itself in a scene or Global, under the widget's folder in a widget. */
+function mediaRef(src, key = sel.scene) {
+  return isWidgetHolder(key) && typeof src === "string" && src ? `widgets/${holderWidgetId(key)}/${src}` : src;
+}
+/** The media of an object in the open holder (not a leaf, whose src is a ref already). */
+function holderMedia(o) { return getMedia(mediaRef(o.src)); }
 
 function getMedia(src) {
   if (typeof src !== "string" || !src) return null;
@@ -120,7 +155,11 @@ function getMedia(src) {
 }
 
 async function loadMedia(m) {
-  const res = await api(`/api/media/${encodeURIComponent(m.src.split("/").pop())}`);
+  const ref = m.src, under = (prefix) => widgetsOn && ref.startsWith(prefix);
+  const path = under("inputs/") ? `inputs/${encodeURIComponent(ref.slice(7))}`
+    : under("widgets/") ? ref.split("/").map(encodeURIComponent).join("/")
+    : encodeURIComponent(ref.split("/").pop());
+  const res = await api(`/api/media/${path}`);
   const info = await res.json();
   if (!res.ok) throw new Error(info.error || res.statusText);
   useMediaInfo(m, info);
@@ -167,7 +206,8 @@ function frameIndex(m, t) {
   while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (m.starts[mid] <= at) lo = mid; else hi = mid - 1; }
   return lo;
 }
-const isAnimated = (o) => isMedia(o) && !!(media.get(o.src)?.info?.animated);
+/** Whether a media object moves: a leaf (its src a ref), or with `key`, an object of that holder. */
+const isAnimated = (o, key) => isMedia(o) && !!(media.get(key === undefined ? o.src : mediaRef(o.src, key))?.info?.animated);
 
 /** The source's size after turning. */
 function turnedSize(m, o) {
@@ -191,25 +231,117 @@ function turnedFrame(m, o, i) {
   return c;
 }
 
-/** The frame scaled to the object's box: nearest neighbour unless smooth (the player's rule, pixel for pixel). */
+/** The frame scaled to the object's box: nearest neighbour unless smooth (the player's rule, pixel for pixel), once,
+ *  from the file. With a tint, every pixel then takes the tint's colour and keeps its own alpha. */
 function scaledFrame(m, o, i) {
-  const dw = Math.max(1, Math.round(o.w)), dh = Math.max(1, Math.round(o.h));
-  const key = `${i}|${dw}|${dh}|${!!o.smooth}|${o.rotate | 0}|${!!o.flip}`;
+  const dw = Math.max(1, rnd(o.w)), dh = Math.max(1, rnd(o.h));
+  const tint = widgetsOn ? WV.color(o.tint) : null;
+  const key = `${i}|${dw}|${dh}|${!!o.smooth}|${o.rotate | 0}|${!!o.flip}` + (tint ? `|${tint}` : "");
   let c = m.scaled.get(key);
   if (c && !m.video) return c;
   if (!c) { if (m.scaled.size > 300) m.scaled.clear(); c = document.createElement("canvas"); m.scaled.set(key, c); }
   if (c.width !== dw || c.height !== dh) { c.width = dw; c.height = dh; }
-  const g = c.getContext("2d");
+  const g = c.getContext("2d", tint ? { willReadFrequently: true } : undefined);
   g.clearRect(0, 0, dw, dh);
   g.imageSmoothingEnabled = !!o.smooth;
   g.imageSmoothingQuality = "high";
   g.drawImage(turnedFrame(m, o, i), 0, 0, dw, dh);
+  if (tint) {
+    const img = g.getImageData(0, 0, dw, dh), d = img.data, [r, gr, b] = rgb(tint);
+    for (let k = 0; k < d.length; k += 4) { d[k] = r; d[k + 1] = gr; d[k + 2] = b; }
+    g.putImageData(img, 0, 0);
+  }
   return c;
+}
+
+// --- Expanding copies (docs/widgets.md, Drawing) -----------------------------------------------------
+//
+// Copies are drawn as the objects they expand into (WV.expandLayers): leaves in canvas pixels, each with its clip and
+// the translucent groups it sits in. A holder's own objects come out as they are. Expansions are kept until the
+// document, the library or the canvas changes (docEpoch, libEpoch, W and H).
+
+let docEpoch = 0;  // bumped whenever the document or an open widget may have changed: edits, drags, undo, opening
+const expansions = new WeakMap();  // a holder's layers -> {key, out}
+const widgetViews = new Map();     // widget id -> {key, out}: the editor's 1× copy of it
+
+/** A scene's or Global's layers as drawn: [{layer, leaves, marks}], copies expanded. */
+function expanded(h) {
+  const layers = layersOf(h);
+  if (!widgetsOn) return layers.map((layer) => ({ layer, leaves: (layer.objects || []).filter((o) => o && o.visible !== false), marks: [] }));
+  const key = `${docEpoch}|${libEpoch}|${W}x${H}`, hit = expansions.get(layers);
+  if (hit?.key === key) return hit.out;
+  const out = WV.expandLayers(layers, { lib, folder: "", canvas: [W, H], scope: null });
+  expansions.set(layers, { key, out });
+  return out;
+}
+
+/** A widget as its editor draws it: one 1× copy at the container's top-left, filled in with the preview values
+ *  (`preview`: null for its defaults, or {holder, copy} naming the copy it was opened from). Its leaves' `top` is
+ *  the widget's own object each came from, and its marks are its own copies that draw nothing. */
+function widgetView(id, preview = id === holderWidgetId() ? view.preview : null) {
+  if (!widgetsOn || !lib.has(id)) return [];
+  let content = lib.get(id), def = WV.readDef(id, content);
+  if (def.problem === "newer") { content = { ...content, version: 1 }; def = WV.readDef(id, content); }  // shown read-only
+  if (def.problem) return [];
+  const scope = previewScope(id, def, preview);
+  const key = `${docEpoch}|${libEpoch}|${W}x${H}|${JSON.stringify([...scope.text, ...scope.color, ...scope.image])}`;
+  const hit = widgetViews.get(id);
+  if (hit?.key === key) return hit.out;
+  const copy = { id, type: "widget", widget: id, visible: true, opacity: 1, x: 0, y: 0, scale: 1,
+                 inputs: Object.fromEntries(def.inputs.map((i) => [i.id, `{$${i.id}}`])) };  // the preview's values
+  const holderLib = content === lib.get(id) ? lib : new Map([...lib, [id, content]]);
+  const out = WV.expandLayers([{ id: "editor", visible: true, opacity: 1, objects: [copy] }],
+                              { lib: holderLib, folder: "", canvas: [W, H], scope, markDepth: 1 });
+  if (widgetViews.size > 200) widgetViews.clear();
+  widgetViews.set(id, { key, out });
+  return out;
+}
+
+/** The values a widget's editor previews (docs/widgets.md, The widget editor): its defaults; a copy's values, for a
+ *  copy in a scene or Global; or, for a copy inside widget H, what it gets in a copy of H left at H's defaults. */
+function previewScope(id, def, preview) {
+  const copy = preview && findCopy(preview.holder, preview.copy);
+  if (copy?.widget === id) {
+    if (!isWidgetHolder(preview.holder)) return WV.scopeOf(def, copy.inputs, null, "");
+    const hid = holderWidgetId(preview.holder), hdef = WV.readDef(hid, lib.get(hid));
+    if (!hdef.problem) return WV.scopeOf(def, copy.inputs, WV.scopeOf(hdef, {}, null, ""), hdef.folder);
+  }
+  return WV.scopeOf(def, {}, null, "");
+}
+/** A copy in a holder (a scene id, "global" or "widget:<id>") by its id, or null. */
+function findCopy(key, id) {
+  const h = isWidgetHolder(key) ? lib.get(holderWidgetId(key)) : key === "global" ? doc.global : sceneById(key);
+  const o = h ? find(id, h)?.obj : null;
+  return o?.type === "widget" ? o : null;
+}
+
+/** What the canvas shows now: the open holder's layers expanded (and Global's), with the live placement. */
+function currentView() {
+  if (isWidgetHolder()) {
+    const out = widgetView(holderWidgetId());
+    return { own: out, over: [], place: widgetsOn ? WV.placement([out, []], (l) => isAnimated(l)) : null };
+  }
+  const own = isGlobal() ? [] : expanded(holder()), over = expanded(doc.global);
+  return { own, over, place: widgetsOn ? WV.placement([own, over], (l) => isAnimated(l)) : null };
+}
+
+/** A copy's scale, as both renderers read it: `scale`, else its stored width over the container's, clamped. */
+function copyScale(o, def) {
+  let s = o.scale;
+  if (typeof s !== "number" || !(s > 0)) s = typeof o.w === "number" && o.w > 0 ? o.w / def.w : 1;
+  return Math.min(16, Math.max(0.01, s));
+}
+/** A copy's box in its holder (docs/widgets.md, Geometry), or its stored box when its widget can't be drawn. */
+function copyBox(o) {
+  const def = WV.idOk(o.widget) && lib.has(o.widget) ? WV.readDef(o.widget, lib.get(o.widget)) : null;
+  if (!def || def.problem) return { x: num(o.x, 0), y: num(o.y, 0), w: num(o.w, 0), h: num(o.h, 0) };
+  const s = copyScale(o, def);
+  return { x: WV.rnd(num(o.x, 0)), y: WV.rnd(num(o.y, 0)), w: Math.max(1, WV.rnd(s * def.w)), h: Math.max(1, WV.rnd(s * def.h)) };
 }
 
 // --- Drawing a scene (docs/scenes.md, Drawing a frame) -----------------------------------------
 
-const pool = [];  // layer buffers, W x H, for layers drawn at less than full opacity
+const pool = [];  // buffers, W x H: [0] for a layer below full opacity, [1…] for the groups open inside it
 function layerBuffer(depth) {
   const c = pool[depth] ||= document.createElement("canvas");
   if (c.width !== W || c.height !== H) { c.width = W; c.height = H; }
@@ -217,48 +349,121 @@ function layerBuffer(depth) {
 }
 
 /** Draws a scene (null: only the global layers) at time t. With `dim`, the scene is darkened under the global
- *  layers, for editing them. `thumb` draws with the raw text, the way the player would without live values. */
+ *  layers, for editing them. Live text is drawn in its place, or on top of everything when something animated is
+ *  above it (docs/widgets.md, Live text). */
 function renderScene(ctx, scene, t, { withGlobal = true, dim = false } = {}) {
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.globalAlpha = 1;
   ctx.fillStyle = scene ? hex(scene.background, "#000000") : "#000000";
   ctx.fillRect(0, 0, W, H);
-  if (scene) for (const layer of layersOf(scene)) drawLayer(ctx, layer, t);
+  const own = scene ? expanded(scene) : [], over = withGlobal ? expanded(doc.global) : [];
+  const place = widgetsOn ? WV.placement([own, over], (l) => isAnimated(l)) : null;
+  for (const e of own) drawLayer(ctx, e, t, place);
   if (dim) { ctx.fillStyle = "rgba(0,0,0,.55)"; ctx.fillRect(0, 0, W, H); }
-  if (withGlobal) for (const layer of layersOf(doc.global)) drawLayer(ctx, layer, t);
+  for (const e of over) drawLayer(ctx, e, t, place);
+  drawOnTop(ctx, place, t);
 }
 
-/** A layer: its objects together onto a buffer, blended at the layer's opacity (so they don't show through each
- *  other). At full opacity that's the same as drawing them straight on, which is cheaper. */
-function drawLayer(ctx, layer, t) {
+/** The widget editor's canvas: the widget drawn exactly as a 1× copy at its top-left (widgetView), on a cleared
+ *  canvas, so the backdrop behind #screen shows where it's transparent. Cards draw it the same way, at defaults. */
+function renderWidget(ctx, id, t, preview) {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1;
+  ctx.clearRect(0, 0, W, H);
+  const out = preview === undefined ? widgetView(id) : widgetView(id, preview);
+  const place = WV.placement([out, []], (l) => isAnimated(l));
+  for (const e of out) drawLayer(ctx, e, t, place);
+  drawOnTop(ctx, place, t);
+}
+
+/** Live text drawn on top of everything, when something animated is above it: in order, at its opacity times its
+ *  layer's and groups', each inside its clip. */
+function drawOnTop(ctx, place, t) {
+  if (!place?.onTop) return;
+  for (const l of place.live) drawClipped(ctx, l, t, place.fold.get(l) ?? 1);
+}
+
+/** A layer ({layer, leaves}, as expanded): its leaves together onto a buffer, blended at the layer's opacity (so they
+ *  don't show through each other). At full opacity that's the same as drawing them straight on, which is cheaper.
+ *  Live text that `place` puts on top waits for drawOnTop. */
+function drawLayer(ctx, { layer, leaves }, t, place = null) {
   if (layer.visible === false) return;
   const op = clamp01(layer.opacity);
   if (op <= 0) return;
-  const objects = (layer.objects || []).filter((o) => o && o.visible !== false);
-  if (op >= 1) { for (const o of objects) drawObject(ctx, o, t); return; }
+  const skip = place?.onTop ? place.fold : null;
+  if (op >= 1) return drawLeaves(ctx, leaves, t, skip);
   const buf = layerBuffer(0), g = buf.getContext("2d");
   g.setTransform(1, 0, 0, 1, 0, 0);
   g.globalAlpha = 1;
   g.clearRect(0, 0, W, H);
-  for (const o of objects) drawObject(g, o, t);
+  drawLeaves(g, leaves, t, skip);
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.globalAlpha = op;
   ctx.drawImage(buf, 0, 0);
   ctx.globalAlpha = 1;
 }
 
-function drawObject(ctx, o, t) {
-  const op = clamp01(o.opacity);
+/** Draws leaves in order, opening and closing their groups (docs/widgets.md, Opacity): a group's leaves go onto a
+ *  buffer of their own, cleared over the group's rect, which is then laid over what holds it at the group's
+ *  opacity. Leaves in `skip` are left out. */
+function drawLeaves(ctx, leaves, t, skip = null) {
+  const open = [];  // the groups open, outermost first: {id, opacity, rect, g}
+  const under = () => (open.length ? open[open.length - 1].g : ctx);
+  const close = () => {
+    const { opacity, rect: [l, tp, r, b], g } = open.pop(), to = under();
+    if (r <= l || b <= tp) return;
+    to.setTransform(1, 0, 0, 1, 0, 0);
+    to.globalAlpha = opacity;
+    to.drawImage(g.canvas, l, tp, r - l, b - tp, l, tp, r - l, b - tp);
+    to.globalAlpha = 1;
+  };
+  for (const leaf of leaves) {
+    if (!leaf || leaf.visible === false) continue;
+    const groups = leaf.groups || [];
+    let same = 0;
+    while (same < open.length && same < groups.length && open[same].id === groups[same].id) same++;
+    while (open.length > same) close();
+    while (open.length < groups.length) {
+      const grp = groups[open.length], g = layerBuffer(1 + open.length).getContext("2d"), [l, tp, r, b] = grp.rect;
+      g.setTransform(1, 0, 0, 1, 0, 0);
+      g.globalAlpha = 1;
+      if (r > l && b > tp) g.clearRect(l, tp, r - l, b - tp);
+      open.push({ ...grp, g });
+    }
+    if (!skip?.has(leaf)) drawClipped(under(), leaf, t);
+  }
+  while (open.length) close();
+}
+
+/** A leaf inside its clip, a whole-pixel rect (a copy's box): the renderers' own transforms don't reset it. */
+function drawClipped(ctx, o, t, fold = 1) {
+  const c = o.clip;
+  if (!c) return drawObject(ctx, o, t, null, fold);
+  if (c[2] <= c[0] || c[3] <= c[1]) return;
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.beginPath();
+  ctx.rect(c[0], c[1], c[2] - c[0], c[3] - c[1]);
+  ctx.clip();
+  drawObject(ctx, o, t, c, fold);
+  ctx.restore();
+}
+
+/** One object at its opacity (times `fold`). `clip` limits what its fills cover: the extend, mirror and tile
+ *  patterns of media, and a shape's pixels. */
+function drawObject(ctx, o, t, clip = null, fold = 1) {
+  const op = clamp01(o.opacity) * fold;
   if (op <= 0) return;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.globalAlpha = op;
-  if (isMedia(o)) drawMedia(ctx, o, t);
+  const area = clip ? [Math.max(0, clip[0]), Math.max(0, clip[1]), Math.min(W, clip[2]), Math.min(H, clip[3])] : [0, 0, W, H];
+  if (isMedia(o)) drawMedia(ctx, o, t, area);
   else if (o.type === "text") drawText(ctx, o);
-  else if (o.type === "shape") drawShape(ctx, o);
+  else if (o.type === "shape") drawShape(ctx, o, area);
   ctx.globalAlpha = 1;
 }
 
-function drawMedia(ctx, o, t) {
+function drawMedia(ctx, o, t, area = [0, 0, W, H]) {
   const m = getMedia(o.src);
   if (!m?.ready) {  // not here yet, or not at all: its box, so it can still be moved
     ctx.fillStyle = m?.error ? "rgba(255,120,90,.25)" : "rgba(140,150,160,.25)";
@@ -270,18 +475,25 @@ function drawMedia(ctx, o, t) {
     ctx.fillText(m?.error ? `can't open ${o.src}` : "loading…", o.x + o.w / 2, o.y + o.h / 2);
     return;
   }
-  const img = scaledFrame(m, o, frameIndex(m, t));
-  paint(ctx, img, Math.round(o.x), Math.round(o.y), o.fill || "none");
+  let box = o;
+  if (widgetsOn && o.keep_aspect === true) {  // the file fitted inside its box, keeping its shape: that box is drawn
+    const [fw, fh] = Array.isArray(m.info.native) ? m.info.native : [m.info.width, m.info.height];
+    const [x, y, w, h] = WV.fitAspect([rnd(o.x), rnd(o.y), Math.max(1, rnd(o.w)), Math.max(1, rnd(o.h))], o.rotate % 180 ? [fh, fw] : [fw, fh]);
+    box = { ...o, x, y, w, h };
+  }
+  const img = scaledFrame(m, box, frameIndex(m, t));
+  paint(ctx, img, rnd(box.x), rnd(box.y), o.fill || "none", area);
 }
 
-/** Draws a scaled frame at x, y, repeated outward over the whole canvas for the extend, mirror and tile fills. */
-function paint(ctx, img, x, y, fill) {
-  const dw = img.width, dh = img.height;
+/** Draws a scaled frame at x, y, repeated outward over the fill `area` ([left, top, right, bottom]: the canvas, or a
+ *  copy's clip inside it) for the extend, mirror and tile fills. The pattern stays anchored to x, y. */
+function paint(ctx, img, x, y, fill, area = [0, 0, W, H]) {
+  const dw = img.width, dh = img.height, [ax, ay, ar, ab] = area;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.imageSmoothingEnabled = false;
   if (fill === "tile" || fill === "mirror") {
     const mirror = fill === "mirror";
-    if ((W / dw + 2) * (H / dh + 2) > 300) {
+    if (((ar - ax) / dw + 2) * ((ab - ay) / dh + 2) > 300) {
       // lots of small tiles: one pattern fill, mirroring baked into a 2x2 block
       let tile = img;
       if (mirror) {
@@ -297,11 +509,11 @@ function paint(ctx, img, x, y, fill) {
       const pattern = ctx.createPattern(tile, "repeat");
       pattern.setTransform(new DOMMatrix([1, 0, 0, 1, x, y]));
       ctx.fillStyle = pattern;
-      ctx.fillRect(0, 0, W, H);
+      ctx.fillRect(ax, ay, ar - ax, ab - ay);
       return;
     }
-    for (let j = Math.floor(-y / dh); y + j * dh < H; j++) {
-      for (let i = Math.floor(-x / dw); x + i * dw < W; i++) {
+    for (let j = Math.floor((ay - y) / dh); y + j * dh < ab; j++) {
+      for (let i = Math.floor((ax - x) / dw); x + i * dw < ar; i++) {
         const fx = mirror ? i & 1 : 0, fy = mirror ? j & 1 : 0;
         ctx.setTransform(fx ? -1 : 1, 0, 0, fy ? -1 : 1, x + (i + fx) * dw, y + (j + fy) * dh);
         ctx.drawImage(img, 0, 0);
@@ -316,14 +528,14 @@ function paint(ctx, img, x, y, fill) {
   const strip = (sx, sy, sw, sh, tx, ty, tw, th) => {
     if (tw > 0 && th > 0) ctx.drawImage(img, sx, sy, sw, sh, tx, ty, tw, th);
   };
-  strip(0, 0, 1, dh, 0, y, x, dh);              // left edge column, stretched
-  strip(dw - 1, 0, 1, dh, r, y, W - r, dh);     // right
-  strip(0, 0, dw, 1, x, 0, dw, y);              // top row
-  strip(0, dh - 1, dw, 1, x, b, dw, H - b);     // bottom
-  strip(0, 0, 1, 1, 0, 0, x, y);                // corner pixels fill the corners
-  strip(dw - 1, 0, 1, 1, r, 0, W - r, y);
-  strip(0, dh - 1, 1, 1, 0, b, x, H - b);
-  strip(dw - 1, dh - 1, 1, 1, r, b, W - r, H - b);
+  strip(0, 0, 1, dh, ax, y, x - ax, dh);              // left edge column, stretched
+  strip(dw - 1, 0, 1, dh, r, y, ar - r, dh);          // right
+  strip(0, 0, dw, 1, x, ay, dw, y - ay);              // top row
+  strip(0, dh - 1, dw, 1, x, b, dw, ab - b);          // bottom
+  strip(0, 0, 1, 1, ax, ay, x - ax, y - ay);          // corner pixels fill the corners
+  strip(dw - 1, 0, 1, 1, r, ay, ar - r, y - ay);
+  strip(0, dh - 1, 1, 1, ax, b, x - ax, ab - b);
+  strip(dw - 1, dh - 1, 1, 1, r, b, ar - r, ab - b);
 }
 
 // --- Shapes --------------------------------------------------------------------------------------
@@ -392,13 +604,14 @@ function canvasFill(ctx, fill, box) {
   return null;
 }
 
-function drawShape(ctx, o) {
+/** Draws a shape, painting only within `area` ([left, top, right, bottom]: the canvas, or a copy's clip in it). */
+function drawShape(ctx, o, area = [0, 0, W, H]) {
   const stroke = o.stroke && num(o.stroke.width, 0) > 0 ? { color: hex(o.stroke.color, "#ffffff"), width: num(o.stroke.width, 1) } : null;
   const fill = o.shape === "line" || !o.fill || o.fill.type === "none" ? null : o.fill;
   if (!fill && !stroke) return;
   const box = shapeBox(o), s = stroke ? stroke.width / 2 : 0;
-  const x0 = Math.max(0, Math.floor(box.x - s - 1)), y0 = Math.max(0, Math.floor(box.y - s - 1));
-  const x1 = Math.min(W, Math.ceil(box.x + box.w + s + 1)), y1 = Math.min(H, Math.ceil(box.y + box.h + s + 1));
+  const x0 = Math.max(area[0], Math.floor(box.x - s - 1)), y0 = Math.max(area[1], Math.floor(box.y - s - 1));
+  const x1 = Math.min(area[2], Math.ceil(box.x + box.w + s + 1)), y1 = Math.min(area[3], Math.ceil(box.y + box.h + s + 1));
   if (x1 <= x0 || y1 <= y0) return;
   const bw = x1 - x0, bh = y1 - y0;
   if (shapeCv.width !== bw || shapeCv.height !== bh) { shapeCv.width = bw; shapeCv.height = bh; }
@@ -449,14 +662,23 @@ const textCtx = document.createElement("canvas").getContext("2d");  // for measu
 // one text at a time: outline (or everything), and the fill on its own for crisp text
 const glyphs = [0, 1].map(() => document.createElement("canvas").getContext("2d", { willReadFrequently: true }));
 
-/** A font file as a CSS family, loaded from the studio the first time it's asked for. */
+/** A font file as a CSS family, loaded from the studio the first time it's asked for. `path` is a scene text's font
+ *  (a path), or a widget text's font ref, "<widget id>|<file name>", which the studio looks up for that widget
+ *  (docs/widgets.md, Fonts). Those are kept by the file the lookup found, so one installed or bundled later loads. */
 function fontFace(path) {
-  const key = path.toLowerCase();  // Windows paths
+  let key = path.toLowerCase(), url = `/api/font?path=${encodeURIComponent(path)}`;  // Windows paths
+  const bar = widgetsOn ? path.indexOf("|") : -1;
+  if (bar > 0) {
+    const id = path.slice(0, bar), name = path.slice(bar + 1), found = libMeta.get(id)?.resolvedFonts?.[name];
+    if (found && !found.path) return { state: "failed" };  // not on this PC: drawn in Segoe UI
+    key = found ? `${String(found.path).toLowerCase()}|${found.stamp ?? ""}` : `${id}|${name}|?`;
+    url = `/api/font?widget=${encodeURIComponent(id)}&name=${encodeURIComponent(name)}`;
+  }
   let f = fonts.get(key);
   if (!f) {
     f = { family: `wv-font-${fonts.size}`, state: "loading" };
     fonts.set(key, f);
-    const face = new FontFace(f.family, `url("/api/font?path=${encodeURIComponent(path)}")`);
+    const face = new FontFace(f.family, `url("${url}")`);
     face.load().then(() => { document.fonts.add(face); f.state = "ready"; }, () => { f.state = "failed"; })
       .finally(() => { fontsArrived++; redraw(); thumbsSoon(); });
   }
@@ -543,10 +765,19 @@ function drawText(out, w) {
 
 // --- Boxes, hit testing -------------------------------------------------------------------------------
 
-/** An object's box on screen: the media or shape box (a line's bounding box), or the text block. */
+/** A text of the open widget as its editor draws it, its inputs filled in (the leaf it became), so its box fits
+ *  what's drawn. Anything else as it is. */
+function shown(o) {
+  if (!isWidgetHolder() || o?.type !== "text") return o;
+  for (const e of widgetView(holderWidgetId())) for (const l of e.leaves) if (l.top === o.id && l.type === "text") return l;
+  return o;
+}
+
+/** An object's box on screen: the media or shape box (a line's bounding box), the text block, or a copy's box. */
 function objBox(o) {
-  if (o.type === "text") return textLayout(o)?.box || { x: num(o.x, 0), y: num(o.y, 0), w: 0, h: 0 };
+  if (o.type === "text") return textLayout(shown(o))?.box || { x: num(o.x, 0), y: num(o.y, 0), w: 0, h: 0 };
   if (o.type === "shape") return shapeBox(o);
+  if (o.type === "widget" && widgetsOn) return copyBox(o);
   return { x: o.x, y: o.y, w: o.w, h: o.h };
 }
 
@@ -554,6 +785,10 @@ function objBox(o) {
 function handles(o) {
   if (!o || o.type === "text") return [];
   if (o.type === "shape" && o.shape === "line") return [[o.x, o.y, "a"], [o.x + o.w, o.y + o.h, "b"]];
+  if (o.type === "widget" && widgetsOn) {
+    const b = copyBox(o);
+    return [[b.x, b.y, 0], [b.x + b.w, b.y, 1], [b.x, b.y + b.h, 2], [b.x + b.w, b.y + b.h, 3]];
+  }
   return [[o.x, o.y, 0], [o.x + o.w, o.y, 1], [o.x, o.y + o.h, 2], [o.x + o.w, o.y + o.h, 3]];
 }
 
@@ -566,7 +801,7 @@ function screenPoint(e, exact = false) {
 function hitObject(o, px, py, slop) {
   const inside = (x, y, w, h, grow) => px >= x - grow && px <= x + w + grow && py >= y - grow && py <= y + h + grow;
   if (o.type === "text") {
-    const lay = textLayout(o);
+    const lay = textLayout(shown(o));
     if (!lay) return false;
     if (sel.ids.includes(o.id) && inside(lay.box.x, lay.box.y, lay.box.w, lay.box.h, slop)) return true;
     const grow = Math.max(0, num(o.outline?.width, 0)) + slop;
@@ -616,8 +851,9 @@ function redraw() {
 }
 
 function draw() {
-  const t = clock(), scene = isGlobal() ? sceneById(lastScene) : holder();
-  renderScene(sctx, scene, t, { dim: isGlobal() });
+  const t = clock();
+  if (isWidgetHolder()) renderWidget(sctx, holderWidgetId(), t);
+  else renderScene(sctx, isGlobal() ? sceneById(lastScene) : holder(), t, { dim: isGlobal() });
   drawGhost(t);
   drawOverlay();
 }
@@ -627,18 +863,32 @@ function drawGhost(t) {
   const g = ghostCv.getContext("2d"), q = ghostCv.width / (W + 2 * M), o = primary();
   g.setTransform(1, 0, 0, 1, 0, 0);
   g.clearRect(0, 0, ghostCv.width, ghostCv.height);
-  if (!view.ghost || !o || o.type === "text") return;
+  if (!view.ghost || !o || o.type === "text" || o.type === "widget") return;
   g.setTransform(q, 0, 0, q, M * q, M * q);
   g.globalAlpha = 0.3;
   if (isMedia(o)) {
-    const m = getMedia(o.src);
+    const m = holderMedia(o);
     if (!m?.ready) return;
     g.imageSmoothingEnabled = q < 1 || !!o.smooth;
-    g.drawImage(scaledFrame(m, o, frameIndex(m, t)), Math.round(o.x), Math.round(o.y));
+    g.drawImage(scaledFrame(m, o, frameIndex(m, t)), rnd(o.x), rnd(o.y));
   } else if (o.type === "shape") {
     drawShape(g, { ...o, crisp: false });
   }
   g.globalAlpha = 1;
+}
+
+/** The copies the open holder can't draw, for the overlay: [{x, y, w, h, label}] at their stored boxes. With widgets
+ *  off, every copy, as the newer page's server can't draw them. */
+function overlayMarks() {
+  const LABELS = { missing: "Missing widget: ", newer: "Made by a newer studio: ", cycle: "contains itself",
+                   deep: "more than 8 deep", budget: "too many objects" };
+  if (!widgetsOn) {
+    return layersOf().filter((l) => l.visible !== false).flatMap((l) => (l.objects || []).filter((o) => o?.type === "widget" && o.visible !== false))
+      .map((o) => ({ x: num(o.x, 0), y: num(o.y, 0), w: num(o.w, 0), h: num(o.h, 0), label: "Widget: restart the studio to see it" }));
+  }
+  const { own, over } = currentView();
+  return (isGlobal() ? over : own).flatMap((e) => e.marks)
+    .map((m) => ({ ...m, label: m.kind === "missing" || m.kind === "newer" ? LABELS[m.kind] + m.widget : LABELS[m.kind] }));
 }
 
 function drawOverlay() {
@@ -650,7 +900,18 @@ function drawOverlay() {
   g.lineWidth = css;
   g.strokeStyle = "rgba(255,255,255,.35)";
   g.strokeRect(-css / 2, -css / 2, W + css, H + css);
-  if (view.guides) {
+  for (const m of overlayMarks()) {  // copies drawn as nothing: a red dashed box with the reason
+    g.strokeStyle = "rgba(255,90,70,.95)";
+    g.setLineDash([5 * css, 4 * css]);
+    g.strokeRect(m.x, m.y, Math.max(m.w, css), Math.max(m.h, css));
+    g.setLineDash([]);
+    g.font = `${12 * css}px system-ui, "Segoe UI", sans-serif`;
+    g.fillStyle = "rgba(255,90,70,.95)";
+    g.textAlign = "left";
+    g.textBaseline = "top";
+    g.fillText(m.label, m.x + 4 * css, m.y + 3 * css);
+  }
+  if (view.guides && !isWidgetHolder()) {  // the panel's guides: a widget's container has none
     g.fillStyle = "rgba(255,176,32,.13)";
     for (const [x, y, w, h] of [[0, 0, SAFE.left, H], [W - SAFE.right, 0, SAFE.right, H],
                                 [0, 0, W, SAFE.top], [0, H - SAFE.bottom, W, SAFE.bottom]]) {
@@ -735,8 +996,8 @@ function drawOverlay() {
 
 function layout() {
   const wrap = $("stageWrap"), fw = W + 2 * M, fh = H + 2 * M;
-  view.k = view.zoom === "fit"
-    ? Math.max(0.05, Math.min((wrap.clientWidth - 24) / fw, (wrap.clientHeight - 24) / fh)) : +view.zoom;
+  view.k = view.zoom === "fit"  // at most 8: a tiny widget isn't enormous
+    ? Math.max(0.05, Math.min(8, (wrap.clientWidth - 24) / fw, (wrap.clientHeight - 24) / fh)) : +view.zoom;
   const k = view.k, res = Math.min(window.devicePixelRatio || 1, 6000 / (fw * k));
   stage.style.width = `${fw * k}px`;
   stage.style.height = `${fh * k}px`;
@@ -749,6 +1010,58 @@ function layout() {
     cv.height = Math.round(fh * k * res);
   }
   draw();
+}
+
+/** A widget's container as "<w>x<h>", read as the player reads it (one from a newer studio too). */
+function containerSize(id) {
+  const def = WV.readDef(id, { ...lib.get(id), version: 1 });
+  return `${def.w}x${def.h}`;
+}
+/** Makes the canvas the open holder's: the panel, its safe bands and camera for a scene or Global; a widget's
+ *  container, with no guides and a margin to suit, while one is open. */
+function useCanvas() {
+  const id = holderWidgetId(), def = id !== null ? WV.readDef(id, { ...lib.get(id), version: 1 }) : null;
+  const was = `${W}x${H}x${M}`;
+  if (def) {
+    [W, H, SAFE, CAMERA] = [def.w, def.h, { left: 0, right: 0, top: 0, bottom: 0 }, null];
+    M = Math.max(16, WV.rnd(Math.max(W, H) / 10));
+  } else {
+    [W, H, SAFE, CAMERA, M] = [PANEL.w, PANEL.h, { ...PANEL.safe }, PANEL.camera, 140];
+  }
+  const locked = !!def && isReadOnly(id);
+  document.body.classList.toggle("widget", !!def);
+  document.body.classList.toggle("readonly", locked);
+  for (const b of document.querySelectorAll("#tools [data-tool]")) {  // a read-only widget is for viewing
+    if (b.dataset.tool !== "select" && b.dataset.tool !== "hand") b.disabled = locked;
+  }
+  // the media fit buttons fit the container: Fit inside and Fill (no flat front, no curves)
+  $("fitFront").textContent = def ? "Fit inside" : "Fit flat front";
+  $("fitFront").title = def ? "Largest size that fits inside the widget" : "Largest size that fits on the flat front";
+  $("fillScreen").textContent = def ? "Fill" : "Fill screen";
+  $("fillScreen").title = def ? "Cover the whole widget, cropping what's left over" : "Cover the whole screen, cropping what's left over";
+  $("fitScreen").hidden = $("fillHeight").hidden = !!def;
+  if (screenCv.width !== W || screenCv.height !== H) { screenCv.width = W; screenCv.height = H; }
+  if (`${W}x${H}x${M}` !== was) layout();  // a scene after a scene keeps its zoom
+}
+
+/** Runs `fn` (one synchronous draw) with the canvas `w` x `h` and no guides: a scene's thumbnail while a widget is
+ *  open, a widget's while a scene is. Every renderer sizes and clips by W and H. */
+function withCanvasSize(w, h, fn) {
+  const was = [W, H, SAFE];
+  [W, H, SAFE] = [w, h, { left: 0, right: 0, top: 0, bottom: 0 }];
+  try { return fn(); } finally { [W, H, SAFE] = was; }
+}
+
+/** What shows behind a transparent widget in its editor (only there): "checks", "black" or "white". Kept per
+ *  browser. */
+function setBackdrop(kind) {
+  kind = ["checks", "black", "white"].includes(kind) ? kind : "checks";
+  for (const k of ["checks", "black", "white"]) document.body.classList.toggle(`backdrop-${k}`, k === kind);
+  try { localStorage.setItem("wv.backdrop", kind); } catch {}
+  return kind;
+}
+function backdrop() {
+  try { return localStorage.getItem("wv.backdrop") || "checks"; } catch { return "checks"; }
 }
 
 function setZoom(z) {
@@ -769,23 +1082,70 @@ function zoomStep(dir) {
 //
 // Every edit goes through `edit`: it snapshots the document for undo, applies the change, and then draws, refreshes
 // the panels and saves a moment later. Drags snapshot once at the start and commit at the end.
+//
+// With widgets on, one history covers the playlist and every widget that can be edited (docs/widgets.md, Undo): a
+// state holds both, with each widget's `gen`. Each entry remembers the holder its step was made in (`at`), which
+// undo and redo open, and the media refs its state names (`refs`), which the server is asked to keep while the page
+// could still undo back to them. Library actions are explicit: the server moves a folder first, then the page
+// changes; only Delete is a step (`action`), undone and redone with the server again.
 
-const hist = { undo: [], redo: [], key: "", at: 0 };
-const snapshot = () => JSON.stringify(doc);
-function pushUndo(before, key = "") {
-  const now = Date.now();
-  if (key && key === hist.key && now - hist.at < 1000 && hist.undo.length) { hist.at = now; return; }  // typing: one step
-  hist.undo.push(before);
+const hist = { undo: [], redo: [], key: "", at: 0 };  // entries: {state, at, refs, action}
+const stateRefs = new Map();  // the last few states made -> the media refs they name
+function snapshot() {
+  if (!widgetsOn) return JSON.stringify(doc);
+  const docJson = JSON.stringify(doc), parts = [], gens = {};
+  const refs = new Set([...docJson.matchAll(/"((?:sources|inputs)\/[^"\\]+)"/g)].map((m) => m[1]));
+  for (const [id, w] of lib) {
+    if (isReadOnly(id)) continue;  // nothing changes them
+    const json = JSON.stringify(w);
+    parts.push(`${JSON.stringify(id)}:${json}`);
+    gens[id] = libMeta.get(id)?.gen ?? 0;
+    for (const m of json.matchAll(/"(media\/[^"\\]+)"/g)) refs.add(`widgets/${id}/${m[1]}`);
+  }
+  const state = `{"doc":${docJson},"widgets":{${parts.join(",")}},"gens":${JSON.stringify(gens)}}`;
+  stateRefs.set(state, [...refs]);
+  while (stateRefs.size > 8) stateRefs.delete(stateRefs.keys().next().value);
+  return state;
+}
+/** The media refs a history entry's state names: `sources/…` and `inputs/…` in its playlist, and each widget's
+ *  `media/…` as `widgets/<id>/media/…`. */
+function entryRefs(e) {
+  if (e.refs) return e.refs;
+  if (stateRefs.has(e.state)) return (e.refs = stateRefs.get(e.state));
+  const refs = new Set();
+  try {
+    const s = JSON.parse(e.state);
+    if (s.widgets) {
+      for (const m of JSON.stringify(s.doc).matchAll(/"((?:sources|inputs)\/[^"\\]+)"/g)) refs.add(m[1]);
+      for (const [id, w] of Object.entries(s.widgets)) for (const m of JSON.stringify(w).matchAll(/"(media\/[^"\\]+)"/g)) refs.add(`widgets/${id}/${m[1]}`);
+    }
+  } catch {}
+  return (e.refs = [...refs]);
+}
+function pushUndo(before, key = "", action = null) {
+  const now = Date.now(), at = sel.scene;
+  if (key && widgetsOn) key += `|${at}`;  // a nudge in a widget and one in a scene are two steps
+  if (!action && key && key === hist.key && now - hist.at < 1000 && hist.undo.length) { hist.at = now; return; }  // typing: one step
+  hist.undo.push({ state: before, at, refs: null, action });
   if (hist.undo.length > 200) hist.undo.shift();
   hist.redo.length = 0;
   hist.key = key;
   hist.at = now;
 }
 
-/** Applies `fn` to the document as one undo step (`key` merges quick repeats, like typing), then refreshes. */
+/** Applies `fn` to the document as one undo step (`key` merges quick repeats, like typing), then refreshes. Refused
+ *  (nothing happens) when it would change a read-only widget. */
 function edit(fn, key = "") {
+  const locked = widgetsOn ? [...lib.keys()].filter(isReadOnly).map((id) => [id, JSON.stringify(lib.get(id))]) : [];
   const before = snapshot();
   if (fn() === false) return false;  // the change won't do (a bad value typed): nothing happened
+  if (locked.some(([id, json]) => JSON.stringify(lib.get(id)) !== json)) {
+    putBack(before);
+    for (const [id, json] of locked) lib.set(id, JSON.parse(json));
+    message(`${widgetName(holderWidgetId() ?? locked[0][0])} is read-only: duplicate it to edit.`, "warn");
+    changed({ save: false });
+    return false;
+  }
   const after = snapshot();
   if (after === before) return false;
   pushUndo(before, key);
@@ -793,28 +1153,60 @@ function edit(fn, key = "") {
   return true;
 }
 
-function restore(state) {
-  doc = JSON.parse(state);
-  if (sel.scene !== "global" && !sceneById(sel.scene)) sel.scene = doc.scenes[0]?.id ?? "global";
+/** Puts a state's document back, and each widget it holds that the library still has with the same `gen` (one
+ *  replaced from outside the history since, or made since, is left as it is). */
+function putBack(state) {
+  const s = JSON.parse(state);
+  if (!widgetsOn) { doc = s; return; }
+  doc = s.doc;
+  for (const [id, content] of Object.entries(s.widgets || {})) {
+    if (lib.has(id) && !isReadOnly(id) && (libMeta.get(id)?.gen ?? 0) === (s.gens?.[id] ?? 0)) lib.set(id, content);
+  }
+  libEpoch++;
+}
+/** Puts a state back and opens `at`, the holder its step was made in (if it's gone: where ← Back goes, else the
+ *  first scene). */
+function restore(state, at = sel.scene) {
+  putBack(state);
+  if (!widgetsOn) {
+    if (sel.scene !== "global" && !sceneById(sel.scene)) sel.scene = doc.scenes[0]?.id ?? "global";
+  } else {
+    const was = sel.scene, size = `${W}x${H}`;
+    dropStaleNav();
+    const key = holderExists(at) ? at : nav.length ? nav[nav.length - 1].key : doc.scenes[0]?.id ?? "global";
+    if (key !== was) {
+      sel.scene = key;
+      sel.ids = [];
+      sel.layer = null;
+      if (key !== "global" && !isWidgetHolder(key)) lastScene = key;
+    }
+    if (key !== was || (isWidgetHolder() && containerSize(holderWidgetId()) !== size)) useCanvas();
+  }
   sel.ids = sel.ids.filter((id) => find(id));
   if (sel.layer && !layerById(sel.layer)) sel.layer = null;
   changed();
 }
-function undo() {
-  if (!hist.undo.length) return;
-  hist.redo.push(snapshot());
+async function undo() {
+  const e = hist.undo.pop();
+  if (!e) return;
   hist.key = "";
-  restore(hist.undo.pop());
+  hist.redo.push({ state: snapshot(), at: e.at, refs: null, action: e.action });
+  restore(e.state, e.at);
+  if (e.action?.action === "delete") await restoreFolder(e.action);  // the copies are back: now the widget
 }
-function redo() {
-  if (!hist.redo.length) return;
-  hist.undo.push(snapshot());
+async function redo() {
+  const e = hist.redo[hist.redo.length - 1];
+  if (!e) return;
   hist.key = "";
-  restore(hist.redo.pop());
+  if (e.action?.action === "delete" && !(await trashFolder(e.action))) return;  // the folder first, then the page
+  hist.redo.pop();
+  hist.undo.push({ state: snapshot(), at: e.at, refs: null, action: e.action });
+  restore(e.state, e.at);
 }
 
 /** After the document changed: draw it, refresh the panels and save. */
 function changed({ save = true } = {}) {
+  docEpoch++;
   redraw();
   showLayers();
   showProps();
@@ -824,19 +1216,251 @@ function changed({ save = true } = {}) {
   if (save) saveSoon();
 }
 
-const saving = { timer: 0, last: Promise.resolve(), pending: false };
+// Saving: each widget and the playlist is its own file, saved when it differs from what was last saved (a widget's
+// `saved`, the playlist's `saving.doc`), widgets first, so the player never reads a playlist naming a widget whose
+// file isn't there yet. One flush at a time, in order.
+const saving = { timer: 0, last: Promise.resolve(), pending: false, doc: null, held: "", heldAt: 0 };
 function saveSoon(ms = 400) { saving.pending = true; clearTimeout(saving.timer); saving.timer = setTimeout(flushSave, ms); }
-function flushSave() {  // now, after the one before it, so saves arrive in order
+/** Saves now, after the one before it, so saves arrive in order. `keepalive` (only as the page goes away) is used
+ *  for a body under 60 KiB: browsers refuse bigger ones. */
+function flushSave({ keepalive = false } = {}) {
   clearTimeout(saving.timer);
   if (!saving.pending) return saving.last;
   saving.pending = false;
+  if (widgetsOn) return (saving.last = saving.last.then(() => saveAll(keepalive)));
   const body = snapshot();
   return (saving.last = saving.last.then(() => api("/api/playlist", { method: "POST", headers: { "Content-Type": "application/json" },
                                                                     body, keepalive: true }).then(async (res) => {
     if (!res.ok) throw new Error((await res.json()).error || res.statusText);
   })).catch((err) => message(`Couldn't save the playlist: ${err.message}`, "warn")));
 }
-window.addEventListener("pagehide", flushSave);
+window.addEventListener("pagehide", () => flushSave({ keepalive: true }));
+const small = (body) => new Blob([body]).size < 60 * 1024;
+
+async function saveAll(keepalive) {
+  await holdMedia(keepalive);
+  for (const id of [...lib.keys()]) {
+    const meta = libMeta.get(id), content = lib.get(id);
+    if (!meta || !content || isReadOnly(id) || conflicts.has(id)) continue;
+    const body = JSON.stringify(content);
+    if (body === meta.saved && !meta.force) continue;
+    const req = JSON.stringify({ id, widget: content, stamp: meta.stamp, ...(meta.force ? { force: true } : {}) });
+    let res, out;
+    try {
+      res = await api("/api/widgets/save", { method: "POST", headers: { "Content-Type": "application/json" }, body: req,
+                                             keepalive: keepalive && small(req) });
+      out = await res.json().catch(() => ({}));
+    } catch (err) {
+      message(`Couldn't save the widget ${widgetName(id)}: ${err.message}`, "warn");
+      continue;
+    }
+    if (libMeta.get(id) !== meta) continue;  // dropped from the library meanwhile
+    if (res.ok) {
+      meta.stamp = out.stamp ?? meta.stamp;
+      meta.force = false;
+      if (JSON.stringify(lib.get(id)) === body && out.widget && typeof out.widget === "object") {
+        lib.set(id, out.widget);  // as the server wrote it (normalised), without an undo step
+        meta.saved = JSON.stringify(out.widget);
+        libEpoch++;
+        docEpoch++;
+        redraw();
+      } else meta.saved = body;  // changed meanwhile: those edits stay to save, and the next save normalises them
+    } else if (res.status === 409) askConflict(id);
+    else if (res.status === 404) widgetGone(id);
+    else message(`Couldn't save the widget ${widgetName(id)}: ${out.error || res.statusText}`, "warn");
+  }
+  const body = JSON.stringify(doc);
+  if (body === saving.doc) return;  // editing only a widget doesn't rewrite playlist.json
+  try {
+    const res = await api("/api/playlist", { method: "POST", headers: { "Content-Type": "application/json" }, body,
+                                             keepalive: keepalive && small(body) });
+    if (!res.ok) throw new Error((await res.json()).error || res.statusText);
+    saving.doc = body;
+  } catch (err) {
+    message(`Couldn't save the playlist: ${err.message}`, "warn");
+  }
+}
+
+/** Asks the server to keep every file the history could still undo back to (docs/widgets.md, Undo): when that set
+ *  changed since the last time, or every 5 minutes. */
+async function holdMedia(keepalive) {
+  const refs = [...new Set([...hist.undo, ...hist.redo].flatMap(entryRefs))].sort(), key = JSON.stringify(refs);
+  if (!refs.length || (key === saving.held && Date.now() - saving.heldAt < 5 * 60e3)) return;
+  try {
+    const body = JSON.stringify({ refs });
+    const res = await api("/api/media/hold", { method: "POST", headers: { "Content-Type": "application/json" }, body,
+                                               keepalive: keepalive && small(body) });
+    if (res.ok) [saving.held, saving.heldAt] = [key, Date.now()];
+  } catch {}
+}
+
+// --- The library: widgets as the server has them ------------------------------------------------------
+
+const lostGens = new Map();  // id -> the gen a widget had when it left the library, should it come back
+const conflicts = new Set(); // widgets changed both here and on disk, waiting for an answer
+
+/** Adds a widget the server has (an entry of GET /api/widgets, or what New, Duplicate, Import or Restore answer:
+ *  {id, widget, stamp, ...}) to the library, outside the history. */
+function libAdd(e) {
+  const old = libMeta.get(e.id);
+  lib.set(e.id, e.widget);
+  libMeta.set(e.id, { stamp: e.stamp ?? null, gen: old?.gen ?? lostGens.get(e.id) ?? 0, saved: JSON.stringify(e.widget),
+                      resolvedFonts: e.resolved_fonts || old?.resolvedFonts || {}, ownFonts: e.own_fonts || old?.ownFonts || [],
+                      readOnly: e.read_only ?? old?.readOnly ?? null, force: false });
+  libEpoch++;
+}
+/** The one way content under an id the library holds is replaced from outside the history (a change on disk, Use
+ *  the file's version, Import with Replace, Restore): every undo and redo state takes it too, so no undo or redo can
+ *  write the older content back over it. */
+function takeInWidget(id, content, stamp) {
+  const meta = libMeta.get(id) || { gen: lostGens.get(id) ?? 0 };
+  meta.gen = (meta.gen ?? 0) + 1;
+  libAdd({ id, widget: content, stamp });
+  libMeta.get(id).gen = meta.gen;
+  rewriteHistory(id, content, meta.gen);
+}
+/** Drops a widget from the library (its copies show as missing). `history`: from every undo and redo state too, for
+ *  a folder gone from disk. */
+function libDrop(id, { history = false } = {}) {
+  if (libMeta.has(id)) lostGens.set(id, libMeta.get(id).gen);
+  lib.delete(id);
+  libMeta.delete(id);
+  conflicts.delete(id);
+  libEpoch++;
+  if (history) rewriteHistory(id, undefined);
+  if (holderWidgetId() === id) {  // it was open: back to where you came from
+    dropStaleNav();
+    const back = nav.pop();
+    openHolder(back?.key ?? doc.scenes[0]?.id ?? "global");
+  }
+}
+function rewriteHistory(id, content, gen) {
+  for (const e of [...hist.undo, ...hist.redo]) {
+    if (!e.state.includes(JSON.stringify(id))) continue;
+    const s = JSON.parse(e.state);
+    if (!s.widgets || !Object.hasOwn(s.widgets, id)) continue;
+    if (content === undefined) { delete s.widgets[id]; delete s.gens?.[id]; }
+    else { s.widgets[id] = content; (s.gens ||= {})[id] = gen; }
+    e.state = JSON.stringify(s);
+    e.refs = null;
+  }
+}
+
+/** Reads the library again (GET /api/widgets): new folders come in, gone ones go, fonts are found again, and a
+ *  widget whose file changed outside this page is taken in, or, with unsaved changes here too, asked about. `take`
+ *  lists widgets whose file wins anyway (Use the file's version). */
+async function refreshLibrary(take = []) {
+  let out;
+  try {
+    const res = await api("/api/widgets");
+    out = await res.json();
+    if (!res.ok) throw new Error(out.error || res.statusText);
+  } catch (err) {
+    return message(`Couldn't read the widgets: ${err.message}`, "warn");
+  }
+  const seen = new Set();
+  for (const e of Array.isArray(out.widgets) ? out.widgets : []) {
+    if (!e || typeof e.id !== "string") continue;
+    seen.add(e.id);
+    const meta = libMeta.get(e.id);
+    if (!meta) { libAdd(e); continue; }
+    Object.assign(meta, { resolvedFonts: e.resolved_fonts || {}, ownFonts: e.own_fonts || [], readOnly: e.read_only ?? null });
+    if (JSON.stringify(e.stamp) === JSON.stringify(meta.stamp)) continue;
+    if (JSON.stringify(lib.get(e.id)) === meta.saved || take.includes(e.id)) takeInWidget(e.id, e.widget, e.stamp);
+    else askConflict(e.id);
+  }
+  for (const id of [...lib.keys()]) if (!seen.has(id)) libDrop(id, { history: true });
+  libProblems = Array.isArray(out.problems) ? out.problems : [];
+  libDeleted = Array.isArray(out.deleted) ? out.deleted : [];
+  libEpoch++;
+  fontsShown = "";
+  changed({ save: false });
+}
+let libPolled = 0;
+window.addEventListener("focus", () => {  // folders copied in by hand, edits from elsewhere: at most every 2 s
+  if (!widgetsOn || Date.now() - libPolled < 2000) return;
+  libPolled = Date.now();
+  saving.last = saving.last.then(() => refreshLibrary());
+});
+
+/** A widget changed both here and on disk: library.js's #conflictDlg asks which to keep (its `openConflict(id)`),
+ *  then calls keepConflict. Until it's there, a plain question. */
+function askConflict(id) {
+  if (conflicts.has(id)) return;
+  conflicts.add(id);
+  if (typeof openConflict === "function") return openConflict(id);
+  keepConflict(id, confirm(`${widgetName(id)} was changed outside this page too. OK keeps yours, Cancel takes the file's version.`));
+}
+/** Settles a conflict: `mine` saves this page's version over the file, else the file's version is taken in. */
+async function keepConflict(id, mine) {
+  conflicts.delete(id);
+  const meta = libMeta.get(id);
+  if (!meta) return;
+  if (mine) { meta.force = true; saveSoon(0); }
+  else saving.last = saving.last.then(() => refreshLibrary([id]));
+}
+/** A save found the widget's folder gone: offers to restore it from Recently deleted, else forgets it. */
+async function widgetGone(id) {
+  const name = widgetName(id);
+  await refreshDeleted();
+  const trash = libDeleted.find((d) => d.id === id)?.trash;
+  if (trash && confirm(`${name} was deleted outside this page. Restore it? (Cancel forgets it.)`)) {
+    try {
+      const out = await postJson("/api/widgets/restore", { trash });
+      const meta = libMeta.get(id);
+      if (meta) { meta.stamp = out.stamp; meta.saved = JSON.stringify(out.widget); }  // this page's edits save over it
+      return saveSoon(0);
+    } catch (err) {
+      message(`Couldn't restore ${name}: ${err.message}`, "warn");
+    }
+  } else message(`${name} was deleted outside this page.`, "warn");
+  libDrop(id, { history: true });
+  changed({ save: false });
+}
+async function refreshDeleted() {
+  try { libDeleted = (await (await api("/api/widgets")).json()).deleted || libDeleted; } catch {}
+}
+
+/** Moves a widget's folder to Recently deleted (the server first) and drops it from the library. Its trash name,
+ *  or null when that didn't happen (in use, say): then nothing has changed. */
+async function trashFolder(action) {
+  try {
+    const out = await postJson("/api/widgets/delete", { id: action.id });
+    action.trash = out.trash;
+  } catch (err) {
+    message(`Couldn't delete ${widgetName(action.id)}: ${err.message}`, "warn");
+    return null;
+  }
+  libDrop(action.id);
+  return action.trash;
+}
+/** Brings a deleted widget's folder back (undoing a delete). If its id is taken, says so and leaves its copies
+ *  showing as missing. */
+async function restoreFolder(action) {
+  try {
+    const out = await postJson("/api/widgets/restore", { trash: action.trash });
+    if (lib.has(out.id)) takeInWidget(out.id, out.widget, out.stamp);
+    else libAdd(out);
+    saving.last = saving.last.then(() => refreshLibrary());  // its fonts and the deleted list
+  } catch (err) {
+    message(`Couldn't bring ${action.id} back: ${err.message}`, "warn");
+  }
+  changed({ save: false });
+}
+/** Deletes widget `id` as one undo step (docs/widgets.md, Undo): its folder moves to Recently deleted first; then,
+ *  with `copies`, every copy of it goes too, in the playlist and in each widget that isn't read-only. Ctrl+Z brings
+ *  back both. Resolves to whether it happened. */
+async function deleteWidget(id, { copies = false } = {}) {
+  const action = { action: "delete", id, trash: null }, before = snapshot();
+  if (!(await trashFolder(action))) return false;
+  if (copies) {
+    const holders = [doc.global, ...doc.scenes, ...[...lib].filter(([w]) => !isReadOnly(w)).map(([, c]) => c)];
+    for (const h of holders) for (const l of layersOf(h)) l.objects = (l.objects || []).filter((o) => !(o?.type === "widget" && o.widget === id));
+  }
+  pushUndo(before, "", action);
+  changed();
+  return true;
+}
 
 // --- Selection ----------------------------------------------------------------------------------
 
@@ -850,16 +1474,61 @@ function select(ids, layer = null) {
 }
 function toggleSelect(id) { select(sel.ids.includes(id) ? sel.ids.filter((i) => i !== id) : [...sel.ids, id]); }
 
-/** Opens a scene (or "global") for editing. */
-function showScene(id) {
-  if (id !== "global") lastScene = id;
-  else if (!lastScene) lastScene = doc.scenes[0]?.id ?? null;
-  sel.scene = id;
+/** Opens a scene, "global" or "widget:<id>" for editing (docs/widgets.md, The widget editor). With `back` (Edit
+ *  widget, a "Used in" link) where you were goes onto `nav`, for ← Back. `preview` ({holder, copy}: the copy a
+ *  widget was opened from) fills the widget in with that copy's values instead of its defaults. */
+function openHolder(key, { back = false, preview = null } = {}) {
+  if (widgetsOn && !holderExists(key)) return;
+  if (back && sel.scene !== null && sel.scene !== key) nav.push({ key: sel.scene, ids: [...sel.ids] });
+  if (key === "global") { if (!lastScene) lastScene = doc.scenes[0]?.id ?? null; }
+  else if (!isWidgetHolder(key)) lastScene = key;
+  sel.scene = key;
   sel.ids = [];
-  sel.layer = null;  // nothing selected: the scene's own properties show
+  sel.layer = null;  // nothing selected: the scene's (or widget's) own properties show
+  view.preview = isWidgetHolder(key) ? preview : null;
   endDrag();
-  $("sceneTitle").textContent = id === "global" ? "Global layers (over every scene)" : (holder()?.name || "scene");
+  if (widgetsOn) useCanvas();
+  showTitle();
   changed({ save: false });
+}
+const showScene = (id) => openHolder(id);
+
+/** Drops the ← Back entries whose holder is gone (a scene deleted, a widget deleted or gone from disk). */
+function dropStaleNav() {
+  for (let i = nav.length - 1; i >= 0; i--) if (!holderExists(nav[i].key)) nav.splice(i, 1);
+}
+/** A holder's name as the page shows it. */
+function holderName(key) {
+  return key === "global" ? "Global" : isWidgetHolder(key) ? widgetName(holderWidgetId(key)) : sceneById(key)?.name || "scene";
+}
+
+/** The title over the canvas: the scene, Global, or `Widget: <name> · <w> × <h> · used by <n> copies`; then ← Back
+ *  while there's somewhere to go back to, what a widget is previewed with, and why it's read-only. */
+function showTitle() {
+  const id = holderWidgetId();
+  if (id === null) $("sceneTitle").textContent = sel.scene === "global" ? "Global layers (over every scene)" : (holder()?.name || "");
+  else {
+    let n = 0;
+    for (const list of WV.uses(lib, doc, closureMemo()).get(id) || []) n += list.direct;
+    $("sceneTitle").textContent = `Widget: ${widgetName(id)} · ${containerSize(id).replace("x", " × ")} · used by ${n} cop${n === 1 ? "y" : "ies"}`;
+  }
+  dropStaleNav();
+  const top = nav[nav.length - 1];
+  $("back").hidden = !top;
+  $("back").textContent = top ? `← Back to ${holderName(top.key)}` : "";
+  if (!widgetsOn) return;
+  const copy = id !== null && view.preview ? findCopy(view.preview.holder, view.preview.copy) : null;
+  const note = $("previewNote"), why = $("readOnlyNote");
+  if (copy?.widget === id) {
+    const h = view.preview.holder, inside = isWidgetHolder(h) ? ` (${holderName(h)}'s defaults)` : "";
+    $("previewText").textContent = `Previewing with ${copy.name || widgetName(id)} in ${holderName(h)}${inside} · `;
+    note.hidden = false;
+  } else note.hidden = true;
+  why.hidden = !(id !== null && isReadOnly(id));
+  if (!why.hidden) {
+    $("readOnlyText").textContent = typeof lib.get(id)?.version === "number" && lib.get(id).version > 1 || libMeta.get(id)?.readOnly === "newer"
+      ? "Made by a newer studio: shown read-only. " : "An example: shown read-only, as it's shipped with the studio. ";
+  }
 }
 
 /** The layer new objects go on: the selected one, else the topmost usable one, made if there is none. */
@@ -942,15 +1611,16 @@ function duplicateSelected() {
 const SNAP_REACH = 10;  // CSS pixels on screen
 function snapLines() {
   const unique = (a) => [...new Set(a)];
+  if (isWidgetHolder()) return { x: [0, W / 2, W], y: [0, H / 2, H] };  // a container's edges and centre lines
   return { x: unique([0, W, SAFE.left, W - SAFE.right]), y: unique([0, H, SAFE.top, H - SAFE.bottom]) };
 }
-/** Shifts a span starting at `start` so whichever end is nearest a line within reach sits on it.
- *  Returns [new start, the line, or null]. */
+/** Shifts a span starting at `start` so whichever end (or in a widget, its centre) is nearest a line within reach
+ *  sits on it. Returns [new start, the line, or null]. */
 function snapSpan(start, size, lines) {
   const reach = SNAP_REACH / view.k;
   let best = null;
   for (const line of lines) {
-    for (const edge of [start, start + size]) {
+    for (const edge of isWidgetHolder() ? [start, start + size, start + size / 2] : [start, start + size]) {
       if (Math.abs(line - edge) <= reach && (!best || Math.abs(line - edge) < Math.abs(best.line - best.edge)))
         best = { line, edge };
     }
@@ -967,9 +1637,14 @@ function snapPoint(v, lines) {
 
 // --- Media placement and sizing -------------------------------------------------------------------
 
-/** The art size of a media object: its turned source in art pixels (file pixels / `pixel`). */
+/** The art size of a media object: its turned source in art pixels (file pixels / `pixel`). A copy's is its
+ *  widget's container (its stored size when the widget can't be drawn). */
 function artSize(o) {
-  const m = getMedia(o.src);
+  if (o.type === "widget" && widgetsOn) {
+    const def = WV.idOk(o.widget) && lib.has(o.widget) ? WV.readDef(o.widget, lib.get(o.widget)) : null;
+    return def && !def.problem ? [def.w, def.h] : [Math.max(1, num(o.w, 1)), Math.max(1, num(o.h, 1))];
+  }
+  const m = holderMedia(o);
   if (!m?.info) return [Math.max(1, o.w), Math.max(1, o.h)];
   const [w, h] = turnedSize(m, o), p = Math.max(1, num(o.pixel, 1));
   return [w / p, h / p];
@@ -992,25 +1667,31 @@ function fitMedia(o, box, cover) {
   o.y = Math.round(box.y + (box.h - o.h) / 2);
 }
 
-/** A new image or video object from an upload's info, fitted to the flat front, or centred where it was dropped. */
+/** A new image or video object from an upload's info, fitted to the flat front (a widget's container), or centred
+ *  where it was dropped. In a widget, `info.src` is the file's path in its folder and `info.ref` its media ref. */
 function placeMedia(info, at = null) {
   const o = { id: "", type: info.type === "video" ? "video" : "image", name: info.name.replace(/\.[^.]+$/, ""), visible: true, locked: false,
               opacity: 1, x: 0, y: 0, w: info.width, h: info.height, rotate: 0, flip: false, src: info.src, smooth: false, fill: "none",
               pixel: Math.max(1, num(info.pixel, 1)) };
-  const m = getMedia(info.src);
+  const m = getMedia(isWidgetHolder() ? info.ref || mediaRef(info.src) : info.src);
   if (!m.info) { useMediaInfo(m, info); loadFrames(m).catch((err) => { m.error = err.message; redraw(); }); }
   fitMedia(o, FRONT(), false);
   if (at) { o.x = Math.round(at[0] - o.w / 2); o.y = Math.round(at[1] - o.h / 2); }
   addObject(o);
-  if (holder() && !isGlobal() && hex(holder().background, null) === null) holder().background = "#000000";
+  // a scene's background goes black under its first picture; a widget's stays as its author set it
+  if (holder() && !isGlobal() && !isWidgetHolder() && hex(holder().background, null) === null) holder().background = "#000000";
   return o;
 }
 
 async function uploadFile(file, at = null) {
   if (!holder()) return message("Add a scene first.", "warn");
+  const id = holderWidgetId();
+  if (id !== null && isReadOnly(id)) return message(`${widgetName(id)} is read-only: duplicate it to edit.`, "warn");
   message(`Opening ${file.name}…`);
   try {
-    const res = await api(`/api/upload?name=${encodeURIComponent(file.name)}`, { method: "POST", body: file });
+    const url = id !== null ? `/api/widgets/upload?id=${encodeURIComponent(id)}&name=${encodeURIComponent(file.name)}`
+      : `/api/upload?name=${encodeURIComponent(file.name)}`;  // into the open widget's media\, or the playlist's sources\
+    const res = await api(url, { method: "POST", body: file });
     const info = await res.json();
     if (!res.ok) throw new Error(info.error || res.statusText);
     placeMedia(info, at);
@@ -1023,8 +1704,8 @@ async function uploadFile(file, at = null) {
 
 function newText(x, y) {
   return { id: "", type: "text", name: "Text", visible: true, locked: false, opacity: 1, x, y, w: 0, h: 0, rotate: 0, flip: false,
-           text: "Text", font: DEFAULT_FONT, size: 48, color: "#ffffff", align: "left", valign: "top", line_height: 1.2,
-           outline: { color: "#000000", width: 0 }, crisp: false };
+           text: "Text", font: isWidgetHolder() ? "" : DEFAULT_FONT,  // a widget's fonts are file names: "" is Segoe UI
+           size: 48, color: "#ffffff", align: "left", valign: "top", line_height: 1.2, outline: { color: "#000000", width: 0 }, crisp: false };
 }
 function newShape(kind, x, y, w, h) {
   const o = { id: "", type: "shape", name: { rect: "Rectangle", ellipse: "Ellipse", line: "Line" }[kind], visible: true, locked: false,
@@ -1068,7 +1749,8 @@ stage.addEventListener("pointerdown", (e) => {
     const [px, py] = screenPoint(e), what = view.picking;
     setPicking(null);
     if (px >= 0 && py >= 0 && px < W && py < H && what === "bg" && !isGlobal() && holder()) {
-      const [r, g, b] = sctx.getImageData(px, py, 1, 1).data;
+      const [r, g, b, a] = sctx.getImageData(px, py, 1, 1).data;
+      if (isWidgetHolder() && a === 0) return;  // a widget's transparent pixels: no colour to take
       edit(() => { holder().background = `#${[r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("")}`; });
     }
     return;
@@ -1076,6 +1758,11 @@ stage.addEventListener("pointerdown", (e) => {
   if (!holder()) return;
   try { stage.setPointerCapture(e.pointerId); } catch {}
   const [px, py] = screenPoint(e, true);
+  if (isReadOnly(holderWidgetId())) {  // for viewing: things can be selected, nothing moves or is added
+    const hit = objectAt(e);
+    select(hit ? [hit.obj.id] : []);
+    return;
+  }
   if (tool.name === "text") {
     const o = addObject(newText(Math.round(px), Math.round(py)));
     setTool("select");
@@ -1149,7 +1836,7 @@ function moveTo(e) {
     const o = find(s.id)?.obj;
     if (o && (o.x !== s.x + dx || o.y !== s.y + dy)) { o.x = s.x + dx; o.y = s.y + dy; moved = true; }
   }
-  if (moved) { redraw(); showProps(); } else drawOverlay();
+  if (moved) { docEpoch++; redraw(); showProps(); } else drawOverlay();
 }
 
 /** Resizes from the dragged handle: media keep their shape (and snap to whole-number scales), shapes are free,
@@ -1194,7 +1881,7 @@ function resizeTo(e) {
       o.x = x0; o.y = y0; o.w = Math.max(1, x1 - x0); o.h = Math.max(1, y1 - y0);
     }
   }
-  if ([o.x, o.y, o.w, o.h].join() !== before) { redraw(); showProps(); } else drawOverlay();
+  if ([o.x, o.y, o.w, o.h].join() !== before) { docEpoch++; redraw(); showProps(); } else drawOverlay();
 }
 
 function endDrag() {
@@ -1301,8 +1988,13 @@ window.addEventListener("paste", (e) => {
 // reorder objects or move them between layers, and to reorder layers.
 
 /** Whether a text object is live (has a placeholder), and whether the player will have to draw it on top of
- *  everything: something animated is above it, in its scene or the global layers. */
+ *  everything: something animated is above it, in its scene or the global layers (docs/widgets.md, Live text). */
 function liveOnTop(o, h = holder()) {
+  if (widgetsOn) {
+    if (o.type !== "text") return false;
+    const { place } = currentView();
+    return !!place?.onTop && place.live.some((l) => l === o || (isWidgetHolder() && l.top === o.id));
+  }
   if (o.type !== "text" || !isLive(o.text)) return false;
   let above = false;
   const stacks = h === doc.global ? [doc.global] : [h, doc.global];
@@ -1316,6 +2008,31 @@ function liveOnTop(o, h = holder()) {
     }
   }
   return false;
+}
+
+/** The open holder's objects as drawn: each one's leaves, by its id; why each copy that draws nothing doesn't; and
+ *  the live placement. */
+function drawnObjects() {
+  const { own, over, place } = currentView(), leaves = new Map(), marks = new Map();
+  for (const e of isGlobal() ? over : own) {
+    for (const l of e.leaves) {
+      const k = l.top ?? l.id;
+      if (!leaves.has(k)) leaves.set(k, []);
+      leaves.get(k).push(l);
+    }
+    for (const m of e.marks) marks.set(m.id, m.kind);
+  }
+  return { leaves, marks, place };
+}
+/** Whether an object of a widget uses one of its inputs: a reference in its text, a bound colour, tint or picture,
+ *  or a copy's value passing one down. */
+function usesInput(o) {
+  let found = false;
+  const look = (v) => { if (typeof v === "string") WV.replaceRefs(v, () => { found = true; return null; }); };
+  for (const v of [o.text, o.color, o.outline?.color, o.fill?.color, o.stroke?.color, o.src, o.tint]) look(v);
+  for (const s of Array.isArray(o.fill?.stops) ? o.fill.stops : []) look(s?.color);
+  if (o.type === "widget" && o.inputs && typeof o.inputs === "object") for (const v of Object.values(o.inputs)) look(v);
+  return found;
 }
 
 const dnd = { kind: null, id: null };  // what's being dragged in the panel
@@ -1338,7 +2055,7 @@ function showLayers() {
     input.addEventListener("keydown", (ev) => { if (ev.key === "Enter") input.blur(); else if (ev.key === "Escape") { input.value = get(); input.blur(); } ev.stopPropagation(); });
     input.addEventListener("click", (ev) => ev.stopPropagation());
   });
-  const layers = layersOf(h);
+  const layers = layersOf(h), drawn = widgetsOn ? drawnObjects() : null;
   for (let li = layers.length - 1; li >= 0; li--) {
     const layer = layers[li], item = make("li", "layer"), row = make("div", `row${layer.visible === false ? " hidden-row" : ""}${!sel.ids.length && sel.layer === layer.id ? " selected" : ""}`);
     row.draggable = true;
@@ -1358,20 +2075,35 @@ function showLayers() {
       const r = make("div", `row${o.visible === false ? " hidden-row" : ""}${sel.ids.includes(o.id) ? " selected" : ""}`);
       r.draggable = true;
       r.dataset.obj = o.id;
-      const icon = make("span", "icon", { image: "🖼", video: "🎞", text: "T", shape: { rect: "▭", ellipse: "◯", line: "╱" }[o.shape] || "▭" }[o.type] || "?");
-      const n = make("span", "name", o.name || (o.type === "text" ? String(o.text ?? "").split("\n")[0] : o.id) || o.id);
-      n.title = o.type === "text" ? String(o.text ?? "") : o.src || "";
+      const copy = widgetsOn && o.type === "widget";
+      const icon = make("span", "icon", copy ? "▣" : { image: "🖼", video: "🎞", text: "T", shape: { rect: "▭", ellipse: "◯", line: "╱" }[o.shape] || "▭" }[o.type] || "?");
+      // a copy without a name of its own goes by its widget's current name
+      const n = make("span", "name", o.name || (copy ? widgetName(o.widget) : o.type === "text" ? String(o.text ?? "").split("\n")[0] : o.id) || o.id);
+      n.title = copy ? `Copy of ${widgetName(o.widget)} (widgets\\${o.widget})` : o.type === "text" ? String(o.text ?? "") : o.src || "";
       rename(n, () => o.name || "", (v) => { find(o.id).obj.name = v; });
       r.append(tog(o.visible !== false, "eye", "Shown: click to hide", "Hidden: click to show", () => edit(() => { const x = find(o.id).obj; x.visible = x.visible === false; })),
                tog(!!o.locked, "lock", "Locked: click to unlock", "Unlocked: click to lock", () => edit(() => { const x = find(o.id).obj; x.locked = !x.locked; })),
                icon, n);
-      if (isAnimated(o)) { const b = make("span", "badge anim", "anim"); b.title = "Animated: loops on its own timing"; r.append(b); }
-      if (o.type === "text" && isLive(o.text)) {
-        const top = liveOnTop(o, h), b = make("span", "badge" + (top ? " top" : " live"), top ? "live, on top" : "live");
+      // what a copy, or a widget's own object, draws is its leaves: badges come from them
+      const leaves = drawn?.leaves.get(o.id) || [], inside = !!drawn && (copy || isWidgetHolder());
+      if (inside ? leaves.some((l) => isAnimated(l)) : isAnimated(o, sel.scene)) {
+        const b = make("span", "badge anim", "anim"); b.title = "Animated: loops on its own timing"; r.append(b);
+      }
+      if (inside ? leaves.some((l) => l.type === "text" && l.live) : o.type === "text" && isLive(o.text)) {
+        const top = inside ? !!drawn.place?.onTop && leaves.some((l) => drawn.place.fold.has(l)) : liveOnTop(o, h);
+        const b = make("span", "badge" + (top ? " top" : " live"), top ? "live, on top" : "live");
         b.title = top ? "Live text with something animated above it: the player draws it on top of everything"
           : "Live text: the player fills in its values while playing";
         r.append(b);
       }
+      const why = drawn?.marks.get(o.id);
+      if (why) {
+        const b = make("span", "badge warn", { missing: "missing", newer: "newer", cycle: "cycle", deep: "too deep", budget: "too many" }[why]);
+        b.title = { missing: `There's no widget ${o.widget} in widgets\\`, newer: "Made by a newer studio", cycle: "It contains itself",
+                    deep: "More than 8 copies deep", budget: "Too many objects in this scene's copies" }[why];
+        r.append(b);
+      }
+      if (isWidgetHolder() && usesInput(o)) { const b = make("span", "badge in", "in"); b.title = "Uses an input of this widget"; r.append(b); }
       if (clamp01(o.opacity) < 1) r.append(make("span", "badge op", `${Math.round(100 * clamp01(o.opacity))}%`));
       r.addEventListener("click", (e) => { if (e.shiftKey) toggleSelect(o.id); else select([o.id]); });
       dragRow(r, "obj", o.id);
@@ -1504,7 +2236,10 @@ function fillProps() {
     set("sSeconds", num(h.seconds, 30));
     set("sBg", hex(h.background, "#000000"));
     const n = layersOf(h).reduce((a, l) => a + (l.objects || []).length, 0);
-    $("sceneNote").textContent = `${layersOf(h).length} layer${layersOf(h).length === 1 ? "" : "s"}, ${n} object${n === 1 ? "" : "s"}. Click an object on the canvas or in Layers to edit it.`;
+    const first = `${layersOf(h).length} layer${layersOf(h).length === 1 ? "" : "s"}, ${n} object${n === 1 ? "" : "s"}. Click an object on the canvas or in Layers to edit it.`;
+    const more = widgetsOn ? sceneNotes(h) : [];
+    if (more.length) $("sceneNote").replaceChildren(...[first, ...more].map((line) => make("div", "", line)));
+    else $("sceneNote").textContent = first;
   }
   if (layer) {
     set("lName", layer.name || "");
@@ -1513,7 +2248,7 @@ function fillProps() {
   }
   if (!$("pWidget").hidden) showWidgetProps(holderWidgetId());
   if (!p) return;
-  $("oKind").textContent = { image: "Image", video: "Video", text: "Text", shape: "Shape" }[p.type] || p.type;
+  $("oKind").textContent = { image: "Image", video: "Video", text: "Text", shape: "Shape", widget: "Widget copy" }[p.type] || p.type;
   set("oName", p.name || "");
   set("oOpacity", Math.round(100 * clamp01(p.opacity)));
   set("oOpacityR", Math.round(100 * clamp01(p.opacity)));
@@ -1530,8 +2265,52 @@ function fillProps() {
   else showShapeProps(p);
 }
 
+/** What the scene note adds (docs/widgets.md, Live text; Animation and the timeline): that live values here redraw
+ *  every frame of an animation, and which copy's animation stretches the loop to the 60 s cap. */
+function sceneNotes(h) {
+  const own = expanded(h), over = expanded(doc.global), notes = [];
+  const moving = [...own, ...over].flatMap((e) => e.leaves).filter((l) => isAnimated(l));
+  if (!moving.length) return notes;
+  if (WV.placement([own, over], (l) => isAnimated(l)).live.length) {
+    const { frames } = timeline(moving);
+    notes.push(`Live values here redraw ${frames} frame${frames === 1 ? "" : "s"} each time they change, so the cooler updates them less often (the longer the animation, the longer between updates).`);
+  }
+  const plain = moving.filter((l) => !WV.isLeaf(l));
+  if (!timeline(moving).capped || timeline(plain).capped) return notes;
+  for (const [stack, holderOf, loop] of [[own, h, "this scene's loop"], [over, doc.global, "every scene's loop"]]) {
+    const tops = [...new Set(stack.flatMap((e) => e.leaves).filter((l) => WV.isLeaf(l)).map((l) => l.top))];
+    for (const top of tops) {
+      if (!timeline([...plain, ...moving.filter((l) => WV.isLeaf(l) && l.top === top)]).capped) continue;
+      const copy = find(top, holderOf)?.obj;
+      notes.push(`${widgetName(copy?.widget)}'s animation makes ${loop} 60 s long.`);
+      return notes;
+    }
+  }
+  return notes;
+}
+/** The player's timeline (scene.rs) over animated leaves: how many frames one cycle has, and whether the cycle (the
+ *  least common multiple of their loops) reached the 60 s cap. */
+function timeline(leaves) {
+  const loops = [...new Set(leaves.map((l) => media.get(l.src)))].filter((m) => m?.ready && m.starts.length > 1);
+  if (!loops.length) return { frames: 1, capped: false };
+  const gcd = (a, b) => (b ? gcd(b, a % b) : a), CAP = 60000;
+  let cycle = 1, capped = false;
+  for (const m of loops) {
+    const l = Math.max(1, Math.round(m.total));
+    cycle = cycle / gcd(cycle, l) * l;
+    if (cycle >= CAP) { cycle = CAP; capped = true; break; }
+  }
+  const times = new Set();
+  for (const m of loops) {
+    for (let base = 0; base < cycle; base += m.total) for (const s of m.starts) { if (base + s >= cycle) break; times.add(base + s); }
+  }
+  let frames = 0, last = -Infinity;
+  for (const t of [...times].sort((a, b) => a - b)) if (t - last >= 20) { frames++; last = t; }
+  return { frames, capped };
+}
+
 function showMediaProps(p) {
-  const m = getMedia(p.src), info = m?.info;
+  const m = holderMedia(p), info = m?.info;
   $("mKind").textContent = p.type === "video" ? "Video" : "Image";
   const [aw, ah] = artSize(p), s = scaleOf(p);
   $("mInfo").textContent = !info ? (m?.error ? `Can't open ${p.src}: ${m.error}` : "Loading…")
@@ -1589,6 +2368,10 @@ function showShapeProps(o) {
 let fontsShown = "";
 /** The font picker: the fonts whose names have every word typed in the filter, plus the text's own. */
 function showFonts(w) {
+  if (widgetsOn) {
+    if (isWidgetHolder()) return showWidgetFonts(w);
+    if ($("tFontOffer")) $("tFontOffer").hidden = true;
+  }
   const words = $("tFontFilter").value.toLowerCase().split(/\s+/).filter(Boolean);
   const current = typeof w.font === "string" && w.font ? w.font : DEFAULT_FONT;
   const key = JSON.stringify([words, current, fontList.length]);
@@ -1606,6 +2389,49 @@ function showFonts(w) {
                                current, false, true));
   }
   $("tFont").replaceChildren(...options);
+}
+
+/** The font picker in a widget (docs/widgets.md, Fonts): fonts by file name, the widget's own (its fonts\ folder)
+ *  first, then the PC's. A name not found anywhere says so, and offers a font installed under another file name
+ *  with the same family and style, when there's one. */
+function showWidgetFonts(w) {
+  const id = holderWidgetId(), meta = libMeta.get(id) || {}, current = typeof w.font === "string" ? w.font : "";
+  const words = $("tFontFilter").value.toLowerCase().split(/\s+/).filter(Boolean), found = meta.resolvedFonts?.[current];
+  const key = JSON.stringify([id, words, current, fontList.length, meta.ownFonts, found]);
+  if (key === fontsShown) return;
+  fontsShown = key;
+  const file = (path) => String(path).split("\\").pop(), seen = new Set(), entries = [];
+  for (const f of [...(meta.ownFonts || []).map((f) => ({ file: f.name, family: f.family, style: f.style, own: true })),
+                   ...fontList.map((f) => ({ file: file(f.path), family: f.family, style: f.style }))]) {
+    if (typeof f.file === "string" && !seen.has(f.file.toLowerCase())) { seen.add(f.file.toLowerCase()); entries.push(f); }
+  }
+  const name = (f) => `${f?.family || ""} ${f?.style || ""}`.trim();
+  const label = (f) => `${name(f) || f.file}${f.own ? " · this widget's own" : ""} · ${f.file}`;
+  const shown = (current || file(DEFAULT_FONT)).toLowerCase();
+  const options = entries.filter((f) => words.every((word) => label(f).toLowerCase().includes(word)))
+    .map((f) => new Option(label(f), f.file, false, f.file.toLowerCase() === shown));
+  if (!options.some((o) => o.selected)) {
+    const missing = found && !found.path;
+    options.unshift(new Option(missing ? `${name(found) || current} · ${current} (not on this PC: shown in Segoe UI)` : current || file(DEFAULT_FONT),
+                               current, false, true));
+  }
+  $("tFont").replaceChildren(...options);
+  let offer = $("tFontOffer");
+  if (!offer) {
+    offer = make("button", "small");
+    offer.id = "tFontOffer";
+    $("tFont").after(offer);
+    offer.addEventListener("click", () => {
+      const to = offer.dataset.to, from = offer.dataset.from, h = holder();
+      if (to && isWidgetHolder()) edit(() => { for (const l of layersOf(h)) for (const o of l.objects || []) if (o.type === "text" && o.font === from) o.font = to; });
+    });
+  }
+  const installed = found && !found.path && Array.isArray(found.installed) ? found.installed[0] : null;
+  offer.hidden = !installed;
+  if (installed) {
+    offer.textContent = `Use the installed ${name(found) || installed} (${installed})`;  // one step for every text in that font
+    [offer.dataset.from, offer.dataset.to] = [current, installed];
+  }
 }
 
 // Wiring the controls: each changes the selection through `edit`, looked up fresh by id.
@@ -1643,16 +2469,16 @@ layerControl("lName", (l, el) => { l.name = el.value; });
 layerControl("lOpacity", (l, el) => { const v = number(el, (v) => v >= 0 && v <= 100); if (v !== null) l.opacity = v / 100; });
 layerControl("lOpacityR", (l, el) => { l.opacity = +el.value / 100; });
 const sceneControl = (id, apply, event = "input") => $(id).addEventListener(event, () => {
-  if (holder() && !isGlobal()) edit(() => apply(holder(), $(id)), id);
+  if (holder() && !isGlobal() && !isWidgetHolder()) edit(() => apply(holder(), $(id)), id);
 });
 sceneControl("sName", (s, el) => { s.name = el.value; $("sceneTitle").textContent = s.name; });
 sceneControl("sSeconds", (s, el) => { const v = number(el, (v) => v >= 1); if (v !== null) s.seconds = Math.round(v); }, "change");
 sceneControl("sBg", (s, el) => { s.background = el.value; });
-$("sBlack").addEventListener("click", () => { if (holder() && !isGlobal()) edit(() => { holder().background = "#000000"; }); });
+$("sBlack").addEventListener("click", () => { if (holder() && !isGlobal() && !isWidgetHolder()) edit(() => { holder().background = "#000000"; }); });
 $("sPick").addEventListener("click", () => setPicking(view.picking ? null : "bg"));
 $("mPick").addEventListener("click", () => setPicking(view.picking ? null : "bg"));
-$("mEdge").addEventListener("click", () => {
-  const p = primary(), edge = p && getMedia(p.src)?.info?.edge;
+$("mEdge").addEventListener("click", () => {  // in a widget, its background
+  const p = primary(), edge = p && holderMedia(p)?.info?.edge;
   if (edge && !isGlobal()) edit(() => { holder().background = edge; });
 });
 // media
@@ -1705,7 +2531,31 @@ objControl("shCrisp", (o, el) => { o.crisp = el.checked; }, "change");
 const thumbCv = document.createElement("canvas"), thumbs = new Map();  // scene id -> {canvas, key}
 let thumbTimer = 0;
 function thumbsSoon() { clearTimeout(thumbTimer); thumbTimer = setTimeout(renderThumbs, 150); }
-function thumbKey(h) { return JSON.stringify([h, mediaVersion, fontsArrived, live.version, live.raw]); }
+/** What a scene's (or Global's) card shows depends on: itself, every widget it uses at any depth, the media and fonts
+ *  that have arrived, and the live values. A card is drawn again only when this changes. */
+function thumbKey(h) {
+  const used = widgetsOn ? [...usedWidgets(h)].sort().map((id) => [id, lib.get(id) ?? null]) : [];
+  return JSON.stringify([h, ...(used.length ? [used] : []), mediaVersion, fontsArrived, live.version, live.raw]);
+}
+/** The widgets a holder's copies use, at any depth (WV.closure, each widget walked once). */
+function usedWidgets(h) {
+  const out = new Set(), memo = closureMemo();
+  for (const l of layersOf(h)) {
+    for (const o of l.objects || []) {
+      if (o?.type !== "widget" || typeof o.widget !== "string" || out.has(o.widget)) continue;
+      out.add(o.widget);
+      for (const id of WV.closure(lib, o.widget, memo)) out.add(id);
+    }
+  }
+  return out;
+}
+let closureAt = "", closures = new Map();
+/** The memo WV.closure keeps its walks in, emptied whenever the library or a widget may have changed. */
+function closureMemo() {
+  const at = `${libEpoch}|${docEpoch}`;
+  if (at !== closureAt) [closureAt, closures] = [at, new Map()];
+  return closures;
+}
 function renderThumbs() {
   for (const [id, t] of thumbs) {
     const h = id === "global" ? doc.global : sceneById(id);
@@ -1713,8 +2563,10 @@ function renderThumbs() {
     const key = thumbKey(h);
     if (key === t.key) continue;
     t.key = key;
-    if (thumbCv.width !== W || thumbCv.height !== H) { thumbCv.width = W; thumbCv.height = H; }
-    renderScene(thumbCv.getContext("2d"), id === "global" ? null : h, 0, { withGlobal: id === "global" });
+    withCanvasSize(PANEL.w, PANEL.h, () => {  // at the panel's size, whatever is open
+      if (thumbCv.width !== W || thumbCv.height !== H) { thumbCv.width = W; thumbCv.height = H; }
+      renderScene(thumbCv.getContext("2d"), id === "global" ? null : h, 0, { withGlobal: id === "global" });
+    });
     const g = t.canvas.getContext("2d");
     g.imageSmoothingEnabled = true;
     g.imageSmoothingQuality = "high";
@@ -1732,7 +2584,11 @@ function showStrip() {
     let t = thumbs.get(id);
     if (!t) { t = { canvas: make("canvas"), key: "" }; t.canvas.width = 320; t.canvas.height = 144; thumbs.set(id, t); }
     c.append(t.canvas, make("span", "sc-name", name));
-    c.addEventListener("click", (e) => { if (!e.target.closest("button, input") && sel.scene !== id) showScene(id); });
+    c.addEventListener("click", (e) => {
+      if (e.target.closest("button, input") || sel.scene === id) return;
+      nav.length = 0;  // a card starts afresh: nothing to go back to
+      openHolder(id);
+    });
     return c;
   };
   const g = card("global", "Global", doc.global);
@@ -1775,7 +2631,7 @@ function showStrip() {
     cards.push(c);
   });
   $("scenes").replaceChildren(...cards, $("addScene"));  // the + sits after the last card
-  $("sceneTitle").textContent = current === "global" ? "Global layers (over every scene)" : (holder()?.name || "");
+  showTitle();
   document.body.classList.toggle("loaded", !!holder() && layersOf().some((l) => (l.objects || []).length));
   thumbsSoon();
 }
@@ -1801,6 +2657,7 @@ $("addScene").addEventListener("click", addScene);
 // --- The player -------------------------------------------------------------------------------------
 
 function showPlayer(state) {
+  if (widgetsOn && "widgets" in state) notePlayer(undefined, state.running ? state.widgets : null);  // its version
   const waiting = (state.log || "").match(/(?:waiting for the panel|nothing to play yet): (.*)/);
   const el = $("playerState");
   el.className = `${waiting ? "warn" : state.running ? "info" : "muted"}`;
@@ -1888,16 +2745,27 @@ const SECRET_KEY = /(^|_)(token|password|secret|api_?key)$/i;  // a setting the 
 // other, a pasted token say, is trimmed. One that's all spaces is blank either way.
 const secretValue = (id, key, value) => (id === "pc" && key === "lhm_password" ? value : value.trim());
 
-/** Whether a text has a placeholder: `{key}` and the rest, not counting {{ and }}. */
-const isLive = (t) => /\{[^{}]+\}/.test(String(t ?? "").replace(/\{\{|\}\}/g, ""));
+/** Whether a text has a placeholder: `{key}` and the rest, not counting {{ and }}. With widgets on, exactly as the
+ *  player reads it (data.rs, ported in WV.isLive). */
+const isLive = (t) => (widgetsOn ? WV.isLive(t) : /\{[^{}]+\}/.test(String(t ?? "").replace(/\{\{|\}\}/g, "")));
+/** The live texts the preview shows, to be filled in: those drawn in the open holder and Global (a widget: itself),
+ *  in visible layers, copies' substituted. And the texts the widget scripts ask for (a copy's input rows). */
 function liveTexts() {
   const all = [];
-  for (const h of [holder(), doc.global]) for (const l of layersOf(h)) for (const o of l.objects || []) if (o.type === "text" && isLive(o.text)) all.push(String(o.text));
+  if (widgetsOn) {
+    const { own, over } = currentView();
+    for (const e of [...own, ...over]) for (const l of e.leaves) if (l.type === "text" && isLive(l.text)) all.push(String(l.text));
+    for (const more of WV.texts) { try { all.push(...more().filter((t) => typeof t === "string" && isLive(t))); } catch (err) { console.error(err); } }
+  } else {
+    for (const h of [holder(), doc.global]) for (const l of layersOf(h)) for (const o of l.objects || []) if (o.type === "text" && isLive(o.text)) all.push(String(o.text));
+  }
   return [...new Set(all)];
 }
-/** The text an object shows in the preview: filled in with the current values, when the player could. */
+/** The text an object (or leaf) shows in the preview: filled in with the current values, when the player could; or,
+ *  for static text with widgets on, with {{ and }} as plain braces, as the player draws it. */
 function shownText(w) {
   const raw = String(w.text ?? "");
+  if (widgetsOn && !WV.isLive(raw)) return WV.plain(raw);
   return !live.raw && live.resolved.has(raw) ? live.resolved.get(raw) : raw;
 }
 function resolveSoon(ms = 300) { clearTimeout(live.timer); live.timer = setTimeout(resolveTexts, ms); }
@@ -2473,9 +3341,12 @@ let lastFrames = "";
 requestAnimationFrame(function tick() {
   if (!view.paused) {
     const t = clock(), parts = [];
-    for (const h of [holder(), doc.global]) for (const l of layersOf(h)) {
-      if (l.visible === false) continue;
-      for (const o of l.objects || []) {
+    // what's drawn: the open holder's and Global's leaves (a widget: its own), animations inside copies too
+    const shown = widgetsOn ? (({ own, over }) => [...own, ...over])(currentView())
+      : [holder(), doc.global].flatMap((h) => layersOf(h).map((layer) => ({ layer, leaves: layer.objects || [] })));
+    for (const { layer, leaves } of shown) {
+      if (layer.visible === false) continue;
+      for (const o of leaves) {
         if (o.visible === false || !isMedia(o)) continue;
         const m = media.get(o.src);
         if (!m?.ready || !m.info.animated) continue;
@@ -2488,12 +3359,98 @@ requestAnimationFrame(function tick() {
   requestAnimationFrame(tick);
 });
 
+// The widget editor's notes, after the title: what it's previewed with, and why it's read-only (showTitle).
+{
+  const note = make("span", "small muted"), text = make("span"), defaults = make("button", "link", "use defaults");
+  Object.assign(note, { id: "previewNote", hidden: true });
+  text.id = "previewText";
+  defaults.title = "Show the widget with its own default values";
+  defaults.addEventListener("click", () => { view.preview = null; changed({ save: false }); });
+  note.append(text, defaults);
+  const why = make("span", "small warn"), whyText = make("span"), dup = make("button", "", "Duplicate to edit");
+  Object.assign(why, { id: "readOnlyNote", hidden: true });
+  whyText.id = "readOnlyText";
+  dup.addEventListener("click", () => duplicateToEdit(holderWidgetId()));
+  why.append(whyText, dup);
+  $("back").after(note, why);
+}
+$("back").addEventListener("click", () => {  // back to where Edit widget came from, the copy selected again
+  dropStaleNav();
+  const top = nav.pop();
+  if (!top) return showTitle();
+  openHolder(top.key);
+  select(top.ids.filter((id) => find(id)));
+});
+/** Duplicate to edit, for a read-only widget: library.js's window when it has one (its `duplicateWidget(id)`), else
+ *  straight away, as "<name> copy", which then opens. */
+async function duplicateToEdit(id) {
+  if (id === null) return;
+  if (typeof duplicateWidget === "function") return duplicateWidget(id);
+  try {
+    const out = await postJson("/api/widgets/duplicate", { id, name: `${widgetName(id)} copy` });
+    libAdd(out);
+    openHolder(`widget:${out.id}`);
+  } catch (err) {
+    message(`Couldn't duplicate ${widgetName(id)}: ${err.message}`, "warn");
+  }
+}
+
+/** Reads the library for the first time (GET /api/widgets), before the playlist, so copies draw at once. */
+async function loadLibrary() {
+  try {
+    const res = await api("/api/widgets"), out = await res.json();
+    if (!res.ok) throw new Error(out.error || res.statusText);
+    for (const e of Array.isArray(out.widgets) ? out.widgets : []) if (e && typeof e.id === "string") libAdd(e);
+    libProblems = Array.isArray(out.problems) ? out.problems : [];
+    libDeleted = Array.isArray(out.deleted) ? out.deleted : [];
+  } catch (err) {
+    message(`Couldn't read the widgets: ${err.message}`, "warn");
+  }
+}
+/** As the playlist is read: a scene id a widget's holder key could take ("widget:…", only by hand) gets a new one,
+ *  and each copy's stored w and h follow its scale and its widget's container (docs/widgets.md, A copy: an older
+ *  studio's resize is undone). Saved with the next save, without an undo step. A widget's own copies are brought up
+ *  to date only when it's edited, so one nobody edits is never rewritten. */
+function tidyDocument() {
+  const ids = new Set(doc.scenes.map((s) => s.id));
+  for (const s of doc.scenes) {
+    if (typeof s.id === "string" && s.id.startsWith("widget:")) { s.id = uid("s", ids); ids.add(s.id); }
+  }
+  for (const h of [doc.global, ...doc.scenes]) {
+    for (const l of layersOf(h)) {
+      for (const o of l.objects || []) {
+        if (o?.type !== "widget" || !WV.idOk(o.widget) || !lib.has(o.widget)) continue;
+        const def = WV.readDef(o.widget, lib.get(o.widget));
+        if (def.problem) continue;
+        const s = copyScale(o, def), [w, h] = [WV.rnd(s * def.w), WV.rnd(s * def.h)];
+        if (o.w !== w || o.h !== h) [o.w, o.h] = [w, h];
+      }
+    }
+  }
+}
+const hasCopies = () => [doc.global, ...doc.scenes].some((h) => layersOf(h).some((l) => (l.objects || []).some((o) => o?.type === "widget")));
+// The player's version (docs/widgets.md, Compatibility): said once a session, and again when it changes.
+const playerNote = { built: null, running: null };
+function notePlayer(built, running) {
+  if (!widgetsOn || !hasCopies()) return;
+  if (built === false && playerNote.built !== false) {
+    message("The player was built before widgets: rebuild it (cargo build --release in player\\) to see them on the cooler and in Export PNG.", "warn");
+  }
+  if (running === false && playerNote.running !== false) {
+    message("The player running is older than this studio: widgets won't show on the cooler until it's rebuilt and restarted.", "warn");
+  }
+  if (built !== undefined) playerNote.built = built;
+  if (running !== undefined) playerNote.running = running;
+}
+
+const domReady = new Promise((ok) => (document.readyState === "loading" ? document.addEventListener("DOMContentLoaded", ok, { once: true }) : ok()));
 (async () => {
   try {
     const cfg = await (await api("/api/config")).json();
     [W, H] = cfg.screen;
     SAFE = cfg.safe;
     CAMERA = cfg.camera;
+    PANEL = { w: W, h: H, safe: { ...SAFE }, camera: CAMERA };
     if (cfg.font) DEFAULT_FONT = cfg.font;
     screenCv.width = W;
     screenCv.height = H;
@@ -2504,14 +3461,27 @@ requestAnimationFrame(function tick() {
     refreshValues();
     api("/api/fonts").then((res) => res.json()).then((list) => { fontList = list; fontsShown = ""; showProps(); })
       .catch((err) => message(`Couldn't list the fonts: ${err.message}`, "warn"));
+    await domReady;  // all three widget scripts have run (or failed) by now
+    widgetsOn = cfg.widgets === 1 && ["widgets", "library", "copies"].every((n) => window.WV?.loaded?.[n] === true);
+    if (widgetsOn) {
+      setBackdrop(backdrop());
+      await loadLibrary();
+    } else if (cfg.widgets !== 1) message("This page is newer than the running studio. Restart the studio to use widgets.", "warn");
+    else message("Widgets are off: one of the page's scripts didn't load. Reload the page.", "warn");
     const res = await api("/api/playlist"), out = await res.json();
     if (!res.ok) throw new Error(out.error || res.statusText);
     doc = out;
     doc.global ||= { layers: [] };
     doc.scenes ||= [];
-    const want = new URLSearchParams(location.hash.slice(1));  // #scene=<id>&sel=<object id>: open there
-    showScene(want.get("scene") === "global" || sceneById(want.get("scene")) ? want.get("scene") : doc.scenes[0]?.id ?? "global");
+    if (widgetsOn) {
+      saving.doc = JSON.stringify(doc);  // as read: what tidyDocument changes goes with the next save
+      tidyDocument();
+    }
+    const want = new URLSearchParams(location.hash.slice(1));  // #scene=<id>&sel=<object id>, #widget=<id>&sel=…: open there
+    if (widgetsOn && lib.has(want.get("widget"))) openHolder(`widget:${want.get("widget")}`);
+    else showScene(want.get("scene") === "global" || sceneById(want.get("scene")) ? want.get("scene") : doc.scenes[0]?.id ?? "global");
     if (want.get("sel") && find(want.get("sel"))) select([want.get("sel")]);
+    notePlayer(cfg.player_widgets === false ? false : undefined, undefined);
     if (cfg.initial) {
       if (!doc.scenes.length) addScene();
       placeMedia(cfg.initial);

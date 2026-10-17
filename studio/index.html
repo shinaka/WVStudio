@@ -211,6 +211,17 @@
   .ac-mirror { position: fixed; top: 0; left: 0; visibility: hidden; white-space: pre-wrap; overflow-wrap: break-word;
                word-wrap: break-word; pointer-events: none; }
   /* widgets: editor */
+  body.widget #screen { background: #000; }  /* behind a transparent widget, in its editor only: checks, black or white */
+  body.widget.backdrop-checks #screen { background: repeating-conic-gradient(#8a8f96 0% 25%, #5b6068 0% 50%) 0 0 / 16px 16px; }
+  body.widget.backdrop-white #screen { background: #fff; }
+  #back { padding: 1px 9px; flex: none; }
+  #previewNote, #readOnlyNote { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  #previewNote button.link, #readOnlyNote button { padding: 0 6px; font-size: 12px; }
+  button.link { background: none; border: 0; color: var(--info); text-decoration: underline; cursor: pointer; }
+  body.readonly #propsPane section:not(#pWidget):not(.small) { opacity: .55; pointer-events: none; }  /* a read-only widget */
+  #layers .badge.warn { background: #3f1d14; color: var(--warn); }
+  #layers .badge.in { background: #2a2140; color: #c3a6ff; }
+  #tFontOffer { margin-top: 4px; }
 
   /* widgets: library */
 
