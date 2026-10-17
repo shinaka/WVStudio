@@ -1,0 +1,92 @@
+[
+  {
+    "text": "{$label}: {$value}",
+    "id": "label",
+    "value": "CPU",
+    "result": "CPU: {$value}"
+  },
+  {
+    "text": "{{$label}}",
+    "id": "label",
+    "value": "CPU",
+    "result": "{{$label}}"
+  },
+  {
+    "text": "{$label",
+    "id": "label",
+    "value": "CPU",
+    "result": "{$label"
+  },
+  {
+    "text": "{$label:d}",
+    "id": "label",
+    "value": "CPU",
+    "result": "{$label:d}"
+  },
+  {
+    "text": "{$label}{$label}",
+    "id": "label",
+    "value": "x{",
+    "result": "x{{x{{"
+  },
+  {
+    "text": "{$label}",
+    "id": "label",
+    "value": "{$other}",
+    "result": "{{$other}}"
+  },
+  {
+    "text": "{$label}",
+    "id": "label",
+    "value": "{pc.cpu.temp:d}°C",
+    "result": "{pc.cpu.temp:d}°C"
+  },
+  {
+    "text": "{{{$label}}}",
+    "id": "label",
+    "value": "CPU",
+    "result": "{{CPU}}"
+  },
+  {
+    "text": "{$label\n}",
+    "id": "label",
+    "value": "CPU",
+    "result": "{$label\n}"
+  },
+  {
+    "text": "Temp {$value} / {$label}",
+    "id": "value",
+    "value": "--",
+    "result": "Temp -- / {$label}"
+  },
+  {
+    "text": "{$label}",
+    "id": "label",
+    "value": "",
+    "result": ""
+  },
+  {
+    "text": "{$Label} {$label}",
+    "id": "label",
+    "value": "CPU",
+    "result": "{$Label} CPU"
+  },
+  {
+    "text": "{$nope} {$label}",
+    "id": "label",
+    "value": "CPU",
+    "result": "{$nope} CPU"
+  },
+  {
+    "text": "{pc.{$sensor}.temp:d}",
+    "id": "sensor",
+    "value": "cpu",
+    "result": "{pc.cpu.temp:d}"
+  },
+  {
+    "text": "{$label}}",
+    "id": "label",
+    "value": "5}",
+    "result": "5}}}"
+  }
+]

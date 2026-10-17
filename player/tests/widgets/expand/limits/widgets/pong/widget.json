@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "name": "Pong",
+  "description": "",
+  "w": 5,
+  "h": 5,
+  "background": null,
+  "fonts": {},
+  "inputs": [],
+  "layers": [
+    {
+      "id": "l",
+      "name": "l",
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "objects": [
+        {
+          "id": "r",
+          "type": "shape",
+          "shape": "rect",
+          "x": 0,
+          "y": 0,
+          "w": 2,
+          "h": 2,
+          "fill": {
+            "type": "solid",
+            "color": "#0000ff"
+          }
+        },
+        {
+          "id": "back",
+          "type": "widget",
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "x": 0,
+          "y": 0,
+          "w": 5,
+          "h": 5,
+          "scale": 0.5,
+          "widget": "ping"
+        }
+      ]
+    }
+  ]
+}

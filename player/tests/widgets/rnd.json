@@ -1,0 +1,160 @@
+[
+  {
+    "v": -1.5,
+    "rnd": -1
+  },
+  {
+    "v": -0.5,
+    "rnd": 0
+  },
+  {
+    "v": 0.5,
+    "rnd": 1
+  },
+  {
+    "v": 2.5,
+    "rnd": 3
+  },
+  {
+    "v": 1.5,
+    "rnd": 2
+  },
+  {
+    "v": -2.5,
+    "rnd": -2
+  },
+  {
+    "v": 0,
+    "rnd": 0
+  },
+  {
+    "v": 0.49999999999999994,
+    "rnd": 1
+  },
+  {
+    "v": -0.49999999999999994,
+    "rnd": 0
+  },
+  {
+    "v": 0.5000000000000001,
+    "rnd": 1
+  },
+  {
+    "v": -0.5000000000000001,
+    "rnd": -1
+  },
+  {
+    "v": 1.4999999999999998,
+    "rnd": 1
+  },
+  {
+    "v": 2.4999999999999996,
+    "rnd": 2
+  },
+  {
+    "v": 3.5,
+    "rnd": 4
+  },
+  {
+    "v": -3.5,
+    "rnd": -3
+  },
+  {
+    "v": 25599.5,
+    "rnd": 25600
+  },
+  {
+    "v": -0.0,
+    "rnd": 0
+  },
+  {
+    "v": 4503599627370495.5,
+    "rnd": 4503599627370496
+  },
+  {
+    "v": 4503599627370497,
+    "rnd": 4503599627370498
+  },
+  {
+    "v": -4503599627370497,
+    "rnd": -4503599627370496
+  },
+  {
+    "v": 1000000000000000.5,
+    "rnd": 1000000000000001
+  },
+  {
+    "v": -1000000000000000.5,
+    "rnd": -1000000000000000
+  },
+  {
+    "v": 25.9245,
+    "a": 1.2345,
+    "b": 21,
+    "rnd": 26,
+    "note": "v is a times b in f64, written so it parses back exactly; rnd(a * b) must give rnd too"
+  },
+  {
+    "v": 3.5,
+    "a": 5,
+    "b": 0.7,
+    "rnd": 4,
+    "note": "v is a times b in f64, written so it parses back exactly; rnd(a * b) must give rnd too"
+  },
+  {
+    "v": -1.5,
+    "a": 1.5,
+    "b": -1,
+    "rnd": -1,
+    "note": "v is a times b in f64, written so it parses back exactly; rnd(a * b) must give rnd too"
+  },
+  {
+    "v": 4.5,
+    "a": 1.5,
+    "b": 3,
+    "rnd": 5,
+    "note": "v is a times b in f64, written so it parses back exactly; rnd(a * b) must give rnd too"
+  },
+  {
+    "v": 50.625,
+    "a": 2.25,
+    "b": 22.5,
+    "rnd": 51,
+    "note": "v is a times b in f64, written so it parses back exactly; rnd(a * b) must give rnd too"
+  },
+  {
+    "v": 500.49999999999994,
+    "a": 0.5005,
+    "b": 1000,
+    "rnd": 500,
+    "note": "v is a times b in f64, written so it parses back exactly; rnd(a * b) must give rnd too"
+  },
+  {
+    "v": 501.49999999999994,
+    "a": 0.5015,
+    "b": 1000,
+    "rnd": 501,
+    "note": "v is a times b in f64, written so it parses back exactly; rnd(a * b) must give rnd too"
+  },
+  {
+    "v": 502.49999999999994,
+    "a": 0.5025,
+    "b": 1000,
+    "rnd": 502,
+    "note": "v is a times b in f64, written so it parses back exactly; rnd(a * b) must give rnd too"
+  },
+  {
+    "v": 1003.5000000000001,
+    "a": 1.0035,
+    "b": 1000,
+    "rnd": 1004,
+    "note": "v is a times b in f64, written so it parses back exactly; rnd(a * b) must give rnd too"
+  },
+  {
+    "v": 1005.5000000000001,
+    "a": 1.0055,
+    "b": 1000,
+    "rnd": 1006,
+    "note": "v is a times b in f64, written so it parses back exactly; rnd(a * b) must give rnd too"
+  }
+]

@@ -1,0 +1,57 @@
+{
+  "version": 2,
+  "seconds": 30,
+  "global": {
+    "layers": []
+  },
+  "scenes": [
+    {
+      "id": "s1",
+      "name": "s1",
+      "seconds": 30,
+      "background": "#000000",
+      "layers": [
+        {
+          "id": "l1",
+          "name": "l1",
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "objects": [
+            {
+              "id": "k",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 0.5,
+              "x": 100,
+              "y": 50,
+              "w": 80,
+              "h": 60,
+              "scale": 2,
+              "inputs": {
+                "name": "{pc.cpu.temp:d}°",
+                "accent": "#00ff00",
+                "icon": "inputs/8b1c891c1892.png"
+              },
+              "widget": "card"
+            },
+            {
+              "id": "m",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 7,
+              "y": 3,
+              "w": 60,
+              "h": 45,
+              "scale": 1.5,
+              "widget": "card"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

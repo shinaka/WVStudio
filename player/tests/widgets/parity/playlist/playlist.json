@@ -1,0 +1,491 @@
+{
+  "version": 2,
+  "seconds": 10,
+  "global": {
+    "layers": [
+      {
+        "id": "g",
+        "name": "g",
+        "visible": true,
+        "locked": false,
+        "opacity": 1.0,
+        "objects": [
+          {
+            "id": "gp",
+            "type": "widget",
+            "visible": true,
+            "locked": false,
+            "opacity": 1.0,
+            "x": 1400,
+            "y": 600,
+            "scale": 3,
+            "widget": "pix"
+          },
+          {
+            "id": "gt",
+            "type": "widget",
+            "visible": true,
+            "locked": false,
+            "opacity": 1.0,
+            "x": 1430,
+            "y": 600,
+            "scale": 2,
+            "inputs": {
+              "accent": "#ffff00"
+            },
+            "widget": "tinted"
+          },
+          {
+            "id": "gg",
+            "type": "widget",
+            "visible": true,
+            "locked": false,
+            "opacity": 0.5,
+            "x": 1460,
+            "y": 600,
+            "scale": 2,
+            "widget": "grp"
+          },
+          {
+            "id": "gf",
+            "type": "widget",
+            "visible": true,
+            "locked": false,
+            "opacity": 1.0,
+            "x": 1500,
+            "y": 600,
+            "scale": 1,
+            "widget": "tiler"
+          },
+          {
+            "id": "gfit",
+            "type": "widget",
+            "visible": true,
+            "locked": false,
+            "opacity": 1.0,
+            "x": 1520,
+            "y": 600,
+            "scale": 1,
+            "widget": "fit"
+          },
+          {
+            "id": "gch",
+            "type": "widget",
+            "visible": true,
+            "locked": false,
+            "opacity": 1.0,
+            "x": 1560,
+            "y": 600,
+            "scale": 2,
+            "widget": "chip"
+          },
+          {
+            "id": "gn",
+            "type": "widget",
+            "visible": true,
+            "locked": false,
+            "opacity": 1.0,
+            "x": 1400,
+            "y": 640,
+            "scale": 2,
+            "widget": "nest"
+          },
+          {
+            "id": "gm",
+            "type": "widget",
+            "visible": true,
+            "locked": false,
+            "opacity": 1.0,
+            "x": 1460,
+            "y": 640,
+            "scale": 1,
+            "widget": "mirrorer"
+          },
+          {
+            "id": "ge",
+            "type": "widget",
+            "visible": true,
+            "locked": false,
+            "opacity": 1.0,
+            "x": 1480,
+            "y": 640,
+            "scale": 1.5,
+            "widget": "extender"
+          },
+          {
+            "id": "gs",
+            "type": "widget",
+            "visible": true,
+            "locked": false,
+            "opacity": 1.0,
+            "x": 1510,
+            "y": 640,
+            "scale": 1,
+            "widget": "shapes"
+          },
+          {
+            "id": "gx",
+            "type": "widget",
+            "visible": true,
+            "locked": false,
+            "opacity": 1.0,
+            "x": 1540,
+            "y": 714,
+            "scale": 3,
+            "widget": "pix"
+          }
+        ]
+      }
+    ]
+  },
+  "scenes": [
+    {
+      "id": "media",
+      "name": "media",
+      "seconds": 10,
+      "background": "#203040",
+      "layers": [
+        {
+          "id": "main",
+          "name": "main",
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "objects": [
+            {
+              "id": "p1",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 10,
+              "y": 10,
+              "scale": 1,
+              "widget": "pix"
+            },
+            {
+              "id": "p15",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 21,
+              "y": 10,
+              "scale": 1.5,
+              "widget": "pix"
+            },
+            {
+              "id": "p2",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 40,
+              "y": 9,
+              "scale": 2,
+              "widget": "pix"
+            },
+            {
+              "id": "p3",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 60,
+              "y": 11,
+              "scale": 3,
+              "widget": "pix"
+            },
+            {
+              "id": "p15b",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 80.5,
+              "y": 10,
+              "scale": 1.5,
+              "widget": "pix"
+            },
+            {
+              "id": "pn",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": -1,
+              "y": 40,
+              "scale": 1.5,
+              "widget": "pix"
+            },
+            {
+              "id": "pt",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 600,
+              "y": -3,
+              "scale": 3,
+              "widget": "pix"
+            },
+            {
+              "id": "ti",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 100,
+              "y": 10,
+              "scale": 1,
+              "widget": "tiler"
+            },
+            {
+              "id": "mi",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 120,
+              "y": 10,
+              "scale": 2,
+              "widget": "mirrorer"
+            },
+            {
+              "id": "ex",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 150,
+              "y": 10,
+              "scale": 1.5,
+              "widget": "extender"
+            },
+            {
+              "id": "f1",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 200,
+              "y": 40,
+              "scale": 1,
+              "widget": "fit"
+            },
+            {
+              "id": "f2",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 240,
+              "y": 40,
+              "scale": 1.5,
+              "widget": "fit"
+            },
+            {
+              "id": "tA",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 300,
+              "y": 10,
+              "scale": 2,
+              "inputs": {
+                "accent": "#00ff00"
+              },
+              "widget": "tinted"
+            },
+            {
+              "id": "tB",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 320,
+              "y": 10,
+              "scale": 3,
+              "inputs": {
+                "accent": "#3366ff"
+              },
+              "widget": "tinted"
+            },
+            {
+              "id": "tC",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 350,
+              "y": 10,
+              "scale": 1,
+              "widget": "tinted"
+            },
+            {
+              "id": "ch1",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 380,
+              "y": 10,
+              "scale": 1,
+              "widget": "chip"
+            },
+            {
+              "id": "ch2",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 390,
+              "y": 10,
+              "scale": 2,
+              "widget": "chip"
+            },
+            {
+              "id": "sh1",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 420,
+              "y": 10,
+              "scale": 1,
+              "widget": "shapes"
+            },
+            {
+              "id": "sh2",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 450,
+              "y": 10,
+              "scale": 1.5,
+              "widget": "shapes"
+            },
+            {
+              "id": "sh3",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 490,
+              "y": 10,
+              "scale": 2,
+              "widget": "shapes"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "groups",
+      "name": "groups",
+      "seconds": 10,
+      "background": "#203040",
+      "layers": [
+        {
+          "id": "main",
+          "name": "main",
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "objects": [
+            {
+              "id": "g1",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 0.5,
+              "x": 10,
+              "y": 10,
+              "scale": 2,
+              "widget": "grp"
+            },
+            {
+              "id": "g2",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 40,
+              "y": 10,
+              "scale": 1.5,
+              "widget": "grp"
+            },
+            {
+              "id": "n1",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 80,
+              "y": 10,
+              "scale": 2,
+              "widget": "nest"
+            },
+            {
+              "id": "n2",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 0.5,
+              "x": 140,
+              "y": 13,
+              "scale": 1.5,
+              "widget": "nest"
+            },
+            {
+              "id": "h1",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": -3,
+              "y": -2,
+              "scale": 2,
+              "widget": "pix"
+            },
+            {
+              "id": "h2",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 1597,
+              "y": 717,
+              "scale": 2,
+              "widget": "pix"
+            },
+            {
+              "id": "h3",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 0.5,
+              "x": -5,
+              "y": 714,
+              "scale": 1,
+              "widget": "grp"
+            },
+            {
+              "id": "h4",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 0.5,
+              "x": 1594,
+              "y": -6,
+              "scale": 1,
+              "widget": "grp"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

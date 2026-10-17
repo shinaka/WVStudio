@@ -1,0 +1,159 @@
+{
+  "version": 2,
+  "seconds": 10,
+  "global": {
+    "layers": []
+  },
+  "scenes": [
+    {
+      "id": "inplace",
+      "name": "inplace",
+      "seconds": 10,
+      "background": "#203040",
+      "layers": [
+        {
+          "id": "main",
+          "name": "main",
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "objects": [
+            {
+              "id": "g1",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 20,
+              "y": 20,
+              "scale": 1,
+              "inputs": {
+                "label": "GPU",
+                "value": "{wv.none|57}°C"
+              },
+              "widget": "gauge"
+            },
+            {
+              "id": "g2",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 160,
+              "y": 21,
+              "scale": 1.5,
+              "widget": "gauge"
+            },
+            {
+              "id": "nt",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 20,
+              "y": 100,
+              "scale": 2,
+              "widget": "note"
+            },
+            {
+              "id": "nt2",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 241,
+              "y": 101,
+              "scale": 1.5,
+              "widget": "note"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ontop",
+      "name": "ontop",
+      "seconds": 10,
+      "background": "#203040",
+      "layers": [
+        {
+          "id": "main",
+          "name": "main",
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "objects": [
+            {
+              "id": "g1",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 20,
+              "y": 20,
+              "scale": 1,
+              "inputs": {
+                "label": "GPU",
+                "value": "{wv.none|57}°C"
+              },
+              "widget": "gauge"
+            },
+            {
+              "id": "g2",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 160,
+              "y": 21,
+              "scale": 1.5,
+              "widget": "gauge"
+            },
+            {
+              "id": "nt",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 20,
+              "y": 100,
+              "scale": 2,
+              "widget": "note"
+            },
+            {
+              "id": "nt2",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 241,
+              "y": 101,
+              "scale": 1.5,
+              "widget": "note"
+            }
+          ]
+        },
+        {
+          "id": "anim",
+          "name": "anim",
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "objects": [
+            {
+              "id": "gif",
+              "type": "image",
+              "src": "sources/176085204374.gif",
+              "x": 20,
+              "y": 200,
+              "w": 40,
+              "h": 40,
+              "smooth": false,
+              "fill": "none"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
