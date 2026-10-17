@@ -1784,15 +1784,23 @@ function deleteSelected() {
 
 // --- Copy, paste, duplicate ------------------------------------------------------------------------
 
-let clipboard = [];
+// What Ctrl+C took: {wvObjects}, and with widgets on, where they came from and the values a widget's editor drew them
+// with ({from, scope}, copies.js's clipFrom), so pasting them elsewhere keeps their look (docs/widgets.md, Placing
+// copies). The same goes to the system clipboard, for another tab.
+let clipboard = { wvObjects: [] };
 function copySelected() {
   const objs = selectedObjects();
   if (!objs.length) return;
-  clipboard = structuredClone(objs);
-  try { navigator.clipboard.writeText(JSON.stringify({ wvObjects: clipboard })).catch(() => {}); } catch {}
+  clipboard = { wvObjects: structuredClone(objs), ...(widgetsOn ? clipFrom() : {}) };
+  try { navigator.clipboard.writeText(JSON.stringify(clipboard)).catch(() => {}); } catch {}
   message(`Copied ${objs.length} object${objs.length > 1 ? "s" : ""}.`, "muted");
 }
-function pasteObjects(list, dx = 12, dy = 12) {
+/** Pastes what was copied ({wvObjects, ...}) into the open holder, nudged by dx, dy. With widgets on, copies.js does
+ *  it: into another holder, references are filled in and files copied over first. With them off, copies of widgets
+ *  aren't pasted. */
+function pasteObjects(clip, dx = 12, dy = 12) {
+  if (widgetsOn && holder()) return pasteCopied(clip, dx, dy);
+  const list = (Array.isArray(clip?.wvObjects) ? clip.wvObjects : []).filter((o) => o?.type !== "widget");
   if (!list.length || !holder()) return;
   edit(() => {
     const layer = targetLayer(), ids = [];
@@ -2056,20 +2064,39 @@ function moveTo(e) {
   if (moved) { docEpoch++; redraw(); showProps(); } else drawOverlay();
 }
 
-/** Resizes from the dragged handle: media keep their shape (and snap to whole-number scales), shapes are free,
- *  a line's ends move on their own. */
+/** Resizes from the dragged handle: media and copies keep their shape (and snap to whole-number scales), shapes are
+ *  free, a line's ends move on their own. */
 function resizeTo(e) {
   const o = find(drag.id)?.obj;
   if (!o) return;
   let [px, py] = screenPoint(e, true);
   const lines = snapLines();
   view.snapped = { x: null, y: null };
-  const before = [o.x, o.y, o.w, o.h].join();
+  const before = [o.x, o.y, o.w, o.h, o.scale].join();
   if (drag.handle === "a" || drag.handle === "b") {  // a line's end
     px = Math.round(px); py = Math.round(py);
     if (!e.altKey) { const sx = snapPoint(px, lines.x), sy = snapPoint(py, lines.y); if (sx !== null) { px = sx; view.snapped.x = sx; } if (sy !== null) { py = sy; view.snapped.y = sy; } }
     if (drag.handle === "a") { const ex = o.x + o.w, ey = o.y + o.h; o.x = px; o.y = py; o.w = ex - px; o.h = ey - py; }
     else { o.w = px - o.x; o.h = py - o.y; }
+  } else if (widgetsOn && o.type === "widget") {  // a copy (copies.js): its scale, the opposite corner staying put
+    if (!copyDrawable(o)) return drawOverlay();  // a missing widget's box can be moved, not resized
+    const [ax, ay] = drag.anchor, left = drag.handle % 2 === 0, top = drag.handle < 2, [aw, ah] = artSize(o);
+    let s = (Math.abs(px - ax) * aw + Math.abs(py - ay) * ah) / (aw * aw + ah * ah);
+    if (!e.altKey) {  // the dragged corner onto the nearest line within reach, else a whole scale near it
+      const reach = SNAP_REACH / view.k, corner = { x: left ? ax - aw * s : ax + aw * s, y: top ? ay - ah * s : ay + ah * s };
+      let best = null;
+      for (const [axis, anchor, size] of [["x", ax, aw], ["y", ay, ah]]) {
+        for (const line of lines[axis]) {
+          const d = Math.abs(line - corner[axis]), k = Math.abs(line - anchor) / size;
+          if (d <= reach && k > 0 && (!best || d < best.d)) best = { d, k, axis, line };
+        }
+      }
+      if (best) { s = best.k; view.snapped[best.axis] = best.line; }
+      else if (Math.abs(s - Math.round(s)) < 0.08 && Math.round(s) >= 1) s = Math.round(s);
+    }
+    setCopyScale(o, s);
+    o.x = left ? ax - o.w : ax;
+    o.y = top ? ay - o.h : ay;
   } else {
     const [ax, ay] = drag.anchor, left = drag.handle % 2 === 0, top = drag.handle < 2;
     if (isMedia(o)) {
@@ -2098,7 +2125,7 @@ function resizeTo(e) {
       o.x = x0; o.y = y0; o.w = Math.max(1, x1 - x0); o.h = Math.max(1, y1 - y0);
     }
   }
-  if ([o.x, o.y, o.w, o.h].join() !== before) { docEpoch++; redraw(); showProps(); } else drawOverlay();
+  if ([o.x, o.y, o.w, o.h, o.scale].join() !== before) { docEpoch++; redraw(); showProps(); } else drawOverlay();
 }
 
 function endDrag() {
@@ -2195,7 +2222,7 @@ window.addEventListener("paste", (e) => {
   if (f) return uploadFile(new File([f], f.name || "pasted.png", { type: f.type }));
   try {
     const data = JSON.parse(e.clipboardData.getData("text/plain"));
-    if (Array.isArray(data.wvObjects)) pasteObjects(data.wvObjects);
+    if (Array.isArray(data.wvObjects)) pasteObjects(data);
   } catch {}
 });
 
@@ -3041,13 +3068,28 @@ async function refreshValues() {
   live.values = live.player && !out.error ? out : {};
   showLiveNote();
   if ($("sourcesDlg").open) showSource();
-  if (ac.open) acUpdate();
+  if (ac.open) acUpdate(ac.el);
 }
-/** Puts {key} into the selected text where its cursor is: at the end when it hasn't been in it. */
+/** The other text field autocomplete is attached to that had the focus last (a copy's input row, a widget's text
+ *  default), while it's still shown; else null, for the selected text's box. */
+function lastField() {
+  const el = ac.last;
+  return el && el !== $("tText") && el.isConnected && el.getClientRects().length ? el : null;
+}
+/** Puts {key} where the cursor is: in the field autocomplete is attached to that had the focus last (lastField), else
+ *  in the selected text, at the end when its box hasn't had the focus. */
 function insertKey(key) {
+  const put = `{${key}}`, field = lastField();
+  if (field) {
+    const text = field.value, at = field.selectionStart ?? text.length, end = field.selectionEnd ?? at;
+    field.value = text.slice(0, at) + put + text.slice(end);
+    acFields.get(field).set(field.value);
+    field.setSelectionRange(at + put.length, at + put.length);
+    return;
+  }
   const w = primary(), el = $("tText");
   if (!w || w.type !== "text") return message("Select a text first: the value goes into it.", "warn");
-  const text = String(w.text ?? ""), put = `{${key}}`;
+  const text = String(w.text ?? "");
   if (el.value !== text) el.value = text;
   const at = el.selectionStart, end = el.selectionEnd;
   const next = text.slice(0, at) + put + text.slice(end);
@@ -3057,6 +3099,7 @@ function insertKey(key) {
 }
 function insertKeyOrCopy(key) {
   const w = primary(), put = `{${key}}`;
+  if (lastField()) { insertKey(key); return srcNote(`${put} put into the field you were in.`); }
   if (w?.type === "text") { insertKey(key); return srcNote(`${put} put into ${w.name || w.id}.`); }
   const copied = () => srcNote(`${put} copied: no text is selected to put it in.`);
   const failed = () => srcNote(`No text is selected: write ${put} in one.`, "warn");
@@ -3397,9 +3440,46 @@ setInterval(() => { if (!document.hidden) { refreshValues(); resolveTexts(); ref
 // --- Placeholder autocomplete ---------------------------------------------------------
 //
 // Typing { in the text box lists the keys the catalog documents and the live ones, filtered by what follows; after
-// {key: it offers formats that fit the value. It never touches the text except when an entry is accepted.
+// {key: it offers formats that fit the value. It never touches the text except when an entry is accepted. The same
+// works in every field it's attached to (acAttach): a copy's text input rows and a widget's text defaults too, where
+// `{$` lists the open widget's text inputs (docs/widgets.md, Inputs and bind buttons).
 
-const ac = { open: false, items: [], index: 0, mode: "key", from: 0, to: 0, mirror: null };
+const ac = { open: false, items: [], index: 0, mode: "key", from: 0, to: 0, mirror: null, el: null, last: null };
+const acFields = new WeakMap();  // a field autocomplete is attached to -> {get, set, inputs}
+
+/** Attaches autocomplete to a text field. `set(text)` writes what an accepted entry (or insertKey) made into the
+ *  document, as an edit; `get()` reads its text. `inputs()`, if given, lists the inputs `{$` offers:
+ *  [{id, name, value}]. insertKey and the values table put a key into whichever attached field had the focus last. */
+function acAttach(el, { get = () => el.value, set, inputs = () => [] } = {}) {
+  acFields.set(el, { get, set, inputs });
+  el.addEventListener("focus", () => { ac.last = el; });
+  el.addEventListener("input", () => acUpdate(el));
+  el.addEventListener("click", () => { if (ac.open && ac.el === el) acUpdate(el); });
+  el.addEventListener("blur", () => { if (ac.el === el) acClose(); });
+  el.addEventListener("keydown", (e) => {
+    if (!ac.open || ac.el !== el) return;
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      ac.index = (ac.index + (e.key === "ArrowDown" ? 1 : ac.items.length - 1)) % ac.items.length;
+      acRender();
+    } else if (e.key === "Enter" || e.key === "Tab") {
+      acAccept();
+    } else if (e.key === "Escape") {
+      acClose();
+      e.stopPropagation();
+    } else if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) {
+      return setTimeout(() => acUpdate(el));
+    } else return;
+    e.preventDefault();
+  });
+}
+/** The open widget's text inputs, for `{$` in its text and in the rows of the copies inside it: [{id, name, value}],
+ *  `value` what its editor previews. None in a scene. */
+function openWidgetTextInputs() {
+  const id = holderWidgetId(), def = id !== null && lib.has(id) ? WV.readDef(id, lib.get(id)) : null;
+  if (!def || def.problem) return [];
+  const scope = previewScope(id, def, view.preview);
+  return def.inputs.filter((i) => i.type === "text").map((i) => ({ id: i.id, name: i.name, value: scope.text.get(i.id) ?? "" }));
+}
 const FORMATS = { number: [["d", "whole number"], [".1f", "one decimal"]],
                   time: [["%H:%M", "hour and minute"], ["%a %H:%M", "weekday and time"], ["%d %b", "day and month"]] };
 function acContext(el) {
@@ -3439,24 +3519,26 @@ function acKeys() {
   }
   return [...seen.values()];
 }
-function acUpdate() {
-  const el = $("tText"), ctx = document.activeElement === el ? acContext(el) : null;
+function acUpdate(el = ac.el) {
+  const ctx = el && document.activeElement === el ? acContext(el) : null;
   if (!ctx) return acClose();
   const q = ctx.query.toLowerCase();
   let items;
   if (ctx.mode === "key") {
+    // the inputs `{$` refers to: $id, ranked and put in like a key
+    const inputs = (acFields.get(el)?.inputs() || []).map((i) => ({ key: `$${i.id}`, label: i.name, input: true, value: i.value }));
     const rank = (it) => it.key.toLowerCase().startsWith(q) ? 0 : it.key.toLowerCase().includes(q) ? 1 : it.label.toLowerCase().includes(q) ? 2 : 3;
-    items = acKeys().map((it) => ({ ...it, rank: rank(it) })).filter((it) => it.rank < 3)
+    items = [...inputs, ...acKeys()].map((it) => ({ ...it, rank: rank(it) })).filter((it) => it.rank < 3)
       .sort((a, b) => a.rank - b.rank || a.key.localeCompare(b.key))
-      .map((it) => ({ insert: it.key, key: it.key, meta: [it.label, it.source].filter(Boolean).join(" · "),
-                      value: it.entry ? formatValue(it.entry.value) + (it.entry.stale ? " (stale)" : "") : "" }));
+      .map((it) => ({ insert: it.key, key: it.key, meta: it.input ? `input · ${it.label}` : [it.label, it.source].filter(Boolean).join(" · "),
+                      value: it.input ? String(it.value) : it.entry ? formatValue(it.entry.value) + (it.entry.stale ? " (stale)" : "") : "" }));
   } else {
     const kind = kindOf(ctx.key), v = live.values[ctx.key]?.value;
     items = (FORMATS[kind] || []).filter(([f]) => f.toLowerCase().startsWith(q))
       .map(([f, what]) => ({ insert: f, key: f, meta: what, value: v === undefined ? "" : sampleFormat(v, f) }));
   }
   if (!items.length) return acClose();
-  Object.assign(ac, { open: true, items, mode: ctx.mode, from: ctx.from, to: ctx.to, index: 0 });
+  Object.assign(ac, { open: true, items, mode: ctx.mode, from: ctx.from, to: ctx.to, index: 0, el });
   acRender();
 }
 function sampleFormat(v, f) {
@@ -3468,7 +3550,7 @@ function sampleFormat(v, f) {
     "%a": d.toLocaleDateString([], { weekday: "short" }), "%b": d.toLocaleDateString([], { month: "short" }) })[c]);
 }
 function acRender() {
-  const pop = $("acPop"), el = $("tText");
+  const pop = $("acPop"), el = ac.el;
   pop.replaceChildren(...ac.items.map((it, i) => {
     const d = make("div", "ac-item");
     d.setAttribute("role", "option");
@@ -3508,32 +3590,19 @@ function acClose() {
   $("acPop").hidden = true;
 }
 function acAccept(i = ac.index) {
-  const it = ac.items[i], el = $("tText"), w = primary();
-  if (!it) return acClose();
+  const it = ac.items[i], el = ac.el;
+  if (!it || !el) return acClose();
   const text = el.value, closed = text[ac.to] === "}", put = it.insert + (closed ? "" : "}");
   el.value = text.slice(0, ac.from) + put + text.slice(ac.to);
   const pos = ac.from + put.length + (closed ? 1 : 0);
   el.setSelectionRange(pos, pos);
-  if (w?.type === "text") { const v = el.value; edit(() => { find(w.id).obj.text = v; }, "tText"); }
+  acFields.get(el)?.set(el.value);
   acClose();
 }
-$("tText").addEventListener("input", acUpdate);
-$("tText").addEventListener("click", () => { if (ac.open) acUpdate(); });
-$("tText").addEventListener("blur", acClose);
-$("tText").addEventListener("keydown", (e) => {
-  if (!ac.open) return;
-  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-    ac.index = (ac.index + (e.key === "ArrowDown" ? 1 : ac.items.length - 1)) % ac.items.length;
-    acRender();
-  } else if (e.key === "Enter" || e.key === "Tab") {
-    acAccept();
-  } else if (e.key === "Escape") {
-    acClose();
-    e.stopPropagation();
-  } else if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) {
-    return setTimeout(acUpdate);
-  } else return;
-  e.preventDefault();
+acAttach($("tText"), {
+  get: () => String(primary()?.text ?? ""),
+  set: (v) => { const w = primary(); if (w?.type === "text") edit(() => { find(w.id).obj.text = v; }, "tText"); },
+  inputs: openWidgetTextInputs,
 });
 addEventListener("resize", () => { if (ac.open) acRender(); });
 

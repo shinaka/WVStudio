@@ -226,6 +226,52 @@
   /* widgets: library */
 
   /* widgets: copies */
+  body:not(.widget) .widget-only, body:not(.widget) .bind-slot { display: none; }  /* bind buttons: in a widget only */
+  .bind-slot, .bind { display: inline-flex; gap: 4px; align-items: center; }
+  .bind-open { padding: 2px 7px; }
+  .bound-hide { display: none !important; }  /* a colour control while its colour is bound to an input */
+  .chip { display: inline-flex; gap: 4px; align-items: center; padding: 1px 2px 1px 7px; border-radius: 10px;
+          background: #2a2140; color: #c3a6ff; font-size: 12px; white-space: nowrap; }
+  .chip[hidden] { display: none; }
+  .chip.broken { background: #3f1d14; color: var(--warn); }
+  .chip button { padding: 0 5px; border: 0; background: none; color: inherit; font-size: 11px; }
+  .popmenu { position: fixed; z-index: 60; display: flex; flex-direction: column; min-width: 160px; max-width: 320px;
+             max-height: 60vh; overflow-y: auto; padding: 4px; background: var(--raised); border: 1px solid #4a5058;
+             border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, .5); }
+  .popmenu[hidden] { display: none; }
+  .popmenu button { border: 0; background: none; text-align: left; padding: 4px 8px; border-radius: 5px;
+                    overflow: hidden; text-overflow: ellipsis; }
+  .popmenu button:hover:not(:disabled) { background: #3a2c0a; }
+  .popmenu .sep { border-top: 1px solid var(--line); margin: 3px 0; }
+  #tools #widgetTool { font-size: 15px; }
+  #widgetMenu { position: fixed; z-index: 55; width: 250px; max-height: 70vh; display: flex; flex-direction: column; gap: 4px;
+                padding: 6px; background: var(--raised); border: 1px solid #4a5058; border-radius: 8px;
+                box-shadow: 0 8px 24px rgba(0, 0, 0, .5); }
+  #widgetMenu[hidden] { display: none; }
+  #widgetMenu .wm-list { display: flex; flex-direction: column; gap: 2px; overflow-y: auto; min-height: 0; }
+  #tools #widgetMenu .wm-item { width: auto; height: auto; display: flex; gap: 8px; align-items: center; padding: 3px 6px;
+                                font-size: 12px; font-weight: 400; text-align: left; border-color: transparent; background: none; }
+  #tools #widgetMenu .wm-item:hover:not(:disabled) { background: #3a2c0a; }
+  #widgetMenu .wm-item canvas { width: 64px; height: 32px; flex: none; border-radius: 3px;
+                                background: repeating-conic-gradient(#8a8f96 0% 25%, #5b6068 0% 50%) 0 0 / 8px 8px; }
+  #widgetMenu .wm-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #widgetMenu .wm-empty { color: var(--muted); font-size: 12px; padding: 4px; }
+  #pCopy h3 { margin: 10px 0 2px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 650; }
+  #pCopy h3[hidden], #cpMessage:empty, #cpNote:empty { display: none; }
+  #cpWidget { max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
+  #cpScale { min-width: 54px; text-align: center; font-variant-numeric: tabular-nums; }
+  .input-row { display: grid; grid-template-columns: 72px minmax(0, 1fr) auto; gap: 2px 6px; align-items: start; margin: 6px 0; }
+  .input-row > .label { color: var(--muted); padding-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .input-row .field { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; min-width: 0; }
+  .input-row textarea { resize: none; min-height: 28px; }
+  .input-row .tools { display: flex; gap: 2px; }
+  .input-row .tools button { padding: 2px 6px; }
+  .input-row .note { grid-column: 2 / -1; }
+  .input-row .note:empty { display: none; }
+  .input-row.is-default textarea { color: var(--muted); }
+  .input-row.is-default input[type=color], .input-row.is-default canvas { opacity: .6; }
+  .input-row canvas.thumb { width: 48px; height: 32px; border-radius: 3px; border: 1px solid var(--line);
+                            background: repeating-conic-gradient(#8a8f96 0% 25%, #5b6068 0% 50%) 0 0 / 8px 8px; }
 
 </style>
 </head>
@@ -256,6 +302,7 @@
     <button data-shape="ellipse" title="Ellipse">◯</button>
     <button data-shape="line" title="Line">╱</button>
   </div>
+  <button data-tool="widget" id="widgetTool" title="Widget: pick one, then click the canvas to place a copy (W)" hidden>▣<kbd>W</kbd></button>
   <div id="widgetMenu" hidden></div>
   <button data-tool="hand" title="Hand: drag to scroll (H, or hold Space)">✋<kbd>H</kbd></button>
   <div class="gap"></div>
@@ -346,17 +393,23 @@
         <button data-value="none">Nothing</button><button data-value="extend" title="Repeat the outermost pixels outward">Stretch edges</button><button data-value="mirror">Mirror</button><button data-value="tile">Tile</button></span></div>
       <div class="row"><span class="label">Background</span><button id="mPick" aria-pressed="false" title="Set the scene's background from a colour on the canvas">Eyedropper</button>
         <button id="mEdge" title="Set the scene's background to this file's edge colour">Edge colour</button></div>
+      <div class="row" id="mTintRow" hidden><span class="label">Tint</span><button id="mTintNone" title="The picture's own colours">None</button>
+        <input id="mTint" type="color" title="Every pixel the picture draws takes this colour and keeps its own transparency"><span class="bind-slot" data-bind="mTint"></span></div>
+      <div class="row widget-only" id="mPictureRow"><span class="label">Picture</span><span class="bind-slot" data-bind="src"></span></div>
+      <div class="row widget-only"><label title="The file fits inside its box, keeping its own shape, centred: for pictures a copy chooses">
+        <input id="mKeepAspect" type="checkbox"> Keep its shape inside the box</label></div>
       <div id="mNote" class="small muted"></div>
     </section>
     <section id="pText" hidden>
       <h2>Text</h2>
       <div id="liveNote" class="small warn" hidden></div>
       <textarea id="tText" rows="3" spellcheck="false" title="Each line of text on its own line. Type { for a live value."></textarea>
+      <div class="row widget-only"><span class="bind-slot" data-bind="tText"></span></div>
       <div class="row"><input id="tFontFilter" type="search" spellcheck="false" placeholder="Font: type to filter"></div>
       <select id="tFont" size="5" title="Font"></select>
       <div class="row">
         <label title="Size in screen pixels (the em size)">Size <input id="tSize" type="number" min="1" step="1"></label>
-        <input id="tColor" type="color" title="Colour">
+        <input id="tColor" type="color" title="Colour"><span class="bind-slot" data-bind="tColor"></span>
         <label title="Distance between lines, as a multiple of the size">Lines × <input id="tLineHeight" type="number" min="0.1" step="0.05"></label>
       </div>
       <div class="row"><span class="label">Across</span><span class="seg" id="tAlign">
@@ -367,7 +420,7 @@
       </span></div>
       <div class="row">
         <span class="label">Outline</span>
-        <input id="tOutlineColor" type="color" title="Outline colour">
+        <input id="tOutlineColor" type="color" title="Outline colour"><span class="bind-slot" data-bind="tOutlineColor"></span>
         <label title="Outline thickness in screen pixels, 0 for none"><input id="tOutlineWidth" type="number" min="0" step="1"> px</label>
       </div>
       <div class="row"><label title="No smoothed edges: every pixel all or nothing. For pixel fonts.">
@@ -377,12 +430,12 @@
     <section id="pShape" hidden>
       <h2 id="shKind">Shape</h2>
       <div class="row"><span class="label">Fill</span><select id="shFillType"><option value="none">None</option><option value="solid">Solid</option><option value="linear">Gradient</option></select>
-        <input id="shColor" type="color" title="Fill colour"></div>
+        <input id="shColor" type="color" title="Fill colour"><span class="bind-slot" data-bind="shColor"></span></div>
       <div class="row" id="shGradRow"><span class="label"></span>
-        <input id="shColor2" type="color" title="Gradient end colour">
+        <input id="shColor2" type="color" title="Gradient end colour"><span class="bind-slot" data-bind="shColor2"></span>
         <label title="0 runs left to right, 90 top to bottom">angle <input id="shAngle" type="number" step="15"></label></div>
       <div class="row"><span class="label">Stroke</span><label><input id="shStrokeOn" type="checkbox"></label>
-        <input id="shStrokeColor" type="color" title="Stroke colour">
+        <input id="shStrokeColor" type="color" title="Stroke colour"><span class="bind-slot" data-bind="shStrokeColor"></span>
         <label><input id="shStrokeWidth" type="number" min="0" step="1"> px</label></div>
       <div class="row" id="shRadiusRow"><span class="label">Corners</span><label><input id="shRadius" type="number" min="0" step="1"> px radius</label></div>
       <div class="row"><label title="A pixel is painted exactly when its centre is inside: no anti-aliasing, so the player matches exactly">
@@ -390,6 +443,17 @@
     </section>
     <section id="pCopy" hidden>
       <h2>Widget copy</h2>
+      <div class="row"><button id="cpWidget" title="Swap this copy to another widget: values for inputs with the same ids carry over">▣ <span id="cpWidgetName"></span> ▾</button>
+        <span class="spacer"></span><button id="cpEdit" title="Open the widget, previewing this copy's inputs (Enter, or double-click the copy)">Edit widget</button></div>
+      <div class="row" id="cpScaleRow"><span class="label">Scale</span>
+        <button id="cpSmaller" title="Down to the next whole scale">−</button>
+        <span id="cpScale" class="muted"></span>
+        <button id="cpBigger" title="Up to the next whole scale">+</button>
+        <button id="cpOne" title="The widget's own size">1×</button></div>
+      <div id="cpNote" class="small muted"></div>
+      <div id="cpMessage" class="small"></div>
+      <h3 id="cpInputsHead">Inputs</h3>
+      <div id="cpInputs"></div>
     </section>
     <section id="pExport" hidden>
       <h2>Export</h2>
@@ -407,6 +471,10 @@
         <span><kbd>Ctrl</kbd> <kbd>C</kbd> <kbd>V</kbd> <kbd>D</kbd></span><span>copy, paste, duplicate</span>
         <span><kbd>Del</kbd> <kbd>Esc</kbd></span><span>delete / deselect</span>
         <span><kbd>G</kbd></span><span>guides</span>
+        <span class="widget-keys" hidden><kbd>W</kbd></span><span class="widget-keys" hidden>place a widget</span>
+        <span class="widget-keys" hidden><kbd>Ctrl</kbd> <kbd>G</kbd></span><span class="widget-keys" hidden>make a widget from the selection</span>
+        <span class="widget-keys" hidden><kbd>Enter</kbd></span><span class="widget-keys" hidden>edit the selected copy's widget</span>
+        <span class="widget-keys" hidden>Double-click</span><span class="widget-keys" hidden>a copy: edit its widget</span>
       </div>
     </section>
   </div>
