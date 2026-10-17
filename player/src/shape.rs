@@ -231,15 +231,18 @@ fn paint_fn(paint: &Paint, o: &Object) -> Box<dyn Fn(f64, f64) -> [u8; 3]> {
 
 /// `#rrggbb` (or `#rgb`); anything else is white.
 pub fn rgb(s: &str) -> [u8; 3] {
+    parse_rgb(s).unwrap_or([255; 3])
+}
+
+/// `#rrggbb` (or `#rgb`), or None. Never panics: the digits are taken by byte position, and a
+/// character that isn't one byte (`aé123`) makes it not a colour.
+pub fn parse_rgb(s: &str) -> Option<[u8; 3]> {
     let hex = s.trim().trim_start_matches('#');
-    let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
+    let digits = |i: usize, n: usize| hex.get(i..i + n).and_then(|d| u8::from_str_radix(d, 16).ok());
     match hex.len() {
-        6 => (|| Some([byte(0)?, byte(2)?, byte(4)?]))().unwrap_or([255; 3]),
-        3 => {
-            let n = |i: usize| u8::from_str_radix(&hex[i..i + 1], 16).ok().map(|v| v * 17);
-            (|| Some([n(0)?, n(1)?, n(2)?]))().unwrap_or([255; 3])
-        }
-        _ => [255; 3],
+        6 => Some([digits(0, 2)?, digits(2, 2)?, digits(4, 2)?]),
+        3 => Some([digits(0, 1)? * 17, digits(1, 1)? * 17, digits(2, 1)? * 17]),
+        _ => None,
     }
 }
 
@@ -344,6 +347,50 @@ mod tests {
     fn colours() {
         assert_eq!(rgb("#102030"), [16, 32, 48]);
         assert_eq!(rgb("#fff"), [255, 255, 255]);
+        assert_eq!(rgb("#A0b"), [170, 0, 187]);
+        assert_eq!(rgb(" #102030 "), [16, 32, 48]);
         assert_eq!(rgb("red"), [255, 255, 255]);
+        assert_eq!(parse_rgb("red"), None);
+        assert_eq!(parse_rgb("#ff00001"), None);
+    }
+
+    /// A colour with a character of more than one byte where a digit should be is white, not a panic
+    /// (which would end the player while it reads the playlist).
+    #[test]
+    fn rgb_never_panics() {
+        for s in ["aé123", "éa", "#éa", "é", "#é", "ééé", "#aé1234"] {
+            assert_eq!(rgb(s), [255; 3], "{s}");
+        }
+        // every string of up to 7 bytes made of é, '#' and hex digits: white whenever é is in it, and
+        // otherwise what a plain reading of the digits gives
+        let parts = ["é", "#", "a", "F", "0"];
+        let mut strings = vec![String::new()];
+        let mut i = 0;
+        while i < strings.len() {
+            let s = strings[i].clone();
+            i += 1;
+            for p in parts {
+                if s.len() + p.len() <= 7 {
+                    strings.push(format!("{s}{p}"));
+                }
+            }
+        }
+        assert!(strings.len() > 20_000);
+        for s in &strings {
+            let hex = s.trim_start_matches('#');
+            let plain = (hex.len() == 6 || hex.len() == 3) && hex.chars().all(|c| c.is_ascii_hexdigit());
+            match (s.contains('é'), plain) {
+                (true, _) | (false, false) => assert_eq!(rgb(s), [255; 3], "{s}"),
+                (false, true) => {
+                    let n = |d: &str| u8::from_str_radix(d, 16).unwrap();
+                    let want = if hex.len() == 6 {
+                        [n(&hex[0..2]), n(&hex[2..4]), n(&hex[4..6])]
+                    } else {
+                        [n(&hex[0..1]) * 17, n(&hex[1..2]) * 17, n(&hex[2..3]) * 17]
+                    };
+                    assert_eq!(rgb(s), want, "{s}");
+                }
+            }
+        }
     }
 }
