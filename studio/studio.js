@@ -1299,7 +1299,7 @@ function flushSave({ keepalive = false } = {}) {
   clearTimeout(saving.timer);
   if (!saving.pending) return saving.last;
   saving.pending = false;
-  if (widgetsOn) return (saving.last = saving.last.then(() => saveAll(keepalive)));
+  if (widgetsOn) return afterSaves(() => saveAll(keepalive));
   const body = snapshot();
   return (saving.last = saving.last.then(() => api("/api/playlist", { method: "POST", headers: { "Content-Type": "application/json" },
                                                                     body, keepalive: true }).then(async (res) => {
@@ -1307,6 +1307,14 @@ function flushSave({ keepalive = false } = {}) {
   })).catch((err) => message(`Couldn't save the playlist: ${err.message}`, "warn")));
 }
 window.addEventListener("pagehide", () => flushSave({ keepalive: true }));
+/** Runs `fn` after the saves (and reads) before it, so they happen in order. Whatever goes wrong in one, the next
+ *  still runs. */
+function afterSaves(fn) {
+  return (saving.last = saving.last.then(fn).catch((err) => {
+    console.error(err);
+    message(`Couldn't save: ${err.message}`, "warn");
+  }));
+}
 const small = (body) => new Blob([body]).size < 60 * 1024;
 
 async function saveAll(keepalive) {
@@ -1452,7 +1460,7 @@ let libPolled = 0;
 window.addEventListener("focus", () => {  // folders copied in by hand, edits from elsewhere: at most every 2 s
   if (!widgetsOn || Date.now() - libPolled < 2000) return;
   libPolled = Date.now();
-  saving.last = saving.last.then(() => refreshLibrary());
+  afterSaves(() => refreshLibrary());
 });
 
 /** A widget changed both here and on disk: library.js's #conflictDlg asks which to keep (its `openConflict(id)`),
@@ -1469,7 +1477,7 @@ async function keepConflict(id, mine) {
   const meta = libMeta.get(id);
   if (!meta) return;
   if (mine) { meta.force = true; saveSoon(0); }
-  else saving.last = saving.last.then(() => refreshLibrary([id]));
+  else afterSaves(() => refreshLibrary([id]));
 }
 /** A save found the widget's folder gone: offers to restore it from Recently deleted, else forgets it. */
 async function widgetGone(id) {
@@ -1513,7 +1521,7 @@ async function restoreFolder(action) {
     const out = await postJson("/api/widgets/restore", { trash: action.trash });
     if (lib.has(out.id)) takeInWidget(out.id, out.widget, out.stamp);
     else libAdd(out);
-    saving.last = saving.last.then(() => refreshLibrary());  // its fonts and the deleted list
+    afterSaves(() => refreshLibrary());  // its fonts and the deleted list
   } catch (err) {
     message(`Couldn't bring ${action.id} back: ${err.message}`, "warn");
   }

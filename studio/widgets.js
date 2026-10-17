@@ -366,7 +366,8 @@ window.WV = WV;
         if (leaf.w > MAX_PLACED[0] || leaf.h > MAX_PLACED[1]) return null;
       } else if (type === "text") {
         const text = substitute(typeof o.text === "string" ? o.text : "", f.scope.text);
-        const outline = plainObject(o.outline) ? o.outline : {};
+        // read leniently, as the player reads it: an outline whose width isn't a number is no outline at all
+        const outline = plainObject(o.outline) && !("width" in o.outline && typeof o.outline.width !== "number") ? o.outline : {};
         Object.assign(leaf, { x: f.ox + rnd(S * x), y: f.oy + rnd(S * y), text, live: isLive(text),
                               font: typeof o.font === "string" && fontNameOk(o.font) ? `${f.wid}|${o.font}` : "",
                               size: num(o.size, 48) * S, color: "color" in o ? paint(o.color, FALLBACK.text) : FALLBACK.text,
@@ -378,16 +379,19 @@ window.WV = WV;
         delete leaf.w;
         delete leaf.h;
       } else {
+        // read leniently, as the player reads it: a fill or stroke with a key of the wrong kind is left at its default
+        const wrong = (v, key, kind) => key in v && typeof v[key] !== kind;
+        const stops = o.fill?.stops === undefined ? [] : o.fill.stops;
         let fill = { type: "solid", color: "#ffffff" };  // the player's default, also for a fill it can't read
         if (o.fill === null) fill = null;
         else if (plainObject(o.fill) && o.fill.type === "solid") {
           fill = { type: "solid", color: "color" in o.fill ? paint(o.fill.color, FALLBACK.fill) : "#ffffff" };
-        } else if (plainObject(o.fill) && o.fill.type === "linear") {
+        } else if (plainObject(o.fill) && o.fill.type === "linear" && !wrong(o.fill, "angle", "number") && Array.isArray(stops)
+                   && stops.every((s) => plainObject(s) && !wrong(s, "at", "number") && !wrong(s, "color", "string"))) {
           fill = { type: "linear", angle: num(o.fill.angle, 0),
-                   stops: (Array.isArray(o.fill.stops) ? o.fill.stops : []).map((s) => ({
-                     at: num(s?.at, 0), color: plainObject(s) && "color" in s ? paint(s.color, FALLBACK.fill) : "#ffffff" })) };
+                   stops: stops.map((s) => ({ at: num(s.at, 0), color: "color" in s ? paint(s.color, FALLBACK.fill) : "#ffffff" })) };
         }
-        const st = plainObject(o.stroke) ? o.stroke : null;
+        const st = plainObject(o.stroke) && !wrong(o.stroke, "width", "number") && !wrong(o.stroke, "color", "string") ? o.stroke : null;
         const [x0, y0, dw, dh] = edges();
         Object.assign(leaf, { x: x0, y: y0, w: dw, h: dh, shape: ["rect", "ellipse", "line"].includes(o.shape) ? o.shape : "rect",
                               radius: num(o.radius, 0) * S, fill, crisp: o.crisp === true,
