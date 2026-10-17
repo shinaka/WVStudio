@@ -1197,8 +1197,15 @@
   $("wdExport").addEventListener("click", forOpen(openExport));
   $("wdDelete").addEventListener("click", forOpen(openDelete));
 
-  // the selection decides whether From selection can be used
-  WV.hooks.props.push(() => { $("wcFromSel").disabled = !canMakeFromSelection(); });
+  WV.hooks.props.push((p) => {
+    // With no object selected in a widget, its own properties show, over the layer's when a layer is selected: a
+    // layer stays selected once an object on it was, and the widget's properties would be out of reach.
+    if (isWidgetHolder() && !p && $("pWidget").hidden && lib.has(holderWidgetId())) {
+      $("pWidget").hidden = false;
+      showWidgetProps(holderWidgetId());
+    }
+    $("wcFromSel").disabled = !canMakeFromSelection();  // the selection decides whether From selection can be used
+  });
   // texts to fill in with live values: the open widget's text defaults, for their rows' "shows …", and the live text
   // the widgets' cards show while the Widgets tab is open
   WV.texts.push(() => {
