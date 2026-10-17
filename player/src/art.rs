@@ -63,11 +63,11 @@ pub fn load(scene: &Scene, global: &[Layer], opts: &Options, save: bool) -> Resu
     Ok(prepared)
 }
 
-/// Full-resolution colour keeps coloured pixel-art edges sharp; a scene with video doesn't need it. Only
-/// the scene's own layers are looked at, for now.
+/// Full-resolution colour keeps coloured pixel-art edges sharp; a scene with video, in its own layers or
+/// the global ones, doesn't need it.
 pub fn sampling(scene: &Scene, global: &[Layer]) -> SamplingFactor {
-    let _ = global;
-    let video = scene.layers.iter().flat_map(|l| &l.objects).any(|o| matches!(&o.kind, Kind::Media(m) if crate::media::is_video(&m.src)));
+    let mut objects = scene.layers.iter().chain(global).flat_map(|l| &l.objects);
+    let video = objects.any(|o| matches!(&o.kind, Kind::Media(m) if crate::media::is_video(&m.src)));
     if video { SamplingFactor::R_4_2_0 } else { SamplingFactor::R_4_4_4 }
 }
 
