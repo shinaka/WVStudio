@@ -33,6 +33,7 @@ window.WV = WV;
   const rnd = (v) => Math.floor(v + 0.5);
   const num = (v, fallback) => (typeof v === "number" && Number.isFinite(v) ? v : fallback);
   const unit = (v) => Math.min(1, Math.max(0, num(v, 1)));  // an opacity, as the player reads it
+  const idOf = (o) => (typeof o.id === "string" ? o.id : "");  // as the player reads an id: one that isn't text is ""
   const cut = (s) => (s.length > MAX_TEXT ? [...s].slice(0, MAX_TEXT).join("") : s);  // code points: never half an emoji
 
   const idOk = (id) => typeof id === "string" && ID_RE.test(id) && !RESERVED.has(id);
@@ -281,7 +282,7 @@ window.WV = WV;
     copy(o, frame, out, marks) {
       const mark = (kind) => {
         if (frame.depth !== this.markDepth) return;
-        marks.push({ id: String(o.id ?? ""), kind, widget: typeof o.widget === "string" ? o.widget : "",
+        marks.push({ id: o.id ?? "", kind, widget: typeof o.widget === "string" ? o.widget : "",
                      x: num(o.x, 0), y: num(o.y, 0), w: num(o.w, 0), h: num(o.h, 0) });
       };
       if (!this.step()) return mark("budget");
@@ -302,9 +303,9 @@ window.WV = WV;
       const clip = frame.clip ? meet(box, frame.clip) : box;
       if (clip[2] <= clip[0] || clip[3] <= clip[1]) return;
       const scope = scopeOf(def, o.inputs, frame.scope, frame.folder);
-      const id = String(o.id ?? ""), path = frame.path + id + "/";
+      const id = idOf(o), path = frame.path + id + "/";
       const groups = opacity < 1 ? [...frame.groups, { id: frame.path + id, opacity, rect: meet(clip, this.panel) }] : frame.groups;
-      const top = frame.top ?? (frame.depth === this.markDepth ? id : undefined);
+      const top = frame.top ?? (frame.depth === this.markDepth ? o.id ?? "" : undefined);  // the page's own object, as it is
       const ref = refOf(def.background), bg = ref !== null ? scope.color.get(ref) ?? null : color(def.background);
       if (bg) {
         if (!this.step()) return;
@@ -343,7 +344,7 @@ window.WV = WV;
     leaf(o, f) {
       const type = o.type;
       if (type !== "image" && type !== "video" && type !== "text" && type !== "shape") return null;
-      const S = f.s, oid = String(o.id ?? "");
+      const S = f.s, oid = idOf(o);
       const x = num(o.x, 0), y = num(o.y, 0), w = num(o.w, 0), h = num(o.h, 0);
       // a bindable colour: `{$id}` of a colour input takes its value; then anything that isn't a colour falls back
       const paint = (v, fallback) => (refOf(v) !== null ? f.scope.color.get(refOf(v)) : color(v)) ?? fallback;
@@ -353,7 +354,7 @@ window.WV = WV;
       };
       const leaf = { id: f.path + oid, type, visible: true, opacity: unit(o.opacity), x: 0, y: 0, w: 0, h: 0,
                      rotate: [0, 90, 180, 270].includes(o.rotate) ? o.rotate : 0, flip: o.flip === true,
-                     clip: f.clip, groups: f.groups, top: f.top ?? oid };
+                     clip: f.clip, groups: f.groups, top: f.top ?? o.id ?? "" };
       if (type === "image" || type === "video") {
         if (typeof o.src !== "string") return null;
         const raw = spaces(o.src), ref = refOf(raw), src = ref !== null ? f.scope.image.get(ref) ?? "" : pathOk(raw) ? f.folder + raw : "";
@@ -379,7 +380,8 @@ window.WV = WV;
         delete leaf.w;
         delete leaf.h;
       } else {
-        // read leniently, as the player reads it: a fill or stroke with a key of the wrong kind is left at its default
+        // read leniently, as the player reads it: a fill or stroke with a key of the wrong kind is left at its default.
+        // A colour that isn't text (a number, null) isn't a colour, so it takes the fallback like any other
         const wrong = (v, key, kind) => key in v && typeof v[key] !== kind;
         const stops = o.fill?.stops === undefined ? [] : o.fill.stops;
         let fill = { type: "solid", color: "#ffffff" };  // the player's default, also for a fill it can't read
@@ -387,11 +389,11 @@ window.WV = WV;
         else if (plainObject(o.fill) && o.fill.type === "solid") {
           fill = { type: "solid", color: "color" in o.fill ? paint(o.fill.color, FALLBACK.fill) : "#ffffff" };
         } else if (plainObject(o.fill) && o.fill.type === "linear" && !wrong(o.fill, "angle", "number") && Array.isArray(stops)
-                   && stops.every((s) => plainObject(s) && !wrong(s, "at", "number") && !wrong(s, "color", "string"))) {
+                   && stops.every((s) => plainObject(s) && !wrong(s, "at", "number"))) {
           fill = { type: "linear", angle: num(o.fill.angle, 0),
                    stops: stops.map((s) => ({ at: num(s.at, 0), color: "color" in s ? paint(s.color, FALLBACK.fill) : "#ffffff" })) };
         }
-        const st = plainObject(o.stroke) && !wrong(o.stroke, "width", "number") && !wrong(o.stroke, "color", "string") ? o.stroke : null;
+        const st = plainObject(o.stroke) && !wrong(o.stroke, "width", "number") ? o.stroke : null;
         const [x0, y0, dw, dh] = edges();
         Object.assign(leaf, { x: x0, y: y0, w: dw, h: dh, shape: ["rect", "ellipse", "line"].includes(o.shape) ? o.shape : "rect",
                               radius: num(o.radius, 0) * S, fill, crisp: o.crisp === true,
