@@ -1150,4 +1150,423 @@ mod drawing_tests {}
 
 /// Live text laid over the frames: the over list (docs/widgets.md, Live text). Owned by work package P3.
 #[cfg(test)]
-mod over_tests {}
+mod over_tests {
+    use super::*;
+    use crate::playlist::{self, Group, Media, Paint};
+    use image::codecs::gif::GifEncoder;
+    use image::{Delay, Rgba};
+    use serde_json::{Value, json};
+    use std::path::PathBuf;
+
+    /// A folder of its own with `a.gif`: 3 frames of 100 ms, 4 x 4, dark red.
+    struct Scratch {
+        dir: PathBuf,
+    }
+
+    impl Scratch {
+        fn new(name: &str) -> Scratch {
+            let dir = std::env::temp_dir().join(format!("wvplay-over-{name}-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut gif = GifEncoder::new(std::fs::File::create(dir.join("a.gif")).unwrap());
+            for shade in [40u8, 80, 120] {
+                let im = RgbaImage::from_pixel(4, 4, Rgba([shade, 0, 0, 255]));
+                gif.encode_frame(image::Frame::from_parts(im, 0, 0, Delay::from_numer_denom_ms(100, 1))).unwrap();
+            }
+            Scratch { dir }
+        }
+
+        fn gif(&self, id: &str, x: f64, y: f64, w: f64, h: f64) -> Object {
+            object(id, x, y, w, h, Kind::Media(Media { src: self.dir.join("a.gif"), ..Media::default() }))
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn opts() -> Options {
+        Options { rotate180: false, quality: 95, ffmpeg: PathBuf::from("ffmpeg") }
+    }
+
+    fn have_font() -> bool {
+        Path::new(DEFAULT_FONT).exists()
+    }
+
+    fn object(id: &str, x: f64, y: f64, w: f64, h: f64, kind: Kind) -> Object {
+        Object { id: id.into(), visible: true, opacity: 1.0, x, y, w, h, rotate: 0, flip: false, kind, clip: None, groups: Vec::new() }
+    }
+
+    fn rect(id: &str, x: f64, y: f64, w: f64, h: f64, color: &str) -> Object {
+        let shape = Shape { fill: Some(Paint::Solid { color: color.into() }), crisp: true, ..Shape::default() };
+        object(id, x, y, w, h, Kind::Shape(shape))
+    }
+
+    /// Text at `x`, `y`: live when it has a placeholder.
+    fn text(id: &str, x: f64, y: f64, words: &str) -> Object {
+        let w = Text { id: id.into(), kind: "text".into(), text: words.into(), size: 40.0, x: x as f32, y: y as f32,
+                       live: crate::data::is_live(words), ..Text::default() };
+        object(id, x, y, 0.0, 0.0, Kind::Text(w))
+    }
+
+    /// The object as a copy's leaf: inside `clip`, in `groups` (id, opacity, rect), outermost first.
+    fn leaf(mut o: Object, clip: Rect, groups: &[(&str, f32, Rect)]) -> Object {
+        o.clip = Some(clip);
+        o.groups = groups.iter().map(|(id, opacity, rect)| Group { id: id.to_string(), opacity: *opacity, rect: *rect }).collect();
+        if let Kind::Text(w) = &mut o.kind {
+            w.clip = Some(clip);
+        }
+        o
+    }
+
+    fn with_opacity(mut o: Object, opacity: f32) -> Object {
+        o.opacity = opacity;
+        if let Kind::Text(w) = &mut o.kind {
+            w.opacity = opacity;
+        }
+        o
+    }
+
+    fn layer(id: &str, opacity: f32, objects: Vec<Object>) -> Layer {
+        Layer { id: id.into(), name: id.into(), visible: true, opacity, objects }
+    }
+
+    fn scene(layers: Vec<Layer>) -> Scene {
+        Scene { id: "s".into(), name: "s".into(), seconds: 10.0, background: "#000000".into(), layers }
+    }
+
+    /// The over list in short: `S` a still, `T<index>` a text (`*fold` unless 1), `G<opacity>[...]` a group.
+    fn outline(over: &[Over]) -> String {
+        over.iter()
+            .map(|node| match node {
+                Over::Still(_) => "S".to_string(),
+                Over::Text { index, fold } if *fold == 1.0 => format!("T{index}"),
+                Over::Text { index, fold } => format!("T{index}*{fold}"),
+                Over::Group { opacity, children, .. } => format!("G{opacity}[{}]", outline(children)),
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn over_of(scene: &Scene, global: &[Layer]) -> Vec<Over> {
+        prepare(scene, global, &opts()).unwrap().over
+    }
+
+    /// The live texts filled in with `values`, in turn.
+    fn filled(scene: &Scene, global: &[Layer], values: &[&str]) -> Vec<Text> {
+        let live = playlist::live_texts(scene, global);
+        assert_eq!(live.len(), values.len(), "values for every live text");
+        live.into_iter().zip(values).map(|(w, v)| Text { text: v.to_string(), ..w }).collect()
+    }
+
+    /// The scene and the global layers with their live texts written in as static text with `values`.
+    fn written_in(scene: &Scene, global: &[Layer], values: &[&str]) -> (Scene, Vec<Layer>) {
+        let mut values = values.iter();
+        let mut write = |layers: &[Layer]| -> Vec<Layer> {
+            let mut layers = layers.to_vec();
+            for o in layers.iter_mut().filter(|l| l.visible).flat_map(|l| l.objects.iter_mut()).filter(|o| o.visible) {
+                if let Kind::Text(w) = &mut o.kind
+                    && w.live
+                {
+                    (w.text, w.live) = (values.next().unwrap().to_string(), false);
+                }
+            }
+            layers
+        };
+        let layers = write(&scene.layers);
+        (Scene { layers, ..scene.clone() }, write(global))
+    }
+
+    /// The largest difference in any channel.
+    fn worst(a: &RgbImage, b: &RgbImage) -> u8 {
+        a.pixels().zip(b.pixels()).flat_map(|(p, q)| (0..3).map(move |c| p[c].abs_diff(q[c]))).max().unwrap_or(0)
+    }
+
+    /// The shapes of the over list, one rule of docs/widgets.md (Live text) at a time: where S starts,
+    /// what goes into the frames, and what's laid over them. Leaves are built as a copy's expansion
+    /// makes them.
+    #[test]
+    fn over_list_shapes() {
+        let g1 = [0, 0, 100, 40];
+        let g2 = [50, 0, 150, 40];
+        // two opaque gauge copies in one layer: S is the first value alone; the second gauge's panel is
+        // laid over it, then the second value
+        let gauges = scene(vec![layer("l", 1.0, vec![
+            rect("bg", 0.0, 0.0, 400.0, 200.0, "#102030"),
+            leaf(rect("g1/background", 0.0, 0.0, 100.0, 40.0, "#202020"), g1, &[]),
+            leaf(text("g1/v", 4.0, 4.0, "{pc.cpu.temp}"), g1, &[]),
+            leaf(rect("g1/u", 4.0, 30.0, 92.0, 6.0, "#3ddc84"), g1, &[]),
+            leaf(rect("g2/background", 50.0, 0.0, 100.0, 40.0, "#202020"), g2, &[]),
+            leaf(text("g2/v", 54.0, 4.0, "{pc.gpu.temp}"), g2, &[]),
+            leaf(rect("g2/u", 54.0, 30.0, 92.0, 6.0, "#3ddc84"), g2, &[]),
+        ])]);
+        let planned = plan(&gauges, &[], &opts());
+        assert_eq!(planned.placement, Some(Placement { on_top: false, cut: "g1/v".into() }));
+        let below: Vec<Vec<&str>> = planned.below.iter().map(|s| s.objects.iter().map(|o| o.object.id.as_str()).collect()).collect();
+        assert_eq!(below, [["bg", "g1/background"]]);
+        assert_eq!(outline(&over_of(&gauges, &[])), "T0 S T1 S");
+
+        // a copy at 0.5: S is the copy, whose live text is laid over in its group
+        let c = [10, 10, 110, 50];
+        let faded = |extra: Vec<Object>| {
+            let mut objects = vec![
+                rect("r", 0.0, 0.0, 20.0, 20.0, "#ff0000"),
+                leaf(rect("h/background", 10.0, 10.0, 100.0, 40.0, "#202020"), c, &[("h", 0.5, c)]),
+                leaf(text("h/v", 14.0, 14.0, "{pc.cpu.temp}"), c, &[("h", 0.5, c)]),
+                leaf(rect("h/u", 14.0, 40.0, 92.0, 6.0, "#3ddc84"), c, &[("h", 0.5, c)]),
+            ];
+            objects.extend(extra);
+            scene(vec![layer("l", 1.0, objects)])
+        };
+        let one = faded(Vec::new());
+        assert_eq!(placement(&one, &[], &opts()).unwrap().cut, "h/background");
+        assert_eq!(outline(&over_of(&one, &[])), "G0.5[S T0 S]");
+        // and whatever follows it in the layer, then later layers, and the global ones, are stills
+        let after = faded(vec![rect("z", 0.0, 0.0, 5.0, 5.0, "#ffffff")]);
+        let global = [layer("g", 0.5, vec![rect("bar", 0.0, 700.0, 1600.0, 20.0, "#101010")])];
+        assert_eq!(outline(&over_of(&after, &global)), "G0.5[S T0 S] S");
+
+        // a widget layer at 0.5 inside a copy at 0.8: the group in the group holds the text
+        let nested = scene(vec![layer("l", 1.0, vec![
+            leaf(rect("k/background", 10.0, 10.0, 100.0, 40.0, "#202020"), c, &[("k", 0.8, c)]),
+            leaf(rect("k/back", 12.0, 12.0, 50.0, 20.0, "#404040"), c, &[("k", 0.8, c), ("k/l1", 0.5, c)]),
+            leaf(text("k/v", 14.0, 14.0, "{pc.cpu.temp}"), c, &[("k", 0.8, c), ("k/l1", 0.5, c)]),
+            leaf(rect("k/top", 14.0, 40.0, 92.0, 6.0, "#3ddc84"), c, &[("k", 0.8, c)]),
+        ])]);
+        assert_eq!(placement(&nested, &[], &opts()).unwrap().cut, "k/background");
+        assert_eq!(outline(&over_of(&nested, &[])), "G0.8[S G0.5[S T0] S]");
+
+        // a scene layer at 0.5: S is the whole layer, which is a group over the panel
+        let layered = scene(vec![
+            layer("under", 1.0, vec![rect("bg", 0.0, 0.0, 400.0, 200.0, "#102030")]),
+            layer("l", 0.5, vec![rect("a", 0.0, 0.0, 20.0, 20.0, "#ff0000"), text("t", 10.0, 10.0, "{time}"), rect("b", 30.0, 10.0, 20.0, 20.0, "#00ff00")]),
+            layer("over", 1.0, vec![rect("o", 0.0, 0.0, 20.0, 20.0, "#0000ff")]),
+            layer("later", 0.5, vec![text("t2", 10.0, 100.0, "{time}")]),
+        ]);
+        let planned = plan(&layered, &[], &opts());
+        assert_eq!(planned.placement, Some(Placement { on_top: false, cut: "a".into() }));
+        assert_eq!(planned.below.len(), 1);
+        let over = over_of(&layered, &[]);
+        assert_eq!(outline(&over), "G0.5[S T0 S] S G0.5[T1]");
+        let Over::Group { rect: whole, .. } = &over[0] else { unreachable!() };
+        assert_eq!(*whole, PANEL);
+
+        // a copy hanging off the panel draws nothing, and its live text keeps its number
+        let off = [-300, 0, -200, 40];
+        let gone = scene(vec![layer("l", 1.0, vec![
+            text("first", 0.0, 0.0, "{time}"),
+            leaf(text("o/v", -290.0, 4.0, "{time}"), off, &[("o", 0.5, off)]),
+            text("last", 0.0, 100.0, "{time}"),
+        ])]);
+        assert_eq!(outline(&over_of(&gone, &[])), "T0 T2");
+
+        // no live text: nothing over the frames
+        let none = scene(vec![layer("l", 1.0, vec![rect("r", 0.0, 0.0, 20.0, 20.0, "#ff0000")])]);
+        assert_eq!(placement(&none, &[], &opts()), None);
+        assert!(over_of(&none, &[]).is_empty());
+        // only the global layers' live text: P is there
+        let clock = [layer("g", 1.0, vec![text("clock", 0.0, 680.0, "{time}")])];
+        assert_eq!(placement(&none, &clock, &opts()).unwrap().cut, "clock");
+        assert_eq!(outline(&over_of(&none, &clock)), "T0");
+    }
+
+    /// With something animated from S up, every live text goes on top: one text per live text, folding in
+    /// its layer's and its groups' opacities, drawn over the animation and only inside its clip.
+    #[test]
+    fn live_on_top() {
+        if !have_font() {
+            return;
+        }
+        let s = Scratch::new("on-top");
+        let c = [100, 100, 300, 180];
+        let scene = scene(vec![
+            layer("l", 0.5, vec![
+                leaf(rect("c/background", 100.0, 100.0, 200.0, 80.0, "#202020"), c, &[("c", 0.5, c)]),
+                leaf(with_opacity(text("c/v", 110.0, 110.0, "{pc.cpu.temp}"), 0.8), c, &[("c", 0.5, c)]),
+                text("t", 600.0, 300.0, "{time}"),
+            ]),
+            layer("anim", 1.0, vec![s.gif("g", 90.0, 90.0, 400.0, 100.0)]),
+        ]);
+        assert_eq!(placement(&scene, &[], &opts()), Some(Placement { on_top: true, cut: "c/background".into() }));
+        let prepared = prepare(&scene, &[], &opts()).unwrap();
+        assert_eq!(prepared.over, [Over::Text { index: 0, fold: 0.25 }, Over::Text { index: 1, fold: 0.5 }]);
+        assert_eq!(prepared.frames.len(), 3);
+        // white text, longer than its copy is wide, at 0.8 × 0.25 over the animation
+        let shown = render_at(&scene, &[], &opts(), Duration::ZERO, &filled(&scene, &[], &["88888888888888", "12:34"]));
+        let blank = render_at(&scene, &[], &opts(), Duration::ZERO, &filled(&scene, &[], &["", ""]));
+        let changed: Vec<(u32, u32)> = shown.enumerate_pixels().zip(blank.pixels()).filter(|((_, _, p), q)| p != q).map(|((x, y, _), _)| (x, y)).collect();
+        let inside = |(x, y): (u32, u32)| (c[0]..c[2]).contains(&(x as i64)) && (c[1]..c[3]).contains(&(y as i64));
+        let near_t = |(x, y): (u32, u32)| (590..900).contains(&x) && (290..380).contains(&y);
+        assert!(changed.iter().all(|p| inside(*p) || near_t(*p)), "drawn outside its clip");
+        // over the animation: it shows where the GIF is
+        let over_gif = changed.iter().filter(|(x, y)| inside((*x, *y)) && (90..490).contains(x) && (90..190).contains(y)).count();
+        assert!(over_gif > 50, "{over_gif} pixels of the text over the animation");
+        let (x, y) = changed.iter().copied().find(|p| inside(*p)).unwrap();
+        let (p, q) = (shown.get_pixel(x, y), blank.get_pixel(x, y));
+        assert!(p[1] > q[1] && p[1] - q[1] <= 52, "{p:?} over {q:?}: about a fifth of white"); // 0.2 × 255 at most
+    }
+
+    /// In place, the frames and the baked over list draw exactly what the scene would with its live text
+    /// written in as static text, for every kind of group the text can sit in. Needs work package P2's
+    /// drawing of groups and clips (render_objects) for the static side and the stills in groups.
+    #[test]
+    #[ignore = "until P2 merges"]
+    fn live_in_place_is_exact() {
+        if !have_font() {
+            return;
+        }
+        let bg = || rect("bg", 0.0, 0.0, 1600.0, 720.0, "#203040");
+        let c = [100, 100, 300, 180];
+        let panel = |id: &str, groups: &[(&str, f32, Rect)]| leaf(rect(id, 100.0, 100.0, 200.0, 80.0, "#606060"), c, groups);
+        let value = |id: &str, groups: &[(&str, f32, Rect)]| leaf(text(id, 110.0, 110.0, "{pc.cpu.temp}"), c, groups);
+        let bar = |id: &str, groups: &[(&str, f32, Rect)]| leaf(rect(id, 110.0, 150.0, 180.0, 20.0, "#00ff00"), c, groups);
+        let cover = || layer("cover", 1.0, vec![rect("cover", 150.0, 90.0, 60.0, 100.0, "#ff0000")]);
+        let g2 = [150, 100, 350, 180];
+        let cases: Vec<(&str, Scene, Vec<&str>)> = vec![
+            ("(a) an opaque copy under a still layer",
+             scene(vec![layer("l", 1.0, vec![bg(), panel("c/p", &[]), value("c/v", &[]), bar("c/u", &[])]), cover()]), vec!["88°"]),
+            ("(b) a copy at 0.5 over its own background",
+             scene(vec![layer("l", 1.0, vec![bg(), panel("c/background", &[("c", 0.5, c)]), value("c/v", &[("c", 0.5, c)]), bar("c/u", &[("c", 0.5, c)])])]),
+             vec!["88°"]),
+            ("(c) a widget layer at 0.5 in a copy at 0.8",
+             scene(vec![layer("l", 1.0, vec![
+                 bg(),
+                 panel("c/background", &[("c", 0.8, c)]),
+                 bar("c/back", &[("c", 0.8, c), ("c/l1", 0.5, c)]),
+                 value("c/v", &[("c", 0.8, c), ("c/l1", 0.5, c)]),
+                 leaf(rect("c/top", 120.0, 105.0, 40.0, 70.0, "#ffff00"), c, &[("c", 0.8, c)]),
+             ])]),
+             vec!["88°"]),
+            ("(d) a scene layer at 0.5",
+             scene(vec![layer("under", 1.0, vec![bg()]),
+                        layer("l", 0.5, vec![rect("a", 100.0, 100.0, 200.0, 80.0, "#ff00ff"), text("t", 110.0, 110.0, "{time}"),
+                                             rect("b", 150.0, 90.0, 60.0, 100.0, "#00ffff")])]),
+             vec!["12:34"]),
+            ("(e) two live texts in different layers, a still layer between",
+             scene(vec![layer("l", 1.0, vec![bg(), text("t1", 110.0, 110.0, "{time}")]), cover(),
+                        layer("top", 1.0, vec![text("t2", 140.0, 130.0, "{pc.cpu.load}"), rect("o", 200.0, 120.0, 30.0, 60.0, "#ffffff")])]),
+             vec!["12:34", "56%"]),
+            ("(f) two gauge copies in one layer",
+             scene(vec![layer("l", 1.0, vec![
+                 bg(),
+                 panel("g1/p", &[]), value("g1/v", &[]),
+                 leaf(rect("g2/p", 150.0, 100.0, 200.0, 80.0, "#606060"), g2, &[]),
+                 leaf(text("g2/v", 160.0, 110.0, "{pc.gpu.temp}"), g2, &[]),
+             ])]),
+             vec!["88°", "77°"]),
+        ];
+        let mut wrong = Vec::new();
+        for (name, scene, values) in &cases {
+            let over = over_of(scene, &[]);
+            if over.is_empty() {
+                wrong.push(format!("{name}: nothing over the frames"));
+            }
+            assert!(!placement(scene, &[], &opts()).unwrap().on_top, "{name}");
+            let live = render_at(scene, &[], &opts(), Duration::ZERO, &filled(scene, &[], values));
+            let (written, global) = written_in(scene, &[], values);
+            let still = render_at(&written, &global, &opts(), Duration::ZERO, &[]);
+            let d = worst(&live, &still);
+            if d > 1 {
+                wrong.push(format!("{name}: differs by {d}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("; "));
+    }
+
+    /// The expected leaves of a fixture case, in the layers of its playlist that hold them (a leaf belongs
+    /// where its top-level object, the first part of its id, is), as a scene's or the global layers would
+    /// be read. Only what placement looks at is filled in: ids, opacities, clips, groups, live text and
+    /// media files.
+    fn fixture_layers(case: &Path, layers: &Value, leaves: &Value) -> Vec<Layer> {
+        let mut out: Vec<Layer> = layers
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|l| Layer {
+                id: l["id"].as_str().unwrap_or_default().into(),
+                name: String::new(),
+                visible: l["visible"].as_bool().unwrap_or(true),
+                opacity: l["opacity"].as_f64().unwrap_or(1.0).clamp(0.0, 1.0) as f32,
+                objects: Vec::new(),
+            })
+            .collect();
+        let rect = |v: &Value| -> Option<Rect> { Some([0, 1, 2, 3].map(|i| v[i].as_i64().unwrap_or(0))).filter(|_| v.is_array()) };
+        for leaf in leaves.as_array().into_iter().flatten() {
+            let id = leaf["id"].as_str().unwrap().to_string();
+            let top = id.split('/').next().unwrap();
+            let at = layers.as_array().into_iter().flatten().position(|l| {
+                l["objects"].as_array().into_iter().flatten().any(|o| o["id"].as_str() == Some(top))
+            });
+            let at = at.unwrap_or_else(|| panic!("{}: no layer holds {top}, for {id}", case.display()));
+            let num = |k: &str| leaf[k].as_f64().unwrap_or(0.0);
+            let kind = match leaf["type"].as_str() {
+                Some("image") => Kind::Media(Media { src: case.join(leaf["src"].as_str().unwrap()), ..Media::default() }),
+                Some("text") => {
+                    let words = leaf["text"].as_str().unwrap_or_default();
+                    Kind::Text(Text { id: id.clone(), kind: "text".into(), text: words.into(), live: leaf["live"] == json!(true),
+                                      x: num("x") as f32, y: num("y") as f32, size: num("size") as f32, clip: rect(&leaf["clip"]),
+                                      ..Text::default() })
+                }
+                _ => Kind::Shape(Shape::default()),
+            };
+            let groups = leaf["groups"].as_array().into_iter().flatten().map(|g| Group {
+                id: g[0].as_str().unwrap().into(),
+                opacity: g[1].as_f64().unwrap() as f32,
+                rect: rect(&g[2]).unwrap(),
+            });
+            out[at].objects.push(Object { opacity: num("opacity") as f32, clip: rect(&leaf["clip"]), groups: groups.collect(),
+                                          ..object(&id, num("x"), num("y"), num("w"), num("h"), kind) });
+        }
+        out
+    }
+
+    fn placement_json(p: Option<Placement>) -> Value {
+        match p {
+            Some(p) => json!({ "on_top": p.on_top, "cut": p.cut }),
+            None => json!({ "on_top": false, "cut": null }),
+        }
+    }
+
+    /// Every scene of every expand/<case> fixture has the placement its `expected.json` gives: worked out
+    /// from its expected leaves, and, once the expansion gives exactly those leaves, from the playlist as
+    /// it's read.
+    #[test]
+    fn fixtures_placement() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("widgets").join("expand");
+        let mut cases: Vec<PathBuf> = std::fs::read_dir(&root).unwrap().map(|e| e.unwrap().path()).filter(|p| p.is_dir()).collect();
+        cases.sort();
+        assert!(!cases.is_empty(), "no fixtures in {}", root.display());
+        let mut checked = 0;
+        for case in &cases {
+            let read = |name: &str| -> Value { serde_json::from_slice(&std::fs::read(case.join(name)).unwrap()).unwrap() };
+            let (expected, file) = (read("expected.json"), read("playlist/playlist.json"));
+            let global = fixture_layers(case, &file["global"]["layers"], &expected["global"]["leaves"]);
+            let list = case.join("playlist").join("playlist.json");
+            let as_read = playlist::read(&list, 30.0, Path::new("ffmpeg")).ok();
+            for want in expected["scenes"].as_array().unwrap() {
+                let id = want["id"].as_str().unwrap();
+                let listed = file["scenes"].as_array().unwrap().iter().find(|s| s["id"].as_str() == Some(id)).unwrap();
+                let layers = fixture_layers(case, &listed["layers"], &want["leaves"]);
+                let got = placement_json(placement(&scene(layers), &global, &opts()));
+                let name = format!("{}, scene {id}", case.file_name().unwrap().to_string_lossy());
+                assert_eq!(&want["placement"], &got, "{name}: expected.json's placement (add it as {got} when it has none)");
+                checked += 1;
+                // the same from the expansion itself, once it gives the expected leaves
+                let drawn = |layers: &[Layer]| -> Vec<String> {
+                    layers.iter().filter(|l| l.visible && l.opacity > 0.0).flat_map(|l| &l.objects).filter(|o| o.visible).map(|o| o.id.clone()).collect()
+                };
+                let ids: Vec<String> = want["leaves"].as_array().unwrap().iter().map(|l| l["id"].as_str().unwrap().to_string()).collect();
+                let global_ids: Vec<String> =
+                    expected["global"]["leaves"].as_array().unwrap().iter().map(|l| l["id"].as_str().unwrap().to_string()).collect();
+                match as_read.as_ref().and_then(|p| Some((p, p.scenes.iter().find(|s| s.id == id)?))) {
+                    Some((p, s)) if drawn(&s.layers) == ids && drawn(&p.global) == global_ids => {
+                        assert_eq!(placement_json(placement(s, &p.global, &opts())), got, "{name}, as read");
+                    }
+                    _ => println!("{name}: the expansion doesn't give the expected leaves (yet): placement checked on them alone"),
+                }
+            }
+        }
+        assert!(checked > 0);
+    }
+}

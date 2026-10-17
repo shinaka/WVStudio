@@ -196,3 +196,50 @@ pub fn encode(rgb: &RgbImage, quality: u8, sampling: SamplingFactor) -> Result<V
         q -= 5;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::text::DEFAULT_FONT;
+    use image::{Rgba, RgbaImage};
+
+    fn still(left: u32, top: u32, colour: [u8; 4]) -> Over {
+        Over::Still(Arc::new(Buf { left, top, image: RgbaImage::from_pixel(4, 4, Rgba(colour)) }))
+    }
+
+    /// A text whose index is past the end of the texts is skipped: the rest is drawn, and nothing panics.
+    #[test]
+    fn bake_skips_bad_index() {
+        let texts = vec![
+            Text { kind: "text".into(), text: "one".into(), x: 100.0, y: 100.0, ..Text::default() },
+            Text { kind: "text".into(), text: "two".into(), x: 300.0, y: 100.0, ..Text::default() },
+        ];
+        let over = vec![
+            still(10, 10, [255, 0, 0, 255]),
+            Over::Text { index: 5, fold: 1.0 },
+            Over::Group { opacity: 0.5, rect: [20, 10, 24, 14], children: vec![still(20, 10, [0, 0, 255, 255]), Over::Text { index: 9, fold: 1.0 }] },
+            Over::Text { index: 1, fold: 1.0 },
+        ];
+        let at = |b: &Buf, x: u32, y: u32| *b.image.get_pixel(x - b.left, y - b.top);
+        for texts in [&texts[..], &[]] {
+            let baked = bake(&over, texts);
+            assert_eq!((baked.left, baked.top), (10, 10));
+            assert_eq!(at(&baked, 10, 10), Rgba([255, 0, 0, 255]));
+            assert_eq!(at(&baked, 21, 11), Rgba([0, 0, 255, 128])); // the group at half
+            // text 1 ("two") is drawn; text 0 isn't asked for
+            let reach = baked.left + baked.image.width();
+            if texts.is_empty() || !std::path::Path::new(DEFAULT_FONT).exists() {
+                assert_eq!(reach, 24);
+            } else {
+                assert!(reach > 300, "text 1 not drawn");
+                assert!((100..290).all(|x| (100..150).all(|y| at(&baked, x, y)[3] == 0)), "text 0 drawn");
+            }
+        }
+        // nothing to lay over: an empty buffer, and the frames as they are
+        assert!(bake(&[], &texts).is_empty());
+        let prepared = Prepared { frames: vec![Frame { jpeg: vec![1, 2, 3], duration: Duration::from_millis(40) }], over: Vec::new() };
+        let opts = Options { rotate180: true, quality: 90, ffmpeg: PathBuf::from("ffmpeg") };
+        let scene = Scene { id: "s".into(), name: "s".into(), seconds: 1.0, background: "#000000".into(), layers: Vec::new() };
+        assert_eq!(overlay(&scene, &[], &prepared, &texts, &opts)[0].jpeg, [1, 2, 3]);
+    }
+}
