@@ -1513,13 +1513,15 @@ function libAdd(e, gen = null) {
 }
 /** The one way content under an id the library holds is replaced from outside the history (a change on disk, Use
  *  the file's version, Import with Replace, Restore): every undo and redo state takes it too, so no undo or redo can
- *  write the older content back over it. */
+ *  write the older content back over it. The open widget's canvas follows its new size. */
 function takeInWidget(id, content, stamp) {
   const meta = libMeta.get(id) || { gen: lostGens.get(id) ?? 0 };
+  const open = holderWidgetId() === id && lib.has(id), was = open ? containerSize(id) : null;
   meta.gen = (meta.gen ?? 0) + 1;
   libAdd({ id, widget: content, stamp });
   libMeta.get(id).gen = meta.gen;
   rewriteHistory(id, lib.get(id), meta.gen);
+  if (open && containerSize(id) !== was) useCanvas();
 }
 /** Drops a widget from the library (its copies show as missing). `history`: from every undo and redo state too, for
  *  a folder gone from disk. */
