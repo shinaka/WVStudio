@@ -7,6 +7,7 @@
 //! when their files are opened.
 
 use std::collections::{HashMap, HashSet};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -25,8 +26,14 @@ pub const MAX_INPUTS: usize = 32;
 /// An image or video placed bigger than this is left out.
 pub const MAX_PLACED: (i64, i64) = (6400, 2880);
 
-/// Characters (code points) kept of a text input's value or default.
+/// Characters (code points) kept of a text input's value or default, before and after its own text pass.
 const MAX_TEXT: usize = 2000;
+/// Characters kept of a text inside a copy, once its values are in.
+const MAX_LEAF_TEXT: usize = 4000;
+/// Characters kept of a copy's, a widget layer's or a widget object's id.
+const MAX_ID: usize = 64;
+/// Bytes of a `widget.json` read: a bigger one draws nothing, as the studio won't save one.
+const MAX_JSON: u64 = 1 << 20;
 /// Windows' reserved names, which no id, path part or font stem may be.
 const RESERVED: [&str; 22] = ["con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
                               "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9"];
@@ -52,50 +59,74 @@ enum Token<'a> {
 }
 
 /// The text pass's reading (docs/widgets.md, Substitution): `{{` and `}}` are copied whole, `{$` starts a
-/// reference whose body runs to the next `{`, `}` or line break and counts only when that's a `}`.
-fn tokens<'a>(text: &'a str, mut token: impl FnMut(Token<'a>)) {
+/// reference whose body runs to the next `{`, `}` or line break and counts only when that's a `}`. It stops
+/// early when `token` says so.
+fn tokens<'a>(text: &'a str, mut token: impl FnMut(Token<'a>) -> bool) {
     let mut rest = text;
     while !rest.is_empty() {
         let at = rest.find(['{', '}']).unwrap_or(rest.len());
-        if at > 0 {
-            token(Token::Copy(&rest[..at]));
-            rest = &rest[at..];
-            continue;
-        }
-        if rest.starts_with("{{") || rest.starts_with("}}") {
-            token(Token::Copy(&rest[..2]));
-            rest = &rest[2..];
-            continue;
-        }
-        if let Some(after) = rest.strip_prefix("{$")
+        let (next, after) = if at > 0 {
+            (Token::Copy(&rest[..at]), &rest[at..])
+        } else if rest.starts_with("{{") || rest.starts_with("}}") {
+            (Token::Copy(&rest[..2]), &rest[2..])
+        } else if let Some(after) = rest.strip_prefix("{$")
             && let Some(end) = after.find(['{', '}', '\n'])
             && after[end..].starts_with('}')
         {
-            token(Token::Ref(&after[..end]));
-            rest = &after[end + 1..];
-            continue;
+            (Token::Ref(&after[..end]), &after[end + 1..])
+        } else {
+            (Token::Copy(&rest[..1]), &rest[1..])
+        };
+        if !token(next) {
+            return;
         }
-        token(Token::Copy(&rest[..1]));
-        rest = &rest[1..];
+        rest = after;
+    }
+}
+
+/// Text written out up to a number of characters (code points), never stopping inside one. The rest is
+/// dropped.
+struct Capped {
+    text: String,
+    room: usize,
+}
+
+impl Capped {
+    /// Adds `s`, or as much of it as there's room for: false once it's full.
+    fn push(&mut self, s: &str) -> bool {
+        let mut n = 0;
+        for (at, _) in s.char_indices() {
+            if n == self.room {
+                self.text.push_str(&s[..at]);
+                self.room = 0;
+                return false;
+            }
+            n += 1;
+        }
+        self.text.push_str(s);
+        self.room -= n;
+        true
     }
 }
 
 /// The text pass (docs/widgets.md, Substitution): `{$id}` of a text input replaced by its value, made safe.
 pub fn substitute(text: &str, input: &dyn Fn(&str) -> Option<String>) -> String {
-    let mut out = String::with_capacity(text.len());
+    substitute_cut(text, input, usize::MAX)
+}
+
+/// `substitute`, cut to its first `max` characters (code points). It stops once it has them, so a text
+/// that would grow huge is never built whole.
+fn substitute_cut(text: &str, input: &dyn Fn(&str) -> Option<String>, max: usize) -> String {
+    let mut out = Capped { text: String::with_capacity(text.len().min(max)), room: max };
     tokens(text, |token| match token {
-        Token::Copy(s) => out.push_str(s),
+        Token::Copy(s) => out.push(s),
         Token::Ref(body) => match input(body) {
-            Some(value) => out.push_str(&make_safe(&value)),
+            Some(value) => out.push(&make_safe(&value)),
             // shown as written, and never live
-            None => {
-                out.push_str("{{$");
-                out.push_str(body);
-                out.push_str("}}");
-            }
+            None => out.push("{{$") && out.push(body) && out.push("}}"),
         },
     });
-    out
+    out.text
 }
 
 /// A value made safe: the text pass with no inputs, then written out in the canonical form.
@@ -291,7 +322,8 @@ pub struct Def {
 /// so it's left out once, when the widget is read, rather than passed over again in every copy.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DefLayer {
-    /// As written, or `l<index>` (its place among the file's layers) when it has none.
+    /// As written (its first 64 characters), or `l<index>` (its place among the file's layers) when it has
+    /// none.
     pub id: String,
     /// Above 0, at most 1.
     pub opacity: f64,
@@ -366,10 +398,15 @@ impl Library {
 
     /// `widget.json`, read leniently: what makes no sense is left at its default, and logged.
     fn read(&mut self, id: &str, file: &Path) -> Result<Def, String> {
-        let bytes = std::fs::read(file).map_err(|e| match e.kind() {
+        // never more than one byte past the cap, whatever the file's size
+        let mut bytes = Vec::new();
+        std::fs::File::open(file).and_then(|f| f.take(MAX_JSON + 1).read_to_end(&mut bytes)).map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => format!("widget {id}: no widgets\\{id}\\widget.json"),
             _ => format!("widget {id}: couldn't read widget.json ({e})"),
         })?;
+        if bytes.len() as u64 > MAX_JSON {
+            return Err(format!("widget {id}: widget.json is too big (more than 1 MiB)"));
+        }
         let json: Value = serde_json::from_slice(&bytes).map_err(|e| format!("widget {id}: widget.json isn't valid JSON ({e})"))?;
         let Value::Object(keys) = json else {
             return Err(format!("widget {id}: widget.json isn't a widget (it isn't a JSON object)"));
@@ -479,7 +516,7 @@ fn layers(list: Option<&Value>) -> Vec<DefLayer> {
         if objects.is_empty() {
             continue;
         }
-        let id = keys.get("id").and_then(Value::as_str).filter(|l| !l.is_empty()).map_or_else(|| format!("l{i}"), str::to_string);
+        let id = keys.get("id").and_then(Value::as_str).filter(|l| !l.is_empty()).map_or_else(|| format!("l{i}"), |l| cut(l, MAX_ID));
         kept.push(DefLayer { id, opacity, objects });
     }
     kept
@@ -527,8 +564,9 @@ fn values(copy: &Value, frame: &Frame, def: &Def) -> Scope {
         let set = set_here.and_then(|v| v.get(&input.id)).and_then(Value::as_str);
         match input.kind {
             InputKind::Text => {
+                // cut again after its own text pass, so a value is never longer at any depth
                 let text = match set {
-                    Some(v) => substitute(&cut(v, MAX_TEXT), &|id| frame.scope.text.get(id).cloned()),
+                    Some(v) => substitute_cut(&cut(v, MAX_TEXT), &|id| frame.scope.text.get(id).cloned(), MAX_TEXT),
                     None => cut(&input.default, MAX_TEXT),
                 };
                 scope.text.insert(input.id.clone(), text);
@@ -601,7 +639,7 @@ impl Expander<'_> {
             return;
         }
         let num = |key: &str| value.get(key).and_then(Value::as_f64);
-        let id = value.get("id").and_then(Value::as_str).unwrap_or_default();
+        let id = cut(value.get("id").and_then(Value::as_str).unwrap_or_default(), MAX_ID);
         let opacity = num("opacity").unwrap_or(1.0).clamp(0.0, 1.0);
         if value.get("visible").and_then(Value::as_bool) == Some(false) || opacity <= 0.0 {
             return;
@@ -718,7 +756,7 @@ impl Expander<'_> {
     /// placed at scale `s` from `origin`; or None when it draws nothing. The caller adds its clip and groups.
     fn leaf(&mut self, object: &Value, def: &Def, scope: &Scope, s: f64, (ox, oy): (i64, i64)) -> Option<Object> {
         let mut value = object.clone();
-        let id = value.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
+        let id = cut(value.get("id").and_then(Value::as_str).unwrap_or_default(), MAX_ID);
         // a colour that's `{$id}` of a colour input takes its value. One that isn't a string (a number, null)
         // isn't a colour either: it becomes "", so reading keeps its stroke or gradient, and it takes the
         // fallback below like any other
@@ -750,8 +788,9 @@ impl Expander<'_> {
                 bind(value.get_mut("tint"));
             }
             "text" => {
+                // cut before the live parse reads it, however many values it holds
                 if let Some(text) = value.get("text").and_then(Value::as_str) {
-                    value["text"] = Value::String(substitute(text, &|input| scope.text.get(input).cloned()));
+                    value["text"] = Value::String(substitute_cut(text, &|input| scope.text.get(input).cloned(), MAX_LEAF_TEXT));
                 }
                 bind(value.get_mut("color"));
                 bind(value.get_mut("outline").and_then(|o| o.get_mut("color")));
@@ -877,6 +916,28 @@ mod tests {
         }
     }
 
+    /// Stopping once it has `max` characters gives exactly the whole text pass cut to `max`.
+    #[test]
+    fn substitute_cut_is_a_cut() {
+        let mut rows: Vec<(String, HashMap<String, String>)> = vectors("inputs.json")
+            .iter()
+            .map(|row| {
+                let inputs = row["inputs"].as_object().unwrap().iter().map(|(k, v)| (k.clone(), cut(v.as_str().unwrap(), MAX_TEXT)));
+                (row["text"].as_str().unwrap().to_string(), inputs.collect())
+            })
+            .collect();
+        rows.push(("😀{$a}é{$}{{$a}}{$b}x".into(), [("a".to_string(), "{😀}{$c}".to_string())].into_iter().collect()));
+        for (text, inputs) in &rows {
+            let input = |id: &str| inputs.get(id).cloned();
+            let whole = substitute(text, &input);
+            let n = whole.chars().count();
+            // every cut of a short text; of a long one, the ends and every 97th
+            for max in (0..=n + 1).filter(|m| n < 300 || *m < 40 || m % 97 == 0 || m + 40 > n) {
+                assert_eq!(substitute_cut(text, &input, max), cut(&whole, max), "{text:?} cut to {max}");
+            }
+        }
+    }
+
     #[test]
     fn make_safe_vectors() {
         for row in vectors("safe.json") {
@@ -981,6 +1042,13 @@ mod tests {
         std::fs::create_dir_all(widgets.join("empty")).unwrap();
         let many: Vec<String> = (0..40).map(|i| format!(r#"{{ "id": "i{i}", "type": "text" }}"#)).collect();
         scratch.write("widgets/many/widget.json", &format!(r#"{{ "inputs": [{}] }}"#, many.join(",")));
+        // 1 MiB is the most read, as the studio saves; a byte more and the widget draws nothing
+        let padded = |n: usize| {
+            let head = r#"{ "w": 10, "description": ""#;
+            format!("{head}{}\" }}", "x".repeat(n - head.len() - 3))
+        };
+        scratch.write("widgets/full/widget.json", &padded(1 << 20));
+        scratch.write("widgets/big/widget.json", &padded((1 << 20) + 1));
 
         let mut lib = Library::new(widgets.clone());
         let ok = lib.get("ok").unwrap();
@@ -1000,6 +1068,9 @@ mod tests {
         assert!(lib.get("../x").unwrap_err().contains("isn't a widget id"));
         assert!(lib.get("con").is_err());
         assert_eq!(lib.get("many").unwrap().inputs.len(), MAX_INPUTS);
+        assert_eq!(std::fs::metadata(widgets.join(r"full\widget.json")).unwrap().len(), 1 << 20);
+        assert_eq!(lib.get("full").unwrap().w, 10);
+        assert_eq!(lib.get("big").unwrap_err(), "widget big: widget.json is too big (more than 1 MiB)");
         // read once per read of the playlist
         assert!(Rc::ptr_eq(&lib.get("ok").unwrap(), &ok));
 
@@ -1011,6 +1082,8 @@ mod tests {
         assert!(watched[&widgets.join(r"ok\widget.json")].is_some());
         assert!(!watched.contains_key(&widgets.join(r"..\x\widget.json")));
         assert!(watched.contains_key(&widgets.join(r"cpu-badge\widget.json")));
+        // one too big is watched like any other, so making it smaller is noticed
+        assert!(watched[&widgets.join(r"big\widget.json")].is_some_and(|(_, size)| size == (1 << 20) + 1));
 
         // no widgets folder at all: missing, and the folder is watched for being made
         let mut lib = Library::new(scratch.dir.join("nowhere"));

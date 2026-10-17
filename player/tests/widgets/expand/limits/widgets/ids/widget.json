@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "name": "Ids",
+  "description": "",
+  "w": 20,
+  "h": 20,
+  "background": "#202020",
+  "fonts": {},
+  "inputs": [],
+  "layers": [
+    {
+      "id": "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+      "name": "l",
+      "visible": true,
+      "locked": false,
+      "opacity": 0.5,
+      "objects": [
+        {
+          "id": "oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooop",
+          "type": "shape",
+          "shape": "rect",
+          "x": 0,
+          "y": 0,
+          "w": 4,
+          "h": 4,
+          "fill": {
+            "type": "solid",
+            "color": "#ffffff"
+          },
+          "crisp": true
+        },
+        {
+          "id": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii😀j",
+          "type": "widget",
+          "visible": true,
+          "locked": false,
+          "opacity": 0.5,
+          "x": 5,
+          "y": 5,
+          "w": 10,
+          "h": 10,
+          "scale": 1,
+          "widget": "unit"
+        }
+      ]
+    }
+  ]
+}
