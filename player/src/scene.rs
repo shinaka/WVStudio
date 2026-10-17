@@ -1395,7 +1395,8 @@ mod over_tests {
         // white text, longer than its copy is wide, at 0.8 × 0.25 over the animation
         let shown = render_at(&scene, &[], &opts(), Duration::ZERO, &filled(&scene, &[], &["88888888888888", "12:34"]));
         let blank = render_at(&scene, &[], &opts(), Duration::ZERO, &filled(&scene, &[], &["", ""]));
-        let changed: Vec<(u32, u32)> = shown.enumerate_pixels().zip(blank.pixels()).filter(|((_, _, p), q)| p != q).map(|((x, y, _), _)| (x, y)).collect();
+        let changed: Vec<(u32, u32)> =
+            shown.enumerate_pixels().zip(blank.pixels()).filter(|((_, _, p), q)| p != q).map(|((x, y, _), _)| (x, y)).collect();
         let inside = |(x, y): (u32, u32)| (c[0]..c[2]).contains(&(x as i64)) && (c[1]..c[3]).contains(&(y as i64));
         let near_t = |(x, y): (u32, u32)| (590..900).contains(&x) && (290..380).contains(&y);
         assert!(changed.iter().all(|p| inside(*p) || near_t(*p)), "drawn outside its clip");
@@ -1554,7 +1555,8 @@ mod over_tests {
                 checked += 1;
                 // the same from the expansion itself, once it gives the expected leaves
                 let drawn = |layers: &[Layer]| -> Vec<String> {
-                    layers.iter().filter(|l| l.visible && l.opacity > 0.0).flat_map(|l| &l.objects).filter(|o| o.visible).map(|o| o.id.clone()).collect()
+                    let objects = layers.iter().filter(|l| l.visible && l.opacity > 0.0).flat_map(|l| &l.objects);
+                    objects.filter(|o| o.visible).map(|o| o.id.clone()).collect()
                 };
                 let ids: Vec<String> = want["leaves"].as_array().unwrap().iter().map(|l| l["id"].as_str().unwrap().to_string()).collect();
                 let global_ids: Vec<String> =
