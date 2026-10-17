@@ -335,14 +335,18 @@ function findCopy(key, id) {
   return o?.type === "widget" ? o : null;
 }
 
-/** What the canvas shows now: the open holder's layers expanded (and Global's), with the live placement. */
+/** What the canvas shows now: the open holder's layers expanded (and Global's), with the live placement. Kept while
+ *  nothing it depends on changes: the animation tick asks for it every frame. */
+let viewNow = { key: "", value: null };
 function currentView() {
-  if (isWidgetHolder()) {
-    const out = widgetView(holderWidgetId());
-    return { own: out, over: [], place: widgetsOn ? WV.placement([out, []], (l) => isAnimated(l)) : null };
-  }
-  const own = isGlobal() ? [] : expanded(holder()), over = expanded(doc.global);
-  return { own, over, place: widgetsOn ? WV.placement([own, over], (l) => isAnimated(l)) : null };
+  const key = `${sel.scene}|${docEpoch}|${libEpoch}|${W}x${H}|${mediaVersion}|${JSON.stringify(view.preview)}`;
+  if (viewNow.key === key) return viewNow.value;
+  let own, over;
+  if (isWidgetHolder()) [own, over] = [widgetView(holderWidgetId()), []];
+  else [own, over] = [isGlobal() ? [] : expanded(holder()), expanded(doc.global)];
+  const value = { own, over, place: widgetsOn ? WV.placement([own, over], (l) => isAnimated(l)) : null };
+  viewNow = { key, value };
+  return value;
 }
 
 /** A copy's scale, as both renderers read it: `scale`, else its stored width over the container's, clamped. */
