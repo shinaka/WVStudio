@@ -1412,6 +1412,24 @@ def deleted_widgets():
     return out
 
 
+def reveal_folder(req):
+    """The folder POST /api/reveal opens: out/ as ever; with {"widget": id}, that widget's folder; with
+    {"widgets": true}, widgets/ itself, where a folder the listing gives as a problem is (its name may not be one the
+    studio can ask for: `CPU Badge`, or a link)."""
+    req = req if isinstance(req, dict) else {}
+    if req.get("widgets") is True:
+        if not real_dir(widgets_dir()):
+            raise ValueError("There's no widgets folder.")
+        return widgets_dir()
+    wid = req.get("widget")
+    if wid is None:
+        return wv.OUT
+    folder = widget_folder(wid)
+    if not real_dir(folder):
+        raise ValueError(f"There's no widget {wid}.")
+    return folder
+
+
 # --- Checking a widget before it's written
 
 def whole_number(v, default, top):
@@ -3260,13 +3278,7 @@ class Handler(BaseHTTPRequestHandler):
             elif url.path == "/api/export":
                 self.json(export_scene(json.loads(body)))
             elif url.path == "/api/reveal":
-                # out/ as ever, or {"widget": id}: that widget's folder
-                req = json.loads(body) if body.strip() else {}
-                wid = req.get("widget") if isinstance(req, dict) else None
-                folder = widget_folder(wid) if wid is not None else wv.OUT
-                if wid is not None and not real_dir(folder):
-                    raise ValueError(f"There's no widget {wid}.")
-                os.startfile(folder)
+                os.startfile(reveal_folder(json.loads(body) if body.strip() else {}))
                 self.json({})
             elif url.path == "/api/playlist":
                 self.json(save_document(json.loads(body)))

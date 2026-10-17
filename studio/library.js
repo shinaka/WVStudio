@@ -141,14 +141,14 @@
     }
   }
 
-  /** Opens a widget's folder in Explorer. */
+  /** Opens a widget's folder in Explorer; with `id` null, widgets\ itself. */
   async function showFolder(id) {
     try {
       const res = await api("/api/reveal", { method: "POST", headers: { "Content-Type": "application/json" },
-                                             body: JSON.stringify({ widget: id }) });
+                                             body: JSON.stringify(id === null ? { widgets: true } : { widget: id }) });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
     } catch (err) {
-      message(`Couldn't open widgets\\${id}: ${err.message}`, "warn");
+      message(`Couldn't open widgets\\${id ?? ""}: ${err.message}`, "warn");
     }
   }
 
@@ -292,20 +292,16 @@
   function problemCard(p) {
     const folder = str(p.folder), c = make("div", "wcard problem");
     c.title = str(p.problem);
-    // a folder named like an id can be asked for; one with any other name can't
-    c.append(reason(str(p.problem), WV.idOk(folder) ? folder : null), make("span", "wc-name", folder));
+    // its name may not be one the server can be asked for (CPU Badge, a link): Show folder opens widgets\, where it is
+    c.append(reason(str(p.problem), null), make("span", "wc-name", folder));
     return c;
   }
-  /** A grey card's reason, with Show folder under it for `folder` (when it isn't null). */
-  function reason(text, folder) {
-    const why = make("div", "wc-why");
-    why.append(make("span", "", text));
-    if (folder !== null) {
-      const b = make("button", "", "Show folder");
-      b.title = `Open widgets\\${folder}`;
-      b.addEventListener("click", (e) => { e.stopPropagation(); showFolder(folder); });
-      why.append(b);
-    }
+  /** A grey card's reason, with Show folder under it: widget `id`'s folder, or with null, widgets\. */
+  function reason(text, id) {
+    const why = make("div", "wc-why"), b = make("button", "", "Show folder");
+    b.title = id === null ? "Open widgets\\, where this folder is" : `Open widgets\\${id}`;
+    b.addEventListener("click", (e) => { e.stopPropagation(); showFolder(id); });
+    why.append(make("span", "", text), b);
     return why;
   }
 
