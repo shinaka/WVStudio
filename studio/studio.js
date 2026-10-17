@@ -1290,23 +1290,23 @@ function changed({ save = true } = {}) {
 
 // Saving: each widget and the playlist is its own file, saved when it differs from what was last saved (a widget's
 // `saved`, the playlist's `saving.doc`), widgets first, so the player never reads a playlist naming a widget whose
-// file isn't there yet. One flush at a time, in order.
-const saving = { timer: 0, last: Promise.resolve(), pending: false, doc: null, held: "", heldAt: 0 };
+// file isn't there yet. One flush at a time, in order. What each file has on its way is kept (`sending`), so a page
+// going away can send the rest at once.
+const saving = { timer: 0, last: Promise.resolve(), pending: false, doc: null, sending: null, held: "", heldAt: 0, holding: null };
 function saveSoon(ms = 400) { saving.pending = true; clearTimeout(saving.timer); saving.timer = setTimeout(flushSave, ms); }
-/** Saves now, after the one before it, so saves arrive in order. `keepalive` (only as the page goes away) is used
- *  for a body under 60 KiB: browsers refuse bigger ones. */
-function flushSave({ keepalive = false } = {}) {
+/** Saves now, after the one before it, so saves arrive in order. */
+function flushSave() {
   clearTimeout(saving.timer);
   if (!saving.pending) return saving.last;
   saving.pending = false;
-  if (widgetsOn) return afterSaves(() => saveAll(keepalive));
+  if (widgetsOn) return afterSaves(saveAll);
   const body = snapshot();
   return (saving.last = saving.last.then(() => api("/api/playlist", { method: "POST", headers: { "Content-Type": "application/json" },
                                                                     body, keepalive: true }).then(async (res) => {
     if (!res.ok) throw new Error((await res.json()).error || res.statusText);
   })).catch((err) => message(`Couldn't save the playlist: ${err.message}`, "warn")));
 }
-window.addEventListener("pagehide", () => flushSave({ keepalive: true }));
+window.addEventListener("pagehide", () => (widgetsOn ? saveNow() : flushSave()));
 /** Runs `fn` after the saves (and reads) before it, so they happen in order. Whatever goes wrong in one, the next
  *  still runs. */
 function afterSaves(fn) {
@@ -1315,26 +1315,71 @@ function afterSaves(fn) {
     message(`Couldn't save: ${err.message}`, "warn");
   }));
 }
-const small = (body) => new Blob([body]).size < 60 * 1024;
 
-async function saveAll(keepalive) {
-  await holdMedia(keepalive);
+/** A flush: the hold, then each widget that needs saving, then the playlist, each after the answer to the one before. */
+async function saveAll() {
+  await sendHold();  // first, so no tidy a save sets off takes a file the history still needs
   for (const id of [...lib.keys()]) {
-    const meta = libMeta.get(id), content = lib.get(id);
-    if (!meta || !content || isReadOnly(id) || conflicts.has(id)) continue;
-    const body = JSON.stringify(content);
-    if (body === meta.saved && !meta.force) continue;
-    const req = JSON.stringify({ id, widget: content, stamp: meta.stamp, ...(meta.force ? { force: true } : {}) });
+    await libMeta.get(id)?.sending?.done;  // sent as the page went away, and the page came back: its answer first
+    await sendWidget(id);
+  }
+  await saving.sending?.done;
+  await sendPlaylist();
+}
+
+/** As the page goes away (pagehide): everything not saved yet is sent at once, with nothing waiting for an answer in
+ *  between, since the page may be gone before one comes. That includes what a flush still running hasn't sent yet. A
+ *  file already on its way with older content goes after it: a widget's save needs the stamp that one gets back. */
+function saveNow() {
+  clearTimeout(saving.timer);
+  saving.pending = false;
+  const budget = { left: 60 * 1024 }, sends = [sendHold(budget)];
+  for (const id of [...lib.keys()]) {
+    if (widgetToSave(id) === null) continue;
+    const before = libMeta.get(id).sending;
+    sends.push(before ? before.done.then(() => sendWidget(id)) : sendWidget(id, budget));
+  }
+  if (playlistToSave() !== null) sends.push(saving.sending ? saving.sending.done.then(() => sendPlaylist()) : sendPlaylist(budget));
+  saving.last = Promise.allSettled([saving.last, ...sends]);
+}
+/** Whether a request made as the page goes away uses keepalive, which lets it outlive the page. Browsers allow 64 KiB
+ *  of those in flight in all, so each takes its size from `budget` (60 KiB, leaving some room), and one that doesn't
+ *  fit goes as a plain request. Never at other times (no `budget`). */
+function keepalive(budget, body) {
+  if (!budget) return false;
+  const size = new Blob([body]).size;
+  if (size >= budget.left) return false;
+  budget.left -= size;
+  return true;
+}
+
+/** A widget's JSON when it needs saving (it differs from what was last saved, or Keep mine said so) and isn't on its
+ *  way already; else null. */
+function widgetToSave(id) {
+  const meta = libMeta.get(id), content = lib.get(id);
+  if (!meta || !content || isReadOnly(id) || conflicts.has(id)) return null;
+  const body = JSON.stringify(content);
+  return (body === meta.saved && !meta.force) || body === meta.sending?.body ? null : body;
+}
+/** Posts a widget's save now, if it needs one, and takes in the answer when it comes. */
+function sendWidget(id, budget = null) {
+  const body = widgetToSave(id);
+  if (body === null) return Promise.resolve();
+  const meta = libMeta.get(id), sending = { body };
+  const req = JSON.stringify({ id, widget: lib.get(id), stamp: meta.stamp, ...(meta.force ? { force: true } : {}) });
+  const posted = api("/api/widgets/save", { method: "POST", headers: { "Content-Type": "application/json" }, body: req,
+                                            keepalive: keepalive(budget, req) });
+  sending.done = (async () => {
     let res, out;
     try {
-      res = await api("/api/widgets/save", { method: "POST", headers: { "Content-Type": "application/json" }, body: req,
-                                             keepalive: keepalive && small(req) });
+      res = await posted;
       out = await res.json().catch(() => ({}));
     } catch (err) {
-      message(`Couldn't save the widget ${widgetName(id)}: ${err.message}`, "warn");
-      continue;
+      return message(`Couldn't save the widget ${widgetName(id)}: ${err.message}`, "warn");
+    } finally {
+      if (meta.sending === sending) meta.sending = null;
     }
-    if (libMeta.get(id) !== meta) continue;  // dropped from the library meanwhile
+    if (libMeta.get(id) !== meta) return;  // dropped from the library meanwhile
     if (res.ok) {
       meta.stamp = out.stamp ?? meta.stamp;
       meta.force = false;
@@ -1348,30 +1393,52 @@ async function saveAll(keepalive) {
     } else if (res.status === 409) askConflict(id);
     else if (res.status === 404) widgetGone(id);
     else message(`Couldn't save the widget ${widgetName(id)}: ${out.error || res.statusText}`, "warn");
-  }
+  })();
+  meta.sending = sending;
+  return sending.done;
+}
+
+/** The playlist's JSON when it needs saving and isn't on its way already; else null. (Editing only a widget doesn't
+ *  rewrite playlist.json.) */
+function playlistToSave() {
   const body = JSON.stringify(doc);
-  if (body === saving.doc) return;  // editing only a widget doesn't rewrite playlist.json
-  try {
-    const res = await api("/api/playlist", { method: "POST", headers: { "Content-Type": "application/json" }, body,
-                                             keepalive: keepalive && small(body) });
-    if (!res.ok) throw new Error((await res.json()).error || res.statusText);
-    saving.doc = body;
-  } catch (err) {
-    message(`Couldn't save the playlist: ${err.message}`, "warn");
-  }
+  return body === saving.doc || body === saving.sending?.body ? null : body;
+}
+/** Posts the playlist now, if it needs saving. */
+function sendPlaylist(budget = null) {
+  const body = playlistToSave();
+  if (body === null) return Promise.resolve();
+  const sending = { body };
+  const posted = api("/api/playlist", { method: "POST", headers: { "Content-Type": "application/json" }, body,
+                                        keepalive: keepalive(budget, body) });
+  sending.done = (async () => {
+    try {
+      const res = await posted;
+      if (!res.ok) throw new Error((await res.json()).error || res.statusText);
+      saving.doc = body;
+    } catch (err) {
+      message(`Couldn't save the playlist: ${err.message}`, "warn");
+    } finally {
+      if (saving.sending === sending) saving.sending = null;
+    }
+  })();
+  saving.sending = sending;
+  return sending.done;
 }
 
 /** Asks the server to keep every file the history could still undo back to (docs/widgets.md, Undo): when that set
- *  changed since the last time, or every 5 minutes. */
-async function holdMedia(keepalive) {
+ *  changed since the last time, or every 5 minutes. A hold already on its way is waited for, not sent again. */
+function sendHold(budget = null) {
   const refs = [...new Set([...hist.undo, ...hist.redo].flatMap(entryRefs))].sort(), key = JSON.stringify(refs);
-  if (!refs.length || (key === saving.held && Date.now() - saving.heldAt < 5 * 60e3)) return;
-  try {
-    const body = JSON.stringify({ refs });
-    const res = await api("/api/media/hold", { method: "POST", headers: { "Content-Type": "application/json" }, body,
-                                               keepalive: keepalive && small(body) });
-    if (res.ok) [saving.held, saving.heldAt] = [key, Date.now()];
-  } catch {}
+  if (saving.holding?.key === key) return saving.holding.done;
+  if (!refs.length || (key === saving.held && Date.now() - saving.heldAt < 5 * 60e3)) return Promise.resolve();
+  const body = JSON.stringify({ refs }), holding = { key };
+  holding.done = api("/api/media/hold", { method: "POST", headers: { "Content-Type": "application/json" }, body,
+                                          keepalive: keepalive(budget, body) })
+    .then((res) => { if (res.ok) [saving.held, saving.heldAt] = [key, Date.now()]; }, () => {})
+    .finally(() => { if (saving.holding === holding) saving.holding = null; });
+  saving.holding = holding;
+  return holding.done;
 }
 
 // --- The library: widgets as the server has them ------------------------------------------------------
