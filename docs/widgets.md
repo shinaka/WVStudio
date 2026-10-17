@@ -596,8 +596,9 @@ your widgets (the import window says so first, section 6.8). The player logs eac
 
 - **The player:** a copy whose widget folder is missing (or named in other letter case, section 2.3), or whose
   `widget.json` is missing, not JSON, not an object, over 1 MiB, or from a newer studio, draws nothing. The
-  player logs it once per read: `widget temp-badge: no widgets\temp-badge\widget.json`. It watches the missing file and the
-  `widgets\` folder itself, so putting the folder in place, or renaming it, makes it read the playlist again.
+  player logs it once per read: `widget temp-badge: no widgets\temp-badge\widget.json`. It watches the
+  missing file and the `widgets\` folder itself, so putting the folder in place, or renaming it, makes it read
+  the playlist again.
 - **The studio:** the copy shows as a red dashed box at its stored `x`, `y`, `w`, `h`, labelled with the reason
   ("Missing widget: temp-badge", "Made by a newer studio: temp-badge"), on the editor's overlay only (never in
   thumbnails or exports). It can still be selected, moved, deleted or swapped to another widget.
@@ -756,7 +757,9 @@ USED IN      Desk (2) · Global (1) · Dashboard (1)
 ### 6.4 Inputs and bind buttons
 
 - **+ Text, + Colour, + Image** ask for a name ("Label"), then add the input with that name, an id made from it
-  (`label`), and the type's default. The id is shown as `{$label}`; click it to put it in the selected text.
+  (`label`), and the type's default. The id is shown as `{$label}`. The widget's properties show only while
+  nothing is selected, so clicking a text input's id copies it, to paste into a text; the `{$}` button by a
+  text's box puts it in at the caret.
 - **Renaming** an input changes its name only. Its id, and so every reference and every copy's value, stays.
 - **⋮:** Move up, Move down, Delete. **Delete** writes the default in wherever the widget uses the input, so
   the widget itself looks the same, then removes it. Copies that set it lose their value: the confirm lists them
