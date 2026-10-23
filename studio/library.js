@@ -359,6 +359,7 @@
   async function restoreDeleted(d) {
     try {
       const out = await postJson("/api/widgets/restore", { trash: d.trash });
+      libDeleted = libDeleted.filter((x) => x.trash !== d.trash);  // at once: an undo of its delete has nothing to move
       takeIn([out]);
       message(`${widgetName(out.id)} is back, in widgets\\${out.id}.`);
     } catch (err) {

@@ -1689,6 +1689,8 @@ async function trashFolder(action) {
 /** Brings a deleted widget's folder back (undoing a delete). If its id is taken, says so and leaves its copies
  *  showing as missing. One already brought back (by Restore here or in another tab) needs nothing more. */
 async function restoreFolder(action) {
+  // brought back already (by Restore in Recently deleted): its folder is in widgets\ and no longer listed as deleted
+  if (lib.has(action.id) && !libDeleted.some((d) => d.trash === action.trash)) return changed({ save: false });
   try {
     const out = await postJson("/api/widgets/restore", { trash: action.trash });
     if (lib.has(out.id)) takeInWidget(out.id, out.widget, out.stamp);
