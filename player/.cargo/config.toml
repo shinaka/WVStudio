@@ -1,0 +1,7 @@
+# The C runtime is linked into each program instead of loaded from VCRUNTIME140.dll and the api-ms-win-crt
+# DLLs, so no program here looks for a DLL beside itself (build.rs has the rest): anyone can write to the
+# folder it's built in, and one run as administrator, as PawnIO's sensors need, would load what was planted
+# there with those rights. Cargo reads this when it's run in player\, as the README has it; tests/pe.rs fails
+# on a program built without it.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
