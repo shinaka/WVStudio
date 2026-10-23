@@ -32,6 +32,14 @@ window.WV = WV;
 
   /** floor(v + 0.5): the one rounding rule for everything a copy places (docs/widgets.md, Geometry). */
   const rnd = (v) => Math.floor(v + 0.5);
+  // The player keeps placed edges as 64-bit integers: rnd's result saturates at their ends (NaN is 0), and so do sums
+  // and differences of them. The same here, so a part placed at an extreme number (x 1e308 at scale 2) lands far off
+  // the panel, as there, instead of at Infinity with a NaN size. (Past 2^53 a double can't hold every integer, but
+  // nothing that far out is on the panel.)
+  const I64 = 2 ** 63;
+  const sat = (v) => (Number.isNaN(v) ? 0 : Math.min(I64, Math.max(-I64, v)));
+  const whole = (v) => sat(rnd(v));
+  const plus = (a, b) => sat(a + b), minus = (a, b) => sat(a - b);
   const num = (v, fallback) => (typeof v === "number" && Number.isFinite(v) ? v : fallback);
   const unit = (v) => Math.min(1, Math.max(0, num(v, 1)));  // an opacity, as the player reads it
   const idOf = (o) => (typeof o.id === "string" ? o.id : "");  // as the player reads an id: one that isn't text is ""
@@ -217,6 +225,15 @@ window.WV = WV;
              inputs, layers: Array.isArray(json.layers) ? json.layers : [] };
   }
 
+  /** A picture value written in the playlist (docs/widgets.md, A copy's values): a file in its inputs\ or sources\
+   *  folder, `inputs/<file>` or `sources/<file>` (the folder in any letter case, as Windows opens it), as the page's
+   *  ref for it. Null for anything else, which counts as not set: the studio keeps, copies and tidies only those. */
+  function playlistFile(v) {
+    const parts = typeof v === "string" ? v.split("/") : [];
+    const kept = parts.length === 2 && pathOk(v) ? parts[0].toLowerCase() : "";
+    return kept === "inputs" || kept === "sources" ? `${kept}/${parts[1]}` : null;
+  }
+
   const EMPTY = Object.freeze({ text: new Map(), color: new Map(), image: new Map() });
   /** The values one copy of `def` draws with (docs/widgets.md, A copy's values; Passing inputs down): {text, color,
    *  image} maps of input id to text (substituted in its holder's terms), "#rrggbb" and a media ref ("" for no
@@ -241,6 +258,7 @@ window.WV = WV;
           const t = spaces(v), ref = refOf(t);
           if (ref !== null) src = outer.image.has(ref) ? outer.image.get(ref) : null;
           else if (t === "") src = "";
+          else if (!folder) src = playlistFile(t);  // a copy in a scene or Global: a file in inputs\ or sources\
           else if (mediaPathOk(t)) src = folder + t;
         }
         const d = spaces(input.default);
@@ -326,8 +344,8 @@ window.WV = WV;
       if (typeof scale !== "number" || !(scale > 0)) scale = typeof o.w === "number" && o.w > 0 ? o.w / def.w : 1;
       scale = Math.min(16, Math.max(0.01, scale));
       const S = frame.s * scale;
-      const L = frame.ox + rnd(frame.s * num(o.x, 0)), T = frame.oy + rnd(frame.s * num(o.y, 0));
-      const box = [L, T, L + Math.max(1, rnd(S * def.w)), T + Math.max(1, rnd(S * def.h))];
+      const L = plus(frame.ox, whole(frame.s * num(o.x, 0))), T = plus(frame.oy, whole(frame.s * num(o.y, 0)));
+      const box = [L, T, plus(L, Math.max(1, whole(S * def.w))), plus(T, Math.max(1, whole(S * def.h)))];
       const clip = frame.clip ? meet(box, frame.clip) : box;
       if (clip[2] <= clip[0] || clip[3] <= clip[1]) return;
       const scope = o === this.preview?.copy ? asScope(this.preview.scope) : scopeOf(def, o.inputs, frame.scope, frame.folder);
@@ -379,8 +397,9 @@ window.WV = WV;
       // a bindable colour: `{$id}` of a colour input takes its value; then anything that isn't a colour falls back
       const paint = (v, fallback) => (refOf(v) !== null ? f.scope.color.get(refOf(v)) : color(v)) ?? fallback;
       const edges = () => {
-        const x0 = f.ox + rnd(S * x), y0 = f.oy + rnd(S * y), x1 = f.ox + rnd(S * (x + w)), y1 = f.oy + rnd(S * (y + h));
-        return [x0, y0, x1 - x0, y1 - y0];
+        const x0 = plus(f.ox, whole(S * x)), y0 = plus(f.oy, whole(S * y));
+        const x1 = plus(f.ox, whole(S * (x + w))), y1 = plus(f.oy, whole(S * (y + h)));
+        return [x0, y0, minus(x1, x0), minus(y1, y0)];
       };
       const leaf = { id: f.path + oid, type, visible: true, opacity: unit(o.opacity), x: 0, y: 0, w: 0, h: 0,
                      rotate: [0, 90, 180, 270].includes(o.rotate) ? o.rotate : 0, flip: o.flip === true,
@@ -401,7 +420,7 @@ window.WV = WV;
         const text = substituteCut(typeof o.text === "string" ? o.text : "", f.scope.text, MAX_LEAF_TEXT);
         // read leniently, as the player reads it: an outline whose width isn't a number is no outline at all
         const outline = plainObject(o.outline) && !("width" in o.outline && typeof o.outline.width !== "number") ? o.outline : {};
-        Object.assign(leaf, { x: f.ox + rnd(S * x), y: f.oy + rnd(S * y), text, live: isLive(text),
+        Object.assign(leaf, { x: plus(f.ox, whole(S * x)), y: plus(f.oy, whole(S * y)), text, live: isLive(text),
                               font: typeof o.font === "string" && fontNameOk(o.font) ? `${f.wid}|${o.font}` : "",
                               size: num(o.size, 48) * S, color: "color" in o ? paint(o.color, FALLBACK.text) : FALLBACK.text,
                               align: ["left", "center", "right"].includes(o.align) ? o.align : "left",
@@ -607,7 +626,7 @@ window.WV = WV;
 
   Object.assign(WV, {
     MAX_DEPTH, BUDGET, MAX_INPUTS, MAX_PLACED, ID_RE, INPUT_ID_RE,
-    rnd, idOk, pathOk, fontNameOk, color, refOf, scan, isLive, plain, substitute, makeSafe, replaceRefs, fitAspect,
+    rnd, idOk, pathOk, playlistFile, fontNameOk, color, refOf, scan, isLive, plain, substitute, makeSafe, replaceRefs, fitAspect,
     readDef, scopeOf, expandLayers, isLeaf, placement, closure, contains, uses,
   });
 })();

@@ -141,8 +141,17 @@ const clock = () => (view.paused ? view.pausedAt : performance.now() - t0);
 function mediaRef(src, key = sel.scene) {
   return isWidgetHolder(key) && typeof src === "string" && src ? `widgets/${holderWidgetId(key)}/${src}` : src;
 }
-/** The media of an object in the open holder (not a leaf, whose src is a ref already). */
-function holderMedia(o) { return getMedia(mediaRef(o.src)); }
+/** The ref of the file an object in the open holder draws (not a leaf, whose src is a ref already): its src's. In a
+ *  widget, a picture bound to an image input (`{$icon}`) has no file of its own: it draws the input's file, as the
+ *  editor previews it, or nothing (""). */
+function holderRef(o) {
+  const input = isWidgetHolder() ? WV.refOf(o.src) : null;
+  if (input === null) return mediaRef(o.src);
+  const id = holderWidgetId(), def = WV.readDef(id, { ...lib.get(id), version: 1 });
+  return def.problem ? "" : previewScope(id, def, view.preview).image.get(input) ?? "";
+}
+/** The media of an object in the open holder, or null when it has none. */
+function holderMedia(o) { return getMedia(holderRef(o)); }
 
 function getMedia(src) {
   if (typeof src !== "string" || !src) return null;
@@ -268,9 +277,11 @@ function nearest(g, src, dw, dh) {
 }
 
 /** The frame scaled to the object's box: nearest neighbour unless smooth (the player's rule, pixel for pixel), once,
- *  from the file. With a tint, every pixel then takes the tint's colour and keeps its own alpha. */
+ *  from the file. With a tint, every pixel then takes the tint's colour and keeps its own alpha. Null for a box with
+ *  no size to draw at (one read from a file made by hand), so it draws nothing and the rest of the scene still does. */
 function scaledFrame(m, o, i) {
   const dw = Math.max(1, rnd(o.w)), dh = Math.max(1, rnd(o.h));
+  if (!Number.isFinite(dw) || !Number.isFinite(dh)) return null;
   const tint = widgetsOn ? WV.color(o.tint) : null;
   const key = `${i}|${dw}|${dh}|${!!o.smooth}|${o.rotate | 0}|${!!o.flip}` + (tint ? `|${tint}` : "");
   let c = m.scaled.get(key);
@@ -575,7 +586,7 @@ function drawMedia(ctx, o, t, area = [0, 0, W, H]) {
     box = { ...o, x, y, w, h };
   }
   const img = scaledFrame(m, box, frameIndex(m, t));
-  paint(ctx, img, rnd(box.x), rnd(box.y), o.fill || "none", area);
+  if (img && Number.isFinite(box.x) && Number.isFinite(box.y)) paint(ctx, img, rnd(box.x), rnd(box.y), o.fill || "none", area);
 }
 
 /** Draws a scaled frame at x, y, repeated outward over the fill `area` ([left, top, right, bottom]: the canvas, or a
@@ -586,6 +597,11 @@ function paint(ctx, img, x, y, fill, area = [0, 0, W, H]) {
   ctx.imageSmoothingEnabled = false;
   if (fill === "tile" || fill === "mirror") {
     const mirror = fill === "mirror";
+    // The pattern repeats every tile (every two, mirrored), so it's anchored at the last place at or before the area
+    // in step with x, y: the same pattern, worked out exactly however far off x and y are (a part of a copy placed at
+    // 2^63), and the tiles below are counted from there, so their count always ends
+    const near = (v, d, lo) => { const p = mirror ? 2 * d : d, phase = ((v % p) + p) % p; return lo - ((((lo - phase) % p) + p) % p); };
+    [x, y] = [near(x, dw, ax), near(y, dh, ay)];
     if (((ar - ax) / dw + 2) * ((ab - ay) / dh + 2) > 300) {
       // lots of small tiles: one pattern fill, mirroring baked into a 2x2 block
       let tile = img;
@@ -605,8 +621,8 @@ function paint(ctx, img, x, y, fill, area = [0, 0, W, H]) {
       ctx.fillRect(ax, ay, ar - ax, ab - ay);
       return;
     }
-    for (let j = Math.floor((ay - y) / dh); y + j * dh < ab; j++) {
-      for (let i = Math.floor((ax - x) / dw); x + i * dw < ar; i++) {
+    for (let j = 0; y + j * dh < ab; j++) {
+      for (let i = 0; x + i * dw < ar; i++) {
         const fx = mirror ? i & 1 : 0, fy = mirror ? j & 1 : 0;
         ctx.setTransform(fx ? -1 : 1, 0, 0, fy ? -1 : 1, x + (i + fx) * dw, y + (j + fy) * dh);
         ctx.drawImage(img, 0, 0);
@@ -618,17 +634,22 @@ function paint(ctx, img, x, y, fill, area = [0, 0, W, H]) {
   ctx.drawImage(img, x, y);
   if (fill !== "extend") return;
   const r = x + dw, b = y + dh;
-  const strip = (sx, sy, sw, sh, tx, ty, tw, th) => {
-    if (tw > 0 && th > 0) ctx.drawImage(img, sx, sy, sw, sh, tx, ty, tw, th);
+  // each strip is a column or row of edge pixels stretched over [x0, x1) x [y0, y1). Across what's stretched, it's cut
+  // to the area first: nothing seen changes (the source is one pixel there), and a part placed far off, at 2^63, still
+  // draws its strips, which drawImage can't stretch that far
+  const strip = (sx, sy, sw, sh, x0, y0, x1, y1) => {
+    if (sw === 1) [x0, x1] = [Math.max(x0, ax), Math.min(x1, ar)];
+    if (sh === 1) [y0, y1] = [Math.max(y0, ay), Math.min(y1, ab)];
+    if (x1 > x0 && y1 > y0) ctx.drawImage(img, sx, sy, sw, sh, x0, y0, x1 - x0, y1 - y0);
   };
-  strip(0, 0, 1, dh, ax, y, x - ax, dh);              // left edge column, stretched
-  strip(dw - 1, 0, 1, dh, r, y, ar - r, dh);          // right
-  strip(0, 0, dw, 1, x, ay, dw, y - ay);              // top row
-  strip(0, dh - 1, dw, 1, x, b, dw, ab - b);          // bottom
-  strip(0, 0, 1, 1, ax, ay, x - ax, y - ay);          // corner pixels fill the corners
-  strip(dw - 1, 0, 1, 1, r, ay, ar - r, y - ay);
-  strip(0, dh - 1, 1, 1, ax, b, x - ax, ab - b);
-  strip(dw - 1, dh - 1, 1, 1, r, b, ar - r, ab - b);
+  strip(0, 0, 1, dh, ax, y, x, b);                 // left edge column, stretched
+  strip(dw - 1, 0, 1, dh, r, y, ar, b);            // right
+  strip(0, 0, dw, 1, x, ay, r, y);                 // top row
+  strip(0, dh - 1, dw, 1, x, b, r, ab);            // bottom
+  strip(0, 0, 1, 1, ax, ay, x, y);                 // corner pixels fill the corners
+  strip(dw - 1, 0, 1, 1, r, ay, ar, y);
+  strip(0, dh - 1, 1, 1, ax, b, x, ab);
+  strip(dw - 1, dh - 1, 1, 1, r, b, ar, ab);
 }
 
 // --- Shapes --------------------------------------------------------------------------------------
@@ -705,7 +726,7 @@ function drawShape(ctx, o, area = [0, 0, W, H]) {
   const box = shapeBox(o), s = stroke ? stroke.width / 2 : 0;
   const x0 = Math.max(area[0], Math.floor(box.x - s - 1)), y0 = Math.max(area[1], Math.floor(box.y - s - 1));
   const x1 = Math.min(area[2], Math.ceil(box.x + box.w + s + 1)), y1 = Math.min(area[3], Math.ceil(box.y + box.h + s + 1));
-  if (x1 <= x0 || y1 <= y0) return;
+  if (!(x1 > x0 && y1 > y0)) return;  // nothing inside the area, or no number to place it by (a file made by hand)
   const bw = x1 - x0, bh = y1 - y0;
   if (shapeCv.width !== bw || shapeCv.height !== bh) { shapeCv.width = bw; shapeCv.height = bh; }
   const g = shapeCtx;
@@ -967,7 +988,8 @@ function drawGhost(t) {
     const m = holderMedia(o);
     if (!m?.ready) return;
     g.imageSmoothingEnabled = q < 1 || !!o.smooth;
-    g.drawImage(scaledFrame(m, o, frameIndex(m, t)), rnd(o.x), rnd(o.y));
+    const img = scaledFrame(m, o, frameIndex(m, t));
+    if (img) g.drawImage(img, rnd(o.x), rnd(o.y));
   } else if (o.type === "shape") {
     drawShape(g, { ...o, crisp: false });
   }
@@ -1240,7 +1262,8 @@ function edit(fn, key = "") {
     putBack(before);
     for (const [id, json] of locked) lib.set(id, JSON.parse(json));
     message(`${widgetName(holderWidgetId() ?? locked[0][0])} is read-only: duplicate it to edit.`, "warn");
-    changed({ save: false });
+    refilling = true;  // the field typed in shows what was kept, not what was refused
+    try { changed({ save: false }); } finally { refilling = false; }
     return false;
   }
   // an edit of a widget brings the stored sizes of the copies in it up to date (only then: see tidyDocument)
@@ -1319,7 +1342,7 @@ function changed({ save = true } = {}) {
 // `saved`, the playlist's `saving.doc`), widgets first, so the player never reads a playlist naming a widget whose
 // file isn't there yet. One flush at a time, in order. What each file has on its way is kept (`sending`), so a page
 // going away can send the rest at once.
-const saving = { timer: 0, last: Promise.resolve(), pending: false, doc: null, sending: null, held: "", heldAt: 0, holding: null };
+const saving = { timer: 0, last: Promise.resolve(), pending: false, doc: null, sending: null, heldAt: 0, holding: null };
 function saveSoon(ms = 400) { saving.pending = true; clearTimeout(saving.timer); saving.timer = setTimeout(flushSave, ms); }
 /** Saves now, after the one before it, so saves arrive in order. */
 function flushSave() {
@@ -1454,20 +1477,29 @@ function sendPlaylist(budget = null) {
   return sending.done;
 }
 
-/** Asks the server to keep every file the history could still undo back to (docs/widgets.md, Undo): when that set
- *  changed since the last time, or every 5 minutes. A hold already on its way is waited for, not sent again. */
+/** Asks the server to keep every file the history could still undo back to (docs/widgets.md, Undo), with every flush
+ *  and every few minutes while the page is open (HOLD_EVERY). The server keeps a file for 10 minutes after it was
+ *  last named, and forgets every hold when it restarts; another tab's save, or this page's first save after a
+ *  restart, then tidies by that. So a hold is never skipped because it was sent before: only one already on its way
+ *  with the same files is waited for, not sent again. */
 function sendHold(budget = null) {
   const refs = [...new Set([...hist.undo, ...hist.redo].flatMap(entryRefs))].sort(), key = JSON.stringify(refs);
   if (saving.holding?.key === key) return saving.holding.done;
-  if (!refs.length || (key === saving.held && Date.now() - saving.heldAt < 5 * 60e3)) return Promise.resolve();
+  if (!refs.length) return Promise.resolve();
   const body = JSON.stringify({ refs }), holding = { key };
   holding.done = api("/api/media/hold", { method: "POST", headers: { "Content-Type": "application/json" }, body,
                                           keepalive: keepalive(budget, body) })
-    .then((res) => { if (res.ok) [saving.held, saving.heldAt] = [key, Date.now()]; }, () => {})
+    .then((res) => { if (res.ok) saving.heldAt = Date.now(); }, () => {})
     .finally(() => { if (saving.holding === holding) saving.holding = null; });
   saving.holding = holding;
   return holding.done;
 }
+// Between flushes the hold is sent again every 4 minutes, well inside the server's 10, so it's always fresh when
+// another tab saves; and when the page is shown again (a sleeping tab's timers may not have run). The check runs
+// often and is cheap, so a throttled background tab still holds in time.
+const HOLD_EVERY = 4 * 60e3;
+setInterval(() => { if (widgetsOn && Date.now() - saving.heldAt >= HOLD_EVERY) sendHold(); }, 15e3);
+document.addEventListener("visibilitychange", () => { if (widgetsOn && document.visibilityState === "visible") sendHold(); });
 
 // --- The library: widgets as the server has them ------------------------------------------------------
 
@@ -2460,7 +2492,8 @@ $("deleteLayer").addEventListener("click", () => {
 
 // --- The properties panel ----------------------------------------------------------------------------
 
-const set = (id, v) => { if (document.activeElement !== $(id)) $(id).value = v; };
+let refilling = false;  // while true, `set` fills the field being typed in too: an edit was refused
+const set = (id, v) => { if (refilling || document.activeElement !== $(id)) $(id).value = v; };
 const seg = (id, value) => { for (const b of $(id).children) b.setAttribute("aria-pressed", b.dataset.value === String(value)); };
 
 /** The properties panel: the sections for the selection (or the scene, widget or layer), filled in. Then the widget
@@ -2482,6 +2515,10 @@ function fillProps() {
   $("pShape").hidden = !(p && p.type === "shape");
   $("pCopy").hidden = !(widgetsOn && p?.type === "widget");
   $("pExport").hidden = !(h && !isGlobal() && !isWidgetHolder() && !p && !layer);
+  // a read-only widget is for viewing (docs/widgets.md, The widget editor): the controls for what's selected in it
+  // are greyed out (body.readonly), and can't be reached from the keyboard either (#pWidget's own are library.js's)
+  const locked = isWidgetHolder() && isReadOnly(holderWidgetId());
+  for (const s of $("propsPane").children) if (s.tagName === "SECTION" && s.id !== "pWidget" && !s.classList.contains("small")) s.inert = locked;
   if (!h) return;
   if (!$("pScene").hidden) {
     set("sName", h.name || "");

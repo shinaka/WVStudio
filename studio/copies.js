@@ -641,7 +641,11 @@
     const own = valuesOf(o), v = typeof own[input.id] === "string" ? own[input.id] : null, inside = isWidgetHolder();
     let mine = v !== null;
     if (mine && input.type === "color") mine = WV.color(v) !== null || (inside && WV.refOf(v) !== null);
-    if (mine && input.type === "image") mine = spaces(v) === "" || WV.pathOk(spaces(v)) || (inside && WV.refOf(v) !== null);
+    // a picture: none (""), or a file where the copy is written (in the playlist, one in inputs\ or sources\), or inside
+    // a widget a reference passing one of its inputs down
+    if (mine && input.type === "image") {
+      mine = spaces(v) === "" || (inside ? WV.pathOk(spaces(v)) || WV.refOf(v) !== null : WV.playlistFile(spaces(v)) !== null);
+    }
     return { value: mine ? v : input.default, isDefault: !mine, ref: input.type === "image" ? scope.image.get(input.id) ?? "" : undefined };
   }
   /** Whether a value is the input's default, so the copy needn't hold it (and a later change to the default reaches
