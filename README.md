@@ -187,3 +187,6 @@ durations are kept.
 ## License
 
 MIT, see [LICENSE](LICENSE). That covers this code only, not any art or video you play with it.
+
+The PawnIO modules in `player/pawnio/` aren't MIT: they're namazso's, under LGPL-2.1-or-later. See
+[player/pawnio/README.md](player/pawnio/README.md).
