@@ -51,6 +51,70 @@
           ]
         }
       ]
+    },
+    {
+      "id": "s2",
+      "name": "s2",
+      "seconds": 30,
+      "background": "#000000",
+      "layers": [
+        {
+          "id": "l1",
+          "name": "l1",
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "objects": [
+            {
+              "id": "k",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 0,
+              "y": 0,
+              "w": 40,
+              "h": 10,
+              "scale": 1,
+              "widget": "kinds"
+            },
+            {
+              "id": "m",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 0,
+              "y": 20,
+              "w": 40,
+              "h": 10,
+              "scale": 1,
+              "widget": "kinds",
+              "inputs": {
+                "pic": "inputs/x.jfif",
+                "ok": "inputs/clip.avi"
+              }
+            },
+            {
+              "id": "n",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 0,
+              "y": 40,
+              "w": 40,
+              "h": 10,
+              "scale": 1,
+              "widget": "kinds",
+              "inputs": {
+                "pic": "inputs/fe20a98c93d7.png",
+                "ok": "inputs/fe20a98c93d7.PNG"
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

@@ -206,6 +206,19 @@ pub fn resolve(text: &str) -> String {
     fill(text, |key| store().get(key, now), now)
 }
 
+/// `resolve`, plus which of the text's placeholders, in order, had no value (and so showed their fallback or
+/// the missing-value text): the player draws a value at once when one of these gets one (docs/data.md).
+pub fn resolve_gaps(text: &str) -> (String, Vec<bool>) {
+    let now = Utc::now();
+    let gaps = std::cell::RefCell::new(Vec::new());
+    let filled = fill(text, |key| {
+        let value = store().get(key, now);
+        gaps.borrow_mut().push(value.is_none());
+        value
+    }, now);
+    (filled, gaps.into_inner())
+}
+
 struct Entry {
     value: Value,
     at: DateTime<Utc>,

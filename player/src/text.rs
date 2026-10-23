@@ -515,8 +515,13 @@ struct Typeface {
 }
 
 impl Typeface {
+    /// None for a file that can't be used, whose text is then drawn in Segoe UI. A font from a shared widget
+    /// is untrusted: a broken one must never stop the player.
     fn read(data: Vec<u8>) -> Option<Typeface> {
         let face = ttf_parser::Face::parse(&data, 0).ok()?;
+        if !full_name_ok(&face) {
+            return None;
+        }
         let hhea = face.tables().hhea;
         let (ascent, descent) = match face.tables().os2 {
             Some(os2) if os2.use_typographic_metrics() => {
@@ -531,7 +536,9 @@ impl Typeface {
         let units_per_em = face.units_per_em() as f32;
         // substitutions too: shaping can pick glyphs that only GSUB reaches (ligatures, say)
         let settings = FontSettings { scale: CURVES_FOR, load_substitutions: true, ..FontSettings::default() };
-        let glyphs = Font::from_bytes(&data[..], settings).ok()?;
+        // fontdue isn't hardened against broken files the way ttf_parser is: one it panics on is a font that
+        // can't be used, like any other
+        let glyphs = std::panic::catch_unwind(|| Font::from_bytes(&data[..], settings)).ok()?.ok()?;
         Some(Typeface { data, glyphs, units_per_em, ascent: ascent as f32, descent: descent as f32 })
     }
 
@@ -539,6 +546,19 @@ impl Typeface {
     fn line_metrics(&self, size: f32) -> (f32, f32) {
         let px = |units: f32| (units * size / self.units_per_em + 0.5).floor();
         (px(self.ascent), px(self.descent))
+    }
+}
+
+/// Whether the font's full name, as fontdue reads it (the first Unicode name record with ID 4), is whole
+/// UTF-16: an even number of bytes, and every surrogate in a pair. fontdue decodes it without checking, and
+/// one that isn't reads past its end (a panic) or makes a char that can't exist.
+fn full_name_ok(face: &ttf_parser::Face) -> bool {
+    match face.names().into_iter().find(|n| n.name_id == ttf_parser::name_id::FULL_NAME && n.is_unicode()) {
+        None => true,
+        Some(n) => {
+            n.name.len() % 2 == 0
+                && char::decode_utf16(n.name.chunks_exact(2).map(|b| u16::from_be_bytes([b[0], b[1]]))).all(|c| c.is_ok())
+        }
     }
 }
 
@@ -553,7 +573,12 @@ fn font(path: &Path) -> Option<Arc<Typeface>> {
     {
         return font.clone();
     }
-    let font = std::fs::read(path).ok().and_then(Typeface::read).map(Arc::new);
+    let data = std::fs::read(path).ok();
+    let read = data.is_some();
+    let font = data.and_then(Typeface::read).map(Arc::new);
+    if read && font.is_none() {
+        crate::player::log(format_args!("font {}: can't be read, its text is drawn in Segoe UI", path.display()));
+    }
     fonts.insert(path.to_path_buf(), (stamp, font.clone()));
     font
 }
@@ -886,6 +911,91 @@ mod tests {
         assert!(!normal.is_empty());
         assert_eq!(normal.bounds(), missing.bounds());
         assert!(normal.image == missing.image);
+    }
+
+    /// A font's tables, as (tag, offset, length).
+    fn tables(data: &[u8]) -> Vec<([u8; 4], usize, usize)> {
+        let be32 = |at: usize| u32::from_be_bytes(data[at..at + 4].try_into().unwrap()) as usize;
+        let count = u16::from_be_bytes([data[4], data[5]]) as usize;
+        (0..count).map(|i| (data[12 + 16 * i..16 + 16 * i].try_into().unwrap(), be32(20 + 16 * i), be32(24 + 16 * i))).collect()
+    }
+
+    /// The font with its full name (the record fontdue reads: name ID 4, Unicode) changed by `change`, given
+    /// the record's length field's place and the name's own bytes' place.
+    fn with_full_name(data: &[u8], change: impl Fn(&mut Vec<u8>, usize, usize)) -> Vec<u8> {
+        let mut data = data.to_vec();
+        let (_, at, _) = tables(&data).into_iter().find(|t| &t.0 == b"name").expect("no name table");
+        let be16 = |d: &[u8], i: usize| u16::from_be_bytes([d[i], d[i + 1]]) as usize;
+        let (count, strings) = (be16(&data, at + 2), at + be16(&data, at + 4));
+        let record = (0..count).map(|k| at + 6 + 12 * k).find(|&r| {
+            let (platform, encoding, id) = (be16(&data, r), be16(&data, r + 2), be16(&data, r + 6));
+            id == 4 && (platform == 0 || (platform == 3 && [0, 1, 10].contains(&encoding)))
+        });
+        let r = record.expect("no full name");
+        let name = strings + be16(&data, r + 10);
+        change(&mut data, r + 8, name);
+        data
+    }
+
+    /// A shared widget's font is untrusted: one fontdue can't read (a full name of an odd length, a half
+    /// surrogate pair, bytes changed anywhere in its tables) draws its text in Segoe UI, and never panics.
+    #[test]
+    fn broken_fonts_fall_back() {
+        let fonts = Path::new(r"C:\Windows\Fonts");
+        let Some(source) = ["framd.ttf", "arial.ttf", "bahnschrift.ttf"].iter().map(|f| fonts.join(f)).find(|p| p.exists()) else { return };
+        if !have_default_font() {
+            return;
+        }
+        let good = std::fs::read(&source).unwrap();
+        let dir = std::env::temp_dir().join(format!("wvplay-text-broken-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sample = |font: &Path| Layer::render([&Text { font: font.into(), ..text("12:34 Hello") }]);
+        let normal = Layer::render([&text("12:34 Hello")]);
+        let own = sample(&source);
+        assert!(own.image != normal.image, "the font draws like Segoe UI: pick another");
+        let odd = with_full_name(&good, |d, len, _| {
+            let n = u16::from_be_bytes([d[len], d[len + 1]]);
+            d[len..len + 2].copy_from_slice(&(n - 1).to_be_bytes());
+        });
+        // a high surrogate with no low one after it, at the end of the name
+        let half = with_full_name(&good, |d, len, name| {
+            let n = u16::from_be_bytes([d[len], d[len + 1]]) as usize;
+            d[name + n - 2..name + n].copy_from_slice(&[0xD8, 0x3D]);
+        });
+        // a low surrogate on its own, which fontdue would turn into a char past U+10FFFF
+        let low = with_full_name(&good, |d, _, name| d[name..name + 4].copy_from_slice(&[0xDF, 0xFF, 0xFF, 0xFF]));
+        for (name, bytes) in [("odd.ttf", &odd), ("half.ttf", &half), ("low.ttf", &low)] {
+            let path = dir.join(name);
+            std::fs::write(&path, bytes).unwrap();
+            let drawn = sample(&path);
+            assert!(drawn.image == normal.image && drawn.bounds() == normal.bounds(), "{name} isn't drawn in Segoe UI");
+        }
+        // a small font with bytes changed inside its tables (the table directory kept whole), as a fuzzer
+        // would: each one draws, in itself or in Segoe UI, without a panic
+        let small = fonts.join("marlett.ttf");
+        let seed = if small.exists() { std::fs::read(&small).unwrap() } else { good.clone() };
+        let spans: Vec<(usize, usize)> = tables(&seed).into_iter().filter(|t| t.2 > 0 && t.1 + t.2 <= seed.len()).map(|t| (t.1, t.2)).collect();
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move |n: usize| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % n as u64) as usize
+        };
+        for case in 0..300 {
+            let mut bytes = seed.clone();
+            for _ in 0..[1, 2, 3, 5, 10, 30][next(6)] {
+                let (off, len) = spans[next(spans.len())];
+                let at = off + next(len);
+                let word: &[u8] = &[[0x00, 0x00], [0x7F, 0xFF], [0x80, 0x00], [0xFF, 0xFF], [0xFF, 0xFE], [next(256) as u8, next(256) as u8]][next(6)];
+                let end = (at + if next(2) == 0 { 1 } else { 2 }).min(off + len);
+                bytes[at..end].copy_from_slice(&word[..end - at]);
+            }
+            let path = dir.join(format!("fuzz-{case}.ttf"));
+            std::fs::write(&path, &bytes).unwrap();
+            let _ = sample(&path);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

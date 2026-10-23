@@ -134,7 +134,9 @@ The player decides once per scene where its live text goes, copies expanded:
    outermost copy or widget layer below 100% around P; otherwise P itself.
 3. If nothing animated is drawn from S upward (S's own content included), every live text is drawn **in
    place**: exactly where it sits in the stack, inside its groups and clips, as if it were static text.
-   Translucent groups are kept whole, so a faded copy's value fades with its panel.
+   Translucent groups are kept whole, so a faded copy's value fades with its panel. The art between live
+   texts is kept as stills; when they could take more than 16 panels' worth, the live text goes on top
+   instead (widgets.md, Live text): only scenes with many live texts each between other art get there.
 4. **Otherwise** every live text is drawn on top of everything, in drawing order, at its opacity times the
    opacities of its layer and its groups, clipped to its copy. The layers panel marks such text
    `live, on top`.
@@ -144,10 +146,13 @@ The player decides once per scene where its live text goes, copies expanded:
   S; what's from S upward is kept as stills, groups and live texts, put together again when a text
   changes, then laid over each frame.
 - **Over an animation, values update less often.** A change means every frame of the scene's cycle is
-  blended and encoded again. The player keeps that to about 2% of one core: after a redraw that took `c`
-  seconds, the next starts no sooner than `max(0.5 s, 50 × c)` after the last one started. Over a still
+  blended and encoded again. The player keeps that to about 10% of one core: after a redraw that took `c`
+  seconds, the next starts no sooner than `max(0.5 s, 10 × c)` after the last one started. Over a still
   that's twice a second at most; over a long video it can be minutes. The studio says so in the scene's
   note.
+- **A value that was missing shows at once:** when a text showing `--` (or its fallback) gets its value,
+  that redraw isn't held back, so values appear as soon as their source first reports. One redraw runs at a
+  time; a change made meanwhile waits for it to finish.
 
 ## Moving from version 1
 

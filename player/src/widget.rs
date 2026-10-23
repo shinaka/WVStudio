@@ -239,6 +239,17 @@ fn input_id_ok(id: &str) -> bool {
         && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'_')
 }
 
+/// The media a widget holds (docs/widgets.md, Media types), by extension in any letter case: what the studio
+/// serves for a widget, so what both renderers draw.
+const MEDIA_TYPES: [&str; 12] = ["png", "apng", "gif", "webp", "jpg", "jpeg", "bmp", "mp4", "m4v", "mov", "webm", "mkv"];
+
+/// Whether a path in a widget names one of its media types. Anything else (an `.avi`, a JPEG named `.jfif`)
+/// is left out, as a path outside the folder is: the player could decode some, but the studio can't show them.
+fn media_ok(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or_default();
+    name.rsplit_once('.').is_some_and(|(stem, ext)| !stem.is_empty() && MEDIA_TYPES.iter().any(|t| ext.eq_ignore_ascii_case(t)))
+}
+
 /// Whether a path in `widget.json` stays inside the widget's folder (docs/widgets.md, Paths).
 pub fn path_ok(path: &str) -> bool {
     let part_ok = |part: &str| {
@@ -580,18 +591,18 @@ fn values(copy: &Value, frame: &Frame, def: &Def) -> Scope {
                 scope.color.insert(input.id.clone(), value);
             }
             InputKind::Image => {
-                // a file, "" for none, or the holder's own image input; anything else isn't set
+                // a media file, "" for none, or the holder's own image input; anything else isn't set
                 let set = set.and_then(|v| {
                     let v = v.trim_matches(' ');
                     match reference(v) {
                         Some(id) => frame.scope.image.get(id).cloned(),
                         None if v.is_empty() => Some(PathBuf::new()),
-                        None => path_ok(v).then(|| frame.folder.join(v)),
+                        None => (path_ok(v) && media_ok(v)).then(|| frame.folder.join(v)),
                     }
                 });
                 let value = set.unwrap_or_else(|| {
                     let d = input.default.trim_matches(' ');
-                    if path_ok(d) { def.folder.join(d) } else { PathBuf::new() }
+                    if path_ok(d) && media_ok(d) { def.folder.join(d) } else { PathBuf::new() }
                 });
                 scope.image.insert(input.id.clone(), value);
             }
@@ -779,7 +790,11 @@ impl Expander<'_> {
                     // an image input's file; "" (or a reference to anything else) draws nothing
                     Some(input) => scope.image.get(input).filter(|p| !p.as_os_str().is_empty())?.clone(),
                     None if raw.is_empty() => return None,
-                    None if path_ok(raw) => def.folder.join(raw),
+                    None if path_ok(raw) && media_ok(raw) => def.folder.join(raw),
+                    None if path_ok(raw) => {
+                        self.lib.log(format!("widget {}: leaving out {id}: its src {raw:?} isn't a kind of media a widget holds", def.id));
+                        return None;
+                    }
                     None => {
                         self.lib.log(format!("widget {}: leaving out {id}: its src {raw:?} isn't a path inside the widget's folder", def.id));
                         return None;

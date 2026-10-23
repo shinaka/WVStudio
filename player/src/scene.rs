@@ -28,8 +28,9 @@ use crate::text::{self, DEFAULT_FONT};
 use crate::widget::rnd;
 use crate::{player, shape};
 
-/// Bump when drawing changes, so scenes prepared by an older player are drawn again.
-pub const VERSION: u32 = 3;
+/// Bump when drawing changes, so scenes prepared by an older player are drawn again. (4: live text whose
+/// stills would pass their cap goes on top, so an older player's huge over list isn't taken from the disk cache.)
+pub const VERSION: u32 = 4;
 /// The longest cycle: the loops' least common multiple is cut off here.
 const MAX_CYCLE: Duration = Duration::from_secs(60);
 /// Frames closer together than this are merged.
@@ -506,6 +507,17 @@ impl<'a> Node<'a> {
         }
     }
 
+    /// The box a node without live text may draw in, in a list whose buffer is `rect`: an object's clip (one
+    /// without draws anywhere in `rect`), a group's box, a whole layer's objects'. None when it draws nothing.
+    fn reach(&self, rect: Rect) -> Option<Rect> {
+        match self {
+            Node::Obj(obj) => Some(obj.object.clip.unwrap_or(rect)),
+            Node::Group { rect, .. } => Some(*rect),
+            Node::Slot(slot) => slot.objects.iter().map(|o| o.object.clip.unwrap_or(rect)).reduce(hull),
+            Node::Text { .. } => None,
+        }
+    }
+
     /// The objects of a node without live text, in drawing order.
     fn objects_into(self, out: &mut Vec<Obj<'a>>) {
         match self {
@@ -596,7 +608,10 @@ fn split_live<'a>(mut slots: Vec<Slot<'a>>, opts: &Options) -> Plan<'a> {
             None => j,
         }
     };
-    let on_top = slots[p].objects[start..].iter().any(Obj::animated) || slots[p + 1..].iter().any(Slot::animated);
+    // on top when something animated is drawn from S up, or when drawing in place would keep too much as stills
+    let on_top = slots[p].objects[start..].iter().any(Obj::animated)
+        || slots[p + 1..].iter().any(Slot::animated)
+        || stills_area(&slots, p, start) > STILLS_CAP;
     let placement = Some(Placement { on_top, cut: slots[p].objects[start].object.id.clone() });
     let mut over = Vec::new();
     if on_top {
@@ -634,6 +649,99 @@ fn split_live<'a>(mut slots: Vec<Slot<'a>>, opts: &Options) -> Plan<'a> {
         }
     }
     keyed(Plan { below: slots, over, placement }, opts)
+}
+
+/// The most pixels a scene's live text may keep as stills when it's drawn in place, weighed before they're
+/// drawn (`stills_area`): 16 panels, about 74 MB. Past it the live text is drawn on top instead, so a scene's
+/// over list never holds more, however many live texts sit between other objects (docs/widgets.md, Live text).
+const STILLS_CAP: i64 = 16 * WIDTH as i64 * HEIGHT as i64;
+
+/// The pixels the stills of an in-place over list can hold, at most: one still per run of objects between
+/// live texts, as `nodes` and `convert` make them, each no bigger than what its objects may draw in (`reach`).
+/// It's weighed from the objects alone, so the page weighs it exactly alike (WV.placement).
+fn stills_area(slots: &[Slot], p: usize, start: usize) -> i64 {
+    fn refs<'a>(objects: &[Obj<'a>]) -> Vec<&'a Object> {
+        objects.iter().map(|o| o.object).collect()
+    }
+    let mut top = Weigh::default();
+    // S's slot (a whole translucent one is a group), then each later one, as split_live sorts them
+    if slots[p].opacity < 1.0 {
+        top.group(&refs(&slots[p].objects), 0, PANEL_RECT, PANEL_RECT);
+    } else {
+        top.objects(&refs(&slots[p].objects[start..]), 0, PANEL_RECT);
+    }
+    for slot in &slots[p + 1..] {
+        let objects = refs(&slot.objects);
+        if !objects.iter().any(|o| is_live(o)) {
+            objects.iter().for_each(|o| top.add(o.clip.unwrap_or(PANEL_RECT)));
+        } else if slot.opacity < 1.0 {
+            top.group(&objects, 0, PANEL_RECT, PANEL_RECT);
+        } else {
+            top.objects(&objects, 0, PANEL_RECT);
+        }
+    }
+    top.flush(PANEL_RECT);
+    top.total
+}
+
+fn is_live(o: &Object) -> bool {
+    matches!(&o.kind, Kind::Text(w) if w.live)
+}
+
+/// Weighs one list of an over list: the run of objects without live text so far (the box they may draw in),
+/// and the pixels of the runs it has ended.
+#[derive(Default)]
+struct Weigh {
+    total: i64,
+    run: Option<Rect>,
+}
+
+impl Weigh {
+    /// Something without live text joins the run.
+    fn add(&mut self, reach: Rect) {
+        self.run = Some(self.run.map_or(reach, |r| hull(r, reach)));
+    }
+
+    /// Something holding live text ends the run, a still inside `rect` (the list's buffer).
+    fn flush(&mut self, rect: Rect) {
+        if let Some([l, t, r, b]) = self.run.take().and_then(|run| meet(run, rect)) {
+            self.total += (r - l) * (b - t);
+        }
+    }
+
+    /// A group holding live text, in a list whose buffer is `parent`: its own list, in a buffer of `rect`.
+    fn group(&mut self, objects: &[&Object], depth: usize, rect: Rect, parent: Rect) {
+        self.flush(parent);
+        let mut inner = Weigh::default();
+        inner.objects(objects, depth, rect);
+        inner.flush(rect);
+        self.total += inner.total;
+    }
+
+    /// Objects in a list whose buffer is `rect`, with `depth` of their groups open: sorted as `nodes` sorts them.
+    fn objects(&mut self, objects: &[&Object], depth: usize, rect: Rect) {
+        let mut k = 0;
+        while k < objects.len() {
+            let Some(g) = objects[k].groups.get(depth) else {
+                if is_live(objects[k]) { self.flush(rect) } else { self.add(objects[k].clip.unwrap_or(rect)) }
+                k += 1;
+                continue;
+            };
+            let end = k + objects[k..].iter().take_while(|o| o.groups.get(depth).is_some_and(|h| h.id == g.id)).count();
+            let members = &objects[k..end];
+            k = end;
+            match meet(g.rect, PANEL_RECT) {
+                Some(r) if members.iter().any(|o| is_live(o)) => self.group(members, depth + 1, r, rect),
+                Some(r) => self.add(r),
+                None => {}
+            }
+        }
+    }
+}
+
+/// The smallest rect holding both.
+fn hull(a: Rect, b: Rect) -> Rect {
+    [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])]
 }
 
 /// The plan with its layers keyed for the buffer cache.
@@ -703,10 +811,13 @@ fn convert(nodes: Vec<Node>, depth: usize, rect: Rect) -> Vec<Over> {
 }
 
 /// A run of nodes without live text drawn as one still, or None when it draws nothing. Objects are drawn
-/// together; a whole layer comes from the layer cache, laid over at its opacity.
+/// together; a whole layer comes from the layer cache, laid over at its opacity. It's drawn into a buffer of
+/// what the run may draw in (`reach`, inside `rect`, the parent's), and kept as far as it was drawn on: so far
+/// apart pieces of a copy don't make a still the size of the panel (stills_area weighs the same box).
 fn still(run: Vec<Node>, depth: usize, rect: Rect) -> Option<Arc<Buf>> {
-    let origin = (rect[0], rect[1]);
-    let size = ((rect[2] - rect[0]) as u32, (rect[3] - rect[1]) as u32);
+    let reach = run.iter().filter_map(|n| n.reach(rect)).reduce(hull).and_then(|r| meet(r, rect))?;
+    let origin = (reach[0], reach[1]);
+    let size = ((reach[2] - reach[0]) as u32, (reach[3] - reach[1]) as u32);
     let mut parts: Vec<(Arc<Buf>, f32)> = Vec::new();
     let mut objects = Vec::new();
     let draw = |objects: &mut Vec<Obj>, parts: &mut Vec<(Arc<Buf>, f32)>| {
@@ -736,11 +847,7 @@ fn still(run: Vec<Node>, depth: usize, rect: Rect) -> Option<Arc<Buf>> {
                 touched = union(touched, buf.onto_rgba(&mut canvas, origin, *opacity));
             }
             touched?;
-            Some(Arc::new(if rect == PANEL_RECT {
-                Buf::take(canvas, (0, 0), touched)
-            } else {
-                Buf { left: rect[0] as u32, top: rect[1] as u32, image: canvas }
-            }))
+            Some(Arc::new(Buf::take(canvas, origin, touched)))
         }
     }
 }
@@ -1992,6 +2099,57 @@ mod over_tests {
     /// The largest difference in any channel.
     fn worst(a: &RgbImage, b: &RgbImage) -> u8 {
         a.pixels().zip(b.pixels()).flat_map(|(p, q)| (0..3).map(move |c| p[c].abs_diff(q[c]))).max().unwrap_or(0)
+    }
+
+    /// Live text drawn in place keeps the art between live texts as stills, weighed before they're drawn: past
+    /// 16 panels' worth it's drawn on top instead. So however many live texts sit between other objects, a
+    /// scene's stills stay within the cap (the runtime review's 300 hand-placed live texts kept 1.3 GB of them,
+    /// and a widget pack within every limit 5.9 GB).
+    #[test]
+    fn stills_stay_within_the_cap() {
+        fn stills(over: &[Over]) -> usize {
+            over.iter()
+                .map(|node| match node {
+                    Over::Still(buf) => buf.bytes(),
+                    Over::Group { children, .. } => stills(children),
+                    Over::Text { .. } => 0,
+                })
+                .sum()
+        }
+        let panel = (WIDTH * HEIGHT * 4) as usize;
+        // n x [a live text, a pixel at the bottom right, one at the top left]: each run between texts spans the panel
+        let spread = |n: usize| {
+            let objects = (0..n).flat_map(|k| {
+                [text(&format!("t{k}"), 700.0, 300.0, "{time:%S}"), rect(&format!("a{k}"), 1599.0, 719.0, 1.0, 1.0, "#ff0000"),
+                 rect(&format!("b{k}"), 0.0, 0.0, 1.0, 1.0, "#ff0000")]
+            });
+            scene(vec![layer("l", 1.0, objects.collect())])
+        };
+        for (n, on_top) in [(16, false), (17, true), (300, true)] {
+            let s = spread(n);
+            assert_eq!(placement(&s, &[], &opts()).map(|p| p.on_top), Some(on_top), "{n} live texts");
+            let over = over_of(&s, &[]);
+            assert!(stills(&over) <= 16 * panel, "{n} live texts: {} MB of stills", stills(&over) >> 20);
+            assert_eq!(stills(&over) == 0, on_top);
+        }
+        // the same pieces inside copies' clips: a run counts the hull of its clips, so neighbouring copies stay in
+        // place however many there are, and copies at opposite corners don't
+        let copies = |far: bool| {
+            let objects = (0..40).flat_map(|k| {
+                let (x, y) = if far { if k % 2 == 0 { (0, 0) } else { (1500, 680) } } else { (100 * (k % 16), 40 * (k / 16)) };
+                let c = [x, y, x + 100, y + 40];
+                let (x, y) = (x as f64, y as f64);
+                [leaf(rect(&format!("c{k}/background"), x, y, 100.0, 40.0, "#202020"), c, &[]),
+                 leaf(text(&format!("c{k}/v"), x + 4.0, y + 4.0, "{time:%S}"), c, &[]),
+                 leaf(rect(&format!("c{k}/u"), x + 4.0, y + 30.0, 92.0, 6.0, "#3ddc84"), c, &[])]
+            });
+            scene(vec![layer("l", 1.0, objects.collect())])
+        };
+        for (far, on_top) in [(false, false), (true, true)] {
+            let s = copies(far);
+            assert_eq!(placement(&s, &[], &opts()).map(|p| p.on_top), Some(on_top), "far apart: {far}");
+            assert!(stills(&over_of(&s, &[])) <= panel, "far apart: {far}");
+        }
     }
 
     /// The shapes of the over list, one rule of docs/widgets.md (Live text) at a time: where S starts,

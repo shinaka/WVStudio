@@ -221,7 +221,56 @@ fn decode_image(bytes: &[u8]) -> Result<Frames, Box<dyn std::error::Error>> {
         ImageFormat::WebP if WebPDecoder::new(IoCursor::new(bytes))?.has_animation() => {
             animation(WebPDecoder::new(IoCursor::new(bytes))?.into_frames())
         }
-        _ => Ok(vec![(Arc::new(image::load_from_memory(bytes)?.into_rgba8()), Duration::from_secs(1))]),
+        _ => {
+            let mut im = image::load_from_memory(bytes)?.into_rgba8();
+            if let Some(bits) = bmp16(bytes) {
+                as_the_studio_reads(&mut im, bits);
+            }
+            Ok(vec![(Arc::new(im), Duration::from_secs(1))])
+        }
+    }
+}
+
+/// The bits of each channel (red, green, blue) of a 16-bit BMP in one of the two layouts the studio reads
+/// (5-6-5 and 5-5-5, which an uncompressed 16-bit BMP is), or None for any other file.
+fn bmp16(bytes: &[u8]) -> Option<[u32; 3]> {
+    let u16_at = |i: usize| Some(u16::from_le_bytes(bytes.get(i..i + 2)?.try_into().ok()?));
+    let u32_at = |i: usize| Some(u32::from_le_bytes(bytes.get(i..i + 4)?.try_into().ok()?));
+    if bytes.get(..2)? != b"BM" || u32_at(14)? < 40 || u16_at(28)? != 16 {
+        return None;
+    }
+    match u32_at(30)? {
+        0 => Some([5, 5, 5]),
+        // BI_BITFIELDS: the masks follow a 40-byte header, and sit at the same place inside a longer one
+        3 => match (u32_at(54)?, u32_at(58)?, u32_at(62)?) {
+            (0xF800, 0x07E0, 0x001F) => Some([5, 6, 5]),
+            (0x7C00, 0x03E0, 0x001F) => Some([5, 5, 5]),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// A 16-bit BMP's pixels as the studio's preview reads them (Pillow, docs/widgets.md, The studio's preview):
+/// each channel widened to 8 bits as `v × 255 ÷ max` rounded down (the image crate rounds to nearest, one
+/// level higher in places), and opaque (Pillow ignores a 16-bit BMP's alpha mask). So the cooler shows the same
+/// pixels as the studio.
+fn as_the_studio_reads(im: &mut RgbaImage, bits: [u32; 3]) {
+    let tables = bits.map(|n| {
+        let max = (1u32 << n) - 1;
+        let mut table = [0u8; 256];
+        for (wide, out) in table.iter_mut().enumerate() {
+            // the channel's own value back from the image crate's widening (exact: its steps are over 4 apart)
+            let v = (wide as u32 * max + 127) / 255;
+            *out = (v * 255 / max) as u8;
+        }
+        table
+    });
+    for p in im.pixels_mut() {
+        for c in 0..3 {
+            p[c] = tables[c][p[c] as usize];
+        }
+        p[3] = 255;
     }
 }
 
@@ -499,6 +548,66 @@ pub fn scale_nearest(src: &RgbaImage, w: u32, h: u32) -> RgbaImage {
 mod tests {
     use super::*;
     use image::Rgba;
+
+    /// A 4 x 2 16-bit BMP of `values` (top row first): uncompressed (5-5-5), or BI_BITFIELDS with `masks` after
+    /// a 40-byte header, or inside a 124-byte one when they include alpha.
+    fn bmp16_file(values: &[u16; 8], masks: Option<[u32; 4]>) -> Vec<u8> {
+        let mut pixels = Vec::new();
+        for y in (0..2).rev() {
+            for x in 0..4 {
+                pixels.extend_from_slice(&values[y * 4 + x].to_le_bytes());
+            }
+        }
+        let header: u32 = if masks.is_some_and(|m| m[3] != 0) { 124 } else { 40 };
+        let mut info = Vec::new();
+        info.extend_from_slice(&header.to_le_bytes());
+        info.extend_from_slice(&4i32.to_le_bytes());
+        info.extend_from_slice(&2i32.to_le_bytes());
+        info.extend_from_slice(&1u16.to_le_bytes());
+        info.extend_from_slice(&16u16.to_le_bytes());
+        info.extend_from_slice(&(if masks.is_some() { 3u32 } else { 0 }).to_le_bytes());
+        info.extend_from_slice(&(pixels.len() as u32).to_le_bytes());
+        info.extend_from_slice(&[0; 16]);
+        if let Some(m) = masks {
+            let n = if header == 40 { 3 } else { 4 };
+            m[..n].iter().for_each(|v| info.extend_from_slice(&v.to_le_bytes()));
+        }
+        info.resize(14 + info.len().max(header as usize) - 14, 0);
+        let off = 14 + info.len() as u32;
+        let mut file = b"BM".to_vec();
+        file.extend_from_slice(&(off + pixels.len() as u32).to_le_bytes());
+        file.extend_from_slice(&[0; 4]);
+        file.extend_from_slice(&off.to_le_bytes());
+        file.extend(info);
+        file.extend(pixels);
+        file
+    }
+
+    /// A 16-bit BMP gives the pixels the studio's preview draws (Pillow 12 read the same files to these values):
+    /// channels widened rounding down, and opaque. The image crate alone rounds to nearest: (66, 162, 33) where
+    /// the studio shows (65, 161, 32), the parity review found. Another 16-bit layout is left as the crate reads it.
+    #[test]
+    fn bmp16_as_the_studio_reads_it() {
+        let values = [0x0000, 0x8421, 0x7FFF, 0xFFFF, 0x1234, 0x8000, 0x4210, 0x3C0F];
+        let rgb = |file: Vec<u8>| -> Vec<[u8; 4]> { decode_image(&file).unwrap()[0].0.pixels().map(|p| p.0).collect() };
+        let opaque = |l: [[u8; 3]; 8]| -> Vec<[u8; 4]> { l.iter().map(|[r, g, b]| [*r, *g, *b, 255]).collect() };
+        let five = opaque([[0, 0, 0], [8, 8, 8], [255, 255, 255], [255, 255, 255], [32, 139, 164], [0, 0, 0], [131, 131, 131], [123, 0, 123]]);
+        assert_eq!(rgb(bmp16_file(&values, None)), five, "uncompressed 5-5-5");
+        assert_eq!(rgb(bmp16_file(&values, Some([0x7C00, 0x03E0, 0x001F, 0]))), five, "5-5-5 bitfields");
+        // a 1-5-5-5 alpha mask in a V5 header: ignored, as the studio ignores it
+        assert_eq!(rgb(bmp16_file(&values, Some([0x7C00, 0x03E0, 0x001F, 0x8000]))), five, "1-5-5-5");
+        let six = opaque([[0, 0, 0], [131, 133, 8], [123, 255, 255], [255, 255, 255], [16, 68, 164], [131, 0, 0], [65, 64, 131], [57, 129, 123]]);
+        assert_eq!(rgb(bmp16_file(&values, Some([0xF800, 0x07E0, 0x001F, 0]))), six, "5-6-5");
+        assert_eq!(bmp16(&bmp16_file(&values, Some([0x0F00, 0x00F0, 0x000F, 0]))), None, "4-4-4 isn't one the studio reads");
+        // every 5- and 6-bit value, against Pillow's rule
+        for (bits, max) in [(5, 31u32), (6, 63)] {
+            for v in 0..=max {
+                let file = bmp16_file(&[(v << if bits == 6 { 5 } else { 11 }) as u16; 8], Some([0xF800, 0x07E0, 0x001F, 0]));
+                let p = rgb(file)[0];
+                assert_eq!(p[if bits == 6 { 1 } else { 0 }] as u32, v * 255 / max, "{bits}-bit {v}");
+            }
+        }
+    }
 
     /// Each pixel picks its source by the exact rule, checked against a plain float version.
     #[test]

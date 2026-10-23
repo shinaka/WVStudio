@@ -157,7 +157,11 @@ follow the rule.
 
 **Media types** are the ones the player draws: `.png .apng .gif .webp .jpg .jpeg .bmp` and `.mp4 .m4v .mov .webm
 .mkv`. (The player draws BMP from this version on. Before, the studio took BMP files that the cooler couldn't
-show.)
+show. It reads a 16-bit BMP exactly as the studio does, so both show the same pixels; the studio reads the
+5-6-5 and 5-5-5 layouts only.) Inside a widget these are the only ones drawn, by the extension in any letter case: an image or video
+whose `src` names another (an `.avi`, a JPEG renamed `.jfif`, a file with no extension) is left out, and logged,
+as a path that breaks the rule is, on the cooler and in the studio alike. An image input's value or default that
+names one counts as not set.
 
 - An **Aseprite** file (`.aseprite`, `.ase`) added to a widget, by upload, From selection or paste, is turned
   into a PNG (one frame) or an animated PNG with your Aseprite, and the widget keeps only that. The player
@@ -523,7 +527,8 @@ exact. The player decides once per scene:
 2. Find S, where P's group starts: P's top-level layer if that layer is below 100%; otherwise the outermost
    copy or widget layer below 100% around P; otherwise P itself.
 3. If nothing animated is drawn from S upward (S's own content included), every live text is drawn **in
-   place**: exactly where it sits in the stack, inside its groups and clips, as if it were static text.
+   place**: exactly where it sits in the stack, inside its groups and clips, as if it were static text. That
+   is, unless the stills it would keep pass their cap (below).
 4. Otherwise every live text is drawn **on top** of everything, in drawing order, at its opacity times the
    opacities of its layer and its groups, clipped to its copy.
 
@@ -535,14 +540,32 @@ Live text is redrawn only when its shown text changes. While playing, the frames
 What's from S upward is kept as stills, groups and live texts, put together again when a text changes, then
 laid over each frame: one blend per frame.
 
+**The stills have a cap.** Drawn in place, live text keeps the art between one live text and the next as a
+still, in each layer and translucent group that holds live text. Before drawing them, the player weighs what
+they could hold: each run of objects between live texts counts the box it can draw in, which is the smallest
+box around its objects' clips (an object outside any copy can draw anywhere in its layer or group, so it counts
+all of it). When the runs come to more than 16 panels' worth (16 × 1600 × 720 pixels, about 74 MB), every live
+text in the scene is drawn on top instead, as if something animated were above it. The studio weighs it the
+same way, so its preview and the layers panel's `live, on top` agree. Only a scene with many live texts, each
+between other art, gets there: 17 live texts of a scene's own each followed by a shape, say, or 9 full-panel
+copies at 50% each holding a value. A widget's parts are clipped to its copy, so many small gauges stay in place.
+
 **Over an animation, values update less often.** A change of a live text means decoding, blending and encoding
 every frame of the scene's cycle again: for a 60-second video, 1800 frames. The player keeps that work to about
-2% of one processor core: after a redraw that took `c` seconds of work, the next one starts no sooner than
-`max(0.5 s, 50 × c)` after the last one started, and shows every change made meanwhile. Over a still scene
-that's twice a second at most; over a short GIF a few seconds; over a long video it can be minutes. The studio
-says so in the scene's note ("Live values here redraw M frames each time they change, so the cooler updates
-them less often"), and warns when a copy's animation stretches a scene's loop, or every scene's through Global,
-to the 60 s cap.
+10% of one processor core: after a redraw that took `c` seconds of work, the next one starts no sooner than
+`max(0.5 s, 10 × c)` after the last one started, and shows every change made meanwhile. Over a still scene
+that's twice a second at most; over a short GIF every few seconds; over a long video it can be minutes. The
+studio says so in the scene's note ("Live values here redraw M frames each time they change, so the cooler
+updates them less often"), and warns when a copy's animation stretches a scene's loop, or every scene's through
+Global, to the 60 s cap.
+
+- **A value that was missing shows at once.** When a live text shows `--` or its fallback because a value
+  hasn't come yet ([data.md](data.md)), or has gone stale, the redraw that fills it in isn't held back: the
+  value appears as soon as its source reports it, with any other change made meanwhile. Only changes to values
+  that were already showing wait.
+- **One redraw at a time.** A change made while a redraw is being drawn waits for that one to finish, and the
+  next starts from the values as they are then. So a heavy scene whose redraw takes longer than its values take
+  to change still shows each new picture as it's done.
 
 ### 5.8 Animation and the timeline
 
@@ -569,6 +592,7 @@ Editing a widget used in the global layer prepares every scene again, as any edi
 | file | 1 MiB per `widget.json` | the studio refuses to save more, and lists a bigger one as a problem; the player doesn't read it. Its copies draw nothing, on the cooler and in the studio (section 5.11) |
 | text | a copy's text value: 2000 characters, counted again once the values passed down to it are filled in, so it stays within 2000 at any depth. A text inside a widget: 4000 characters once its values are filled in, before it's read for live placeholders | the rest is cut, by whole characters (never half an emoji), and what's left is read as usual: a placeholder cut part way shows as written. Texts in a scene's own objects aren't cut |
 | ids | 64 characters of a copy's id, and of a layer's or an object's id inside a widget | the rest is ignored: two copies whose ids start with the same 64 characters can be drawn as one group (section 5.5) |
+| live text in place | stills worth 16 panels per scene, weighed before they're drawn (section 5.7) | the scene's live text is drawn on top |
 
 **Counting work.** The budget decides which leaves exist, so both renderers count it exactly alike. Steps are
 taken in drawing order (the holder's layers bottom first, each layer's objects bottom first, into each copy as
