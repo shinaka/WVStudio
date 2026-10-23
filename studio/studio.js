@@ -141,8 +141,17 @@ const clock = () => (view.paused ? view.pausedAt : performance.now() - t0);
 function mediaRef(src, key = sel.scene) {
   return isWidgetHolder(key) && typeof src === "string" && src ? `widgets/${holderWidgetId(key)}/${src}` : src;
 }
-/** The media of an object in the open holder (not a leaf, whose src is a ref already). */
-function holderMedia(o) { return getMedia(mediaRef(o.src)); }
+/** The ref of the file an object in the open holder draws (not a leaf, whose src is a ref already): its src's. In a
+ *  widget, a picture bound to an image input (`{$icon}`) has no file of its own: it draws the input's file, as the
+ *  editor previews it, or nothing (""). */
+function holderRef(o) {
+  const input = isWidgetHolder() ? WV.refOf(o.src) : null;
+  if (input === null) return mediaRef(o.src);
+  const id = holderWidgetId(), def = WV.readDef(id, { ...lib.get(id), version: 1 });
+  return def.problem ? "" : previewScope(id, def, view.preview).image.get(input) ?? "";
+}
+/** The media of an object in the open holder, or null when it has none. */
+function holderMedia(o) { return getMedia(holderRef(o)); }
 
 function getMedia(src) {
   if (typeof src !== "string" || !src) return null;
