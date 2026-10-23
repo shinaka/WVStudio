@@ -1000,13 +1000,28 @@ def font_list():
 
 
 def font_file(path):
-    """The font at `path` if font_list lists it, or if it's one a widget carries in its fonts\\ (a text pasted out
-    of a widget names it there): no other file is served."""
+    """The font at `path` if font_list lists it, or if it's one the playlist keeps in its fonts\\ (a text pasted out
+    of a widget names it there) or a widget carries in its fonts\\ (a text pasted by an earlier studio): no other
+    file is served."""
     font_list()
     found = fonts_seen[2].get(os.path.normcase(path))
-    if found is None and carried_font(path):
+    if found is None and (kept_font(path) or carried_font(path)):
         found = Path(path)
     return found
+
+
+def playlist_fonts():
+    """The fonts the playlist keeps for its scenes: ones a pasted text brought out of a widget (copy_media)."""
+    return PLAYLIST_DIR / "fonts"
+
+
+def kept_font(path):
+    """Whether `path` is a font the playlist keeps: playlist/fonts/<name>, a file of its own there."""
+    if not isinstance(path, str) or not os.path.isabs(path):
+        return False
+    p = Path(path)
+    return (font_name_ok(p.name) and same_file(p.parent, playlist_fonts()) and real_dir(playlist_fonts())
+            and inside(p, playlist_fonts()))
 
 
 def carried_font(path):
@@ -2140,15 +2155,47 @@ def holder_file(wid, folder, ref):
 
 def font_file_for(font, wid, folder):
     """The file a text's `font` means in its holder, or None when it isn't on this PC. In a scene it's an absolute
-    path, taken only in one of the font folders the studio lists or a widget's fonts/; in a widget, a file name
-    found by the lookup."""
+    path, taken only in one of the font folders the studio lists, the playlist's fonts/ or a widget's fonts/; in a
+    widget, a file name found by the lookup."""
     if wid is not None:
         return find_font(folder, font)
     if not isinstance(font, str) or not os.path.isabs(font):
         return None
     p = Path(font)
     listed = os.path.normcase(str(p.parent)) in {os.path.normcase(str(d)) for d in FONT_DIRS}
-    return p if (listed and font_name_ok(p.name) and p.is_file()) or carried_font(font) else None
+    return p if (listed and font_name_ok(p.name) and p.is_file()) or kept_font(font) or carried_font(font) else None
+
+
+def scene_font(path):
+    """The file a scene's text names for the font at `path` (font_file_for). A font a widget carries in its fonts/
+    stays that widget's, and the widget may get another folder name, be deleted or be replaced: so the scene gets
+    its own, as it gets its own copy of a picture. That's an installed font of the same name with the same bytes
+    when there is one, else a copy in the playlist's fonts/ (named with its hash when another font there has its
+    name). Any other font is installed already: `path` itself."""
+    if not carried_font(str(path)):
+        return path
+    data = path.read_bytes()
+    check_font_bytes(data)
+    for d in FONT_DIRS:  # the folders the studio lists, so the page loads it too
+        p = d / path.name
+        try:
+            if p.is_file() and p.stat().st_size == len(data) and p.read_bytes() == data:
+                return p
+        except OSError:
+            pass
+    folder = playlist_fonts()
+    with playlist_lock:
+        if os.path.lexists(folder) and not real_dir(folder):
+            raise ValueError("playlist\\fonts isn't a plain folder.")
+        dest = folder / path.name
+        if os.path.lexists(dest) and not (inside(dest, folder) and dest.read_bytes() == data):
+            stem, ext = os.path.splitext(path.name)
+            dest = folder / f"{stem[:91].rstrip(' .')}-{hashlib.sha1(data).hexdigest()[:8]}{ext}"
+            if os.path.lexists(dest) and not (inside(dest, folder) and dest.read_bytes() == data):
+                raise ValueError(f"playlist\\fonts already has another {dest.name}.")
+        if not os.path.lexists(dest):
+            write_file(dest, data)
+    return dest
 
 
 def font_for_widget(font, wid, folder):
@@ -2208,11 +2255,11 @@ def copy_media(req):
                         write_file(dest, data)
                 if name:
                     out["fonts"][font] = name
-            else:  # into a scene, a text names its font by its absolute path
+            else:  # into a scene, a text names its font by its absolute path: one of its own (scene_font)
                 path = font_file_for(font, from_id, from_folder)
                 found = path is not None
                 if found:
-                    out["fonts"][font] = str(path)
+                    out["fonts"][font] = str(scene_font(path))
             if not found:
                 out["missing"].append({"file": font, "why": "That font isn't on this PC."})
         except ValueError as e:

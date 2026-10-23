@@ -788,8 +788,10 @@ While a widget is open, the property controls get **bind buttons**:
 - **The W tool** (key **W**) opens a menu of widgets with a filter box. Pick one, then click the canvas to
   place it there. Shift keeps the tool; Esc cancels.
 - **Copy, paste and duplicate** work as for any object. Pasting between a scene and a widget copies the images
-  and fonts it needs into the right folder (fonts as From selection does). A copy of a widget this studio
-  doesn't have pastes anyway and shows as missing.
+  and fonts it needs into the right folder (fonts as From selection does). A font a widget carries in its
+  `fonts\` goes into `playlist\fonts\` when its text is pasted into a scene (unless the same font is installed),
+  so the scene keeps it whatever happens to that widget. A copy of a widget this studio doesn't have pastes
+  anyway and shows as missing.
 - **Parts copied out of a widget keep their look.** Pasted into a scene, Global or another widget, every
   reference to the first widget's inputs is filled in with what its editor was showing: text gets the value
   (made safe), a bound colour or tint gets the colour, a bound picture gets the file (copied along). So nothing
