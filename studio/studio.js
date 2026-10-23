@@ -1287,7 +1287,7 @@ function putBack(state) {
   libEpoch++;
 }
 /** Puts a state back and opens `at`, the holder its step was made in (if it's gone: where ← Back goes, else the
- *  first scene). */
+ *  first scene). ← Back then leads where it would if you had gone there yourself. */
 function restore(state, at = sel.scene) {
   putBack(state);
   if (!widgetsOn) {
@@ -1297,6 +1297,12 @@ function restore(state, at = sel.scene) {
     dropStaleNav();
     const key = holderExists(at) ? at : nav.length ? nav[nav.length - 1].key : doc.scenes[0]?.id ?? "global";
     if (key !== was) {
+      // ← Back, as if you'd gone there yourself: to a place ← Back holds is going back; another scene or Global
+      // starts afresh, as its card does; a widget goes back to where you were, as Edit widget does
+      const i = nav.findLastIndex((e) => e.key === key);
+      if (i >= 0) nav.length = i;
+      else if (!isWidgetHolder(key)) nav.length = 0;
+      else if (holderExists(was)) nav.push({ key: was, ids: [...sel.ids] });
       sel.scene = key;
       sel.ids = [];
       sel.layer = null;
