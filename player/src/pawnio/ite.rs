@@ -19,7 +19,8 @@ use std::time::Duration;
 use serde::Serialize;
 
 use super::keys::{Channel, Sensor, hardware};
-use super::reader::{HwLock, Poll, io_text, lock_missing, open_note};
+use super::mutex::Bus;
+use super::reader::{HwLock, Poll, io_text, open_note};
 use super::{Exec, IoError, Lock, ModuleId, OpenModule};
 
 /// A supported chip.
@@ -520,7 +521,7 @@ impl SuperIo {
     /// One read: detection when it's due, then each chip found, under `isa` (the shared lock).
     pub fn read(&mut self, poll: &Poll, open: &OpenModule, isa: Option<&dyn Lock>, out: &mut Vec<(Sensor, f64)>,
                 notes: &mut Vec<String>) {
-        let Some(isa) = isa else { return notes.push(lock_missing("fan and board readings")) };
+        let Some(isa) = isa else { return notes.push(Bus::Isa.unshared()) };
         if let Some(note) = &self.unopened {
             return notes.push(note.clone());
         }
@@ -1297,7 +1298,7 @@ mod tests {
         let poll = Poll { hw: &rig.hw, clock: &rig.clock, now: Duration::ZERO, resumed_at: None };
         let (mut out, mut notes) = (Vec::new(), Vec::new());
         rig.superio.read(&poll, &rig.open, None, &mut out, &mut notes);
-        assert_eq!(notes, [lock_missing("fan and board readings")]);
+        assert_eq!(notes, [Bus::Isa.unshared()]);
         assert!(rig.lpc.calls().is_empty() && out.is_empty());
 
         rig.open = fake::opener(Err(crate::pawnio::OpenError::NotSupported), Err(crate::pawnio::OpenError::TooOld));

@@ -9,7 +9,8 @@
 use std::time::Duration;
 
 use super::keys::Cpu;
-use super::reader::{Poll, io_text, lock_missing};
+use super::mutex::Bus;
+use super::reader::{Poll, io_text};
 use super::{Exec, IoError, Lock};
 
 /// Where Tctl is, and where the CCDs' temperatures start (`ccd_slots` gives the offset from it).
@@ -200,7 +201,7 @@ impl Amd {
     pub fn read(&mut self, poll: &Poll, pci: Option<&dyn Lock>, out: &mut Vec<(Cpu, f64)>, notes: &mut Vec<String>) {
         match pci {
             Some(pci) => self.temperatures(poll, pci, out, notes),
-            None => notes.push(lock_missing("CPU temperatures")),
+            None => notes.push(Bus::Pci.unshared()),
         }
         self.power(poll, out, notes);
     }

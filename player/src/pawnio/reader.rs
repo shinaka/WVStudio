@@ -4,16 +4,20 @@
 //!
 //! It runs only where PawnIO can be opened: in the elevated sensor reader, and in `wvplay pawnio` (the probe).
 //! Everything it touches is handed to it (the module opener, the shared locks, the CPU, the board, the
-//! clock), so tests run it on fakes (fake.rs).
+//! clock), so tests run it on fakes (fake.rs); `Reader::this_pc` hands it the real ones.
 
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use super::amd::{Amd, Cpuid};
+use super::blobs::{self, DAMAGED};
+use super::driver;
 use super::ite::SuperIo;
 use super::keys::{Cpu, Sensor};
 use super::labels::{Board, Names};
+use super::mutex::{self, Bus};
 use super::{IoError, Label, Lock, ModuleId, OpenError, OpenModule, Readings};
 
 /// A gap between the clock that counts sleep and the one that doesn't, longer than this, means the PC slept.
@@ -93,6 +97,25 @@ pub struct Locks {
     pub isa: Option<Box<dyn Lock>>,
 }
 
+impl Locks {
+    /// The real ones, the named mutexes. A part whose lock is None gives the same note as `mutex::shared`
+    /// (`Bus::unshared`), so that one isn't kept.
+    pub fn shared() -> Locks {
+        let shared = |bus| mutex::shared(bus).ok().map(|lock| Box::new(lock) as Box<dyn Lock>);
+        Locks { pci: shared(Bus::Pci), isa: shared(Bus::Isa) }
+    }
+}
+
+/// How the program at `exe` opens its modules for real: each from its pinned file in the module folder
+/// beside the program (blobs.rs), on a PawnIO device handle of its own (driver.rs). With no such folder,
+/// every module is `Damaged`, so each part says the files need rebuilding.
+pub fn modules(exe: &Path) -> OpenModule {
+    match blobs::find_dir(exe) {
+        Some(dir) => driver::opener(dir),
+        None => Box::new(|_| Err(OpenError::Damaged)),
+    }
+}
+
 /// What every part of one read goes by: the process's hardware lock, the clock, when the read began, and
 /// when the PC was last found to have woken from sleep (None if never, since the reader started).
 pub struct Poll<'a> {
@@ -102,17 +125,10 @@ pub struct Poll<'a> {
     pub resumed_at: Option<Duration>,
 }
 
-/// Notes the CPU and the chips share.
-pub(crate) const DAMAGED: &str =
-    "The PawnIO module files beside the player are damaged or from another version: rebuild or reinstall the player.";
+/// Notes the CPU and the chips share, with DAMAGED from blobs.rs.
 pub(crate) const TOO_OLD: &str = "PawnIO is too old for its modules: update it from pawnio.eu.";
 pub(crate) const INTEL: &str = "PawnIO CPU readings aren't supported on Intel CPUs yet.";
 pub(crate) const OTHER_CPU: &str = "PawnIO CPU readings are only for AMD Ryzen CPUs (family 17h and later) so far.";
-
-/// What a reading part is called in a note: `what` is "CPU readings" or "fan or board readings".
-pub(crate) fn lock_missing(what: &str) -> String {
-    format!("Couldn't share the motherboard sensor lock with other monitoring programs, so {what} are off.")
-}
 
 /// The note for a module that couldn't be opened.
 pub(crate) fn open_note(module: ModuleId, error: OpenError) -> String {
@@ -171,6 +187,13 @@ impl Reader {
         };
         Reader { open, locks, names: Names::for_board(board), clock, hw, amd, superio: SuperIo::default(), last: None,
                  resumed_at: None }
+    }
+
+    /// The reader of this PC, for the program at `exe` (the sensor reader, the probe): its modules
+    /// (`modules`), the shared locks, this CPU and board, and Windows' clocks. Tests never make one: it
+    /// takes the mutexes other programs share.
+    pub fn this_pc(exe: &Path, hw: Arc<HwLock>) -> Reader {
+        Reader::open(modules(exe), Locks::shared(), Cpuid::current(), &Board::current(), Box::new(SystemClock), hw)
     }
 
     /// One read of everything: the CPU, then the chips. A part that can't be read is a note.
@@ -376,7 +399,7 @@ mod tests {
         let mut reader = Reader::open(fake::opener(Ok(rig.amd.clone()), Ok(rig.lpc.clone())), locks, ryzen(),
                                       &Board::default(), Box::new(rig.clock.clone()), rig.hw.clone());
         let read = reader.read();
-        assert_eq!(read.notes, [lock_missing("CPU temperatures"), lock_missing("fan and board readings")]);
+        assert_eq!(read.notes, [Bus::Pci.unshared(), Bus::Isa.unshared()]);
         assert!(read.values.is_empty());
         rig.clock.advance(Duration::from_secs(1));
         rig.amd.set_msr(0xC001_029B, 65_536);
@@ -418,6 +441,33 @@ mod tests {
         let locks = Locks { pci: Some(Box::new(rig.pci.clone())), isa: Some(Box::new(rig.isa.clone())) };
         let mut reader = Reader::open(fake::opener(Err(OpenError::Damaged), Err(OpenError::Damaged)), locks, ryzen(),
                                       &Board::default(), Box::new(rig.clock.clone()), rig.hw.clone());
+        assert_eq!(reader.read().notes, [DAMAGED]);
+    }
+
+    /// For real, the modules are their pinned files beside the program, loaded through the driver, which no
+    /// test gets past opening (driver.rs): each part's note then says what the device said. With no module
+    /// folder beside the program, the files are damaged, and the device isn't tried.
+    #[test]
+    fn real_modules() {
+        let both = [ModuleId::AmdFamily17, ModuleId::LpcIo];
+        let rig = Rig::new();
+        let locks = || Locks { pci: Some(Box::new(rig.pci.clone())), isa: Some(Box::new(rig.isa.clone())) };
+        // the repo's player\pawnio, from player\target-agent\release
+        let repo = modules(&Path::new(env!("CARGO_MANIFEST_DIR")).join("target-agent\\release\\wvplay.exe"));
+        for module in both {
+            assert_eq!(repo(module).err(), Some(OpenError::Other(0)), "{module:?}");
+        }
+        let mut reader = Reader::open(repo, locks(), ryzen(), &Board::default(), Box::new(rig.clock.clone()), rig.hw.clone());
+        let read = reader.read();
+        assert_eq!(read.notes, both.map(|module| open_note(module, OpenError::Other(0))));
+        assert!(read.values.is_empty() && read.cpu_temp.is_none());
+
+        let nowhere = std::env::temp_dir().join(format!("wvplay-pawnio-nowhere-{}", std::process::id()));
+        let none = modules(&nowhere.join("a\\b\\wvplay.exe"));
+        for module in both {
+            assert_eq!(none(module).err(), Some(OpenError::Damaged), "{module:?}");
+        }
+        let mut reader = Reader::open(none, locks(), ryzen(), &Board::default(), Box::new(rig.clock.clone()), rig.hw.clone());
         assert_eq!(reader.read().notes, [DAMAGED]);
     }
 
