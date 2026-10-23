@@ -1687,7 +1687,7 @@ async function trashFolder(action) {
   return action.trash;
 }
 /** Brings a deleted widget's folder back (undoing a delete). If its id is taken, says so and leaves its copies
- *  showing as missing. One already brought back (by Restore in Recently deleted) needs nothing more. */
+ *  showing as missing. One already brought back (by Restore here or in another tab) needs nothing more. */
 async function restoreFolder(action) {
   try {
     const out = await postJson("/api/widgets/restore", { trash: action.trash });
@@ -1695,7 +1695,8 @@ async function restoreFolder(action) {
     else libAdd(out, lostGens.get(out.id) ?? 0);
     afterSaves(() => refreshLibrary());  // its fonts and the deleted list
   } catch (err) {
-    await refreshDeleted();
+    // brought back meanwhile (by Restore in another tab, say): the listing has it, and the library takes it in
+    await afterSaves(() => refreshLibrary());
     const back = lib.has(action.id) && !libDeleted.some((d) => d.trash === action.trash);
     if (!back) message(`Couldn't bring ${action.id} back: ${err.message}`, "warn");
   }
