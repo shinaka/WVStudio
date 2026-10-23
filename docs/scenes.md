@@ -134,7 +134,9 @@ The player decides once per scene where its live text goes, copies expanded:
    outermost copy or widget layer below 100% around P; otherwise P itself.
 3. If nothing animated is drawn from S upward (S's own content included), every live text is drawn **in
    place**: exactly where it sits in the stack, inside its groups and clips, as if it were static text.
-   Translucent groups are kept whole, so a faded copy's value fades with its panel.
+   Translucent groups are kept whole, so a faded copy's value fades with its panel. The art between live
+   texts is kept as stills; when they could take more than 16 panels' worth, the live text goes on top
+   instead (widgets.md, Live text): only scenes with many live texts each between other art get there.
 4. **Otherwise** every live text is drawn on top of everything, in drawing order, at its opacity times the
    opacities of its layer and its groups, clipped to its copy. The layers panel marks such text
    `live, on top`.

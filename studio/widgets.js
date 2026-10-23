@@ -452,9 +452,73 @@ window.WV = WV;
   // --- Live text placement (docs/widgets.md, Live text) ---------------------------------------------------------
 
   const liveLeaf = (l) => l.type === "text" && (isLeaf(l) ? !!l.live : isLive(l.text));
+
+  // Drawn in place, live text keeps the art between live texts as stills, and the player caps what they may hold:
+  // past STILLS_CAP pixels, it's drawn on top instead (docs/widgets.md, Live text). Weighed as the player's scene.rs
+  // stills_area weighs it, from the leaves alone: each run of leaves between live texts (in a layer, or in a
+  // translucent group holding live text, as the player sorts them into its over list) counts the box it may draw in:
+  // the hull of its leaves' clips, or the whole layer or group for one without a clip, cut to that layer or group.
+  const PANEL = [0, 0, 1600, 720], STILLS_CAP = 16 * 1600 * 720;
+  const hull = (a, b) => [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[2], b[2]), Math.max(a[3], b[3])];
+  const someArea = (r) => r[0] < r[2] && r[1] < r[3];
+  class Weigh {
+    constructor() { this.total = 0; this.run = null; }
+    add(reach) { this.run = this.run ? hull(this.run, reach) : reach; }
+    flush(rect) {
+      const r = this.run && meet(this.run, rect);
+      if (r && someArea(r)) this.total += (r[2] - r[0]) * (r[3] - r[1]);
+      this.run = null;
+    }
+    group(leaves, depth, rect, parent) {
+      this.flush(parent);
+      const inner = new Weigh();
+      inner.leaves(leaves, depth, rect);
+      inner.flush(rect);
+      this.total += inner.total;
+    }
+    leaves(leaves, depth, rect) {
+      for (let k = 0; k < leaves.length;) {
+        const g = leaves[k].groups?.[depth];
+        if (!g) {
+          if (liveLeaf(leaves[k])) this.flush(rect);
+          else this.add(leaves[k].clip || rect);
+          k++;
+          continue;
+        }
+        let end = k + 1;
+        while (end < leaves.length && leaves[end].groups?.[depth]?.id === g.id) end++;
+        const members = leaves.slice(k, end), r = meet(g.rect, PANEL);
+        k = end;
+        if (!someArea(r)) continue;
+        if (members.some(liveLeaf)) this.group(members, depth + 1, r, rect);
+        else this.add(r);
+      }
+    }
+  }
+  /** The pixels the stills of an in-place over list would hold, at most: P's layer from S (a translucent one whole,
+   *  as a group), then each later layer (one without live text is one piece of art; a translucent one with live text
+   *  a group). Hidden layers have no leaves, so weigh nothing. */
+  function stillsArea(layers, p, from) {
+    // what the player reads: a holder's own object of a type it doesn't know, or media with no src, isn't there
+    const read = (list) => list.filter((l) => isLeaf(l) || l.type === "text" || l.type === "shape"
+      || ((l.type === "image" || l.type === "video") && typeof l.src === "string" && l.src !== ""));
+    const top = new Weigh(), translucent = (e) => holderOpacity(e.layer) < 1;
+    if (translucent(layers[p])) top.group(read(layers[p].leaves), 0, PANEL, PANEL);
+    else top.leaves(read(layers[p].leaves.slice(from)), 0, PANEL);
+    for (const e of layers.slice(p + 1)) {
+      const leaves = read(e.leaves);
+      if (!leaves.some(liveLeaf)) for (const l of leaves) top.add(l.clip || PANEL);
+      else if (translucent(e)) top.group(leaves, 0, PANEL, PANEL);
+      else top.leaves(leaves, 0, PANEL);
+    }
+    top.flush(PANEL);
+    return top.total;
+  }
+
   /** Section 5.7's decision over `stacks` (expandLayers' outputs: the scene's, then the global ones): {onTop, cut
    *  (the id of S's first leaf), live (every live leaf, in drawing order), fold (live leaf -> its layer's opacity
-   *  times its groups', for drawing it on top)}. `isAnimated(leaf)` says whether a leaf moves. */
+   *  times its groups', for drawing it on top)}. `isAnimated(leaf)` says whether a leaf moves. Live text drawn in
+   *  place that would keep more than STILLS_CAP pixels of stills goes on top too, as in the player. */
   function placement(stacks, isAnimated) {
     const layers = stacks.flat(), live = [], fold = new Map();
     let p = null;
@@ -474,7 +538,7 @@ window.WV = WV;
       while (to < leaves.length && inside(leaves[to])) to++;
     }
     const moving = leaves.slice(from).some((l) => isAnimated(l)) || layers.slice(p.li + 1).some((e) => e.leaves.some((l) => isAnimated(l)));
-    return { onTop: moving, cut: leaves[from].id, live, fold };
+    return { onTop: moving || stillsArea(layers, p.li, from) > STILLS_CAP, cut: leaves[from].id, live, fold };
   }
 
   // --- Walks over the library ------------------------------------------------------------------------------------
