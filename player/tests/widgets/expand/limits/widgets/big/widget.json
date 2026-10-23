@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "name": "Big",
+  "description": "",
+  "w": 401,
+  "h": 181,
+  "background": null,
+  "fonts": {},
+  "inputs": [],
+  "layers": [
+    {
+      "id": "l",
+      "name": "l",
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "objects": [
+        {
+          "id": "fit",
+          "type": "image",
+          "src": "media/blk-fbcfeb51.png",
+          "x": 0,
+          "y": 0,
+          "w": 400,
+          "h": 180
+        },
+        {
+          "id": "wide",
+          "type": "image",
+          "src": "media/blk-fbcfeb51.png",
+          "x": 0,
+          "y": 0,
+          "w": 401,
+          "h": 1
+        },
+        {
+          "id": "tall",
+          "type": "image",
+          "src": "media/blk-fbcfeb51.png",
+          "x": 0,
+          "y": 0,
+          "w": 1,
+          "h": 181
+        },
+        {
+          "id": "rect",
+          "type": "shape",
+          "shape": "rect",
+          "x": 0,
+          "y": 0,
+          "w": 401,
+          "h": 181,
+          "fill": {
+            "type": "solid",
+            "color": "#333333"
+          }
+        }
+      ]
+    }
+  ]
+}

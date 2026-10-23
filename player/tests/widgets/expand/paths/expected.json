@@ -1,0 +1,73 @@
+{
+  "scenes": [
+    {
+      "id": "s1",
+      "placement": {"on_top": false, "cut": null},
+      "leaves": [
+        {"id": "p/good", "type": "image", "x": 0, "y": 0, "w": 4, "h": 4, "opacity": 1, "clip": [0, 0, 40, 20], "groups": [], "src": "widgets/pics/media/ok-4b0edc2b.png", "keep_aspect": false, "tint": null},
+        {"id": "p/deep", "type": "image", "x": 4, "y": 0, "w": 4, "h": 4, "opacity": 1, "clip": [0, 0, 40, 20], "groups": [], "src": "widgets/pics/a/b/c/d.png", "keep_aspect": false, "tint": null},
+        {"id": "p/sp", "type": "image", "x": 0, "y": 4, "w": 4, "h": 4, "opacity": 1, "clip": [0, 0, 40, 20], "groups": [], "src": "widgets/pics/media/ok-4b0edc2b.png", "keep_aspect": false, "tint": null},
+        {"id": "p/in1", "type": "image", "x": 4, "y": 4, "w": 4, "h": 4, "opacity": 1, "clip": [0, 0, 40, 20], "groups": [], "src": "widgets/pics/media/ok-4b0edc2b.png", "keep_aspect": false, "tint": null},
+        {"id": "p/f1", "type": "text", "x": 0, "y": 10, "opacity": 1, "clip": [0, 0, 40, 20], "groups": [], "text": "a", "live": false, "size": 8, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "segoeui.ttf"},
+        {"id": "p/f2", "type": "text", "x": 6, "y": 10, "opacity": 1, "clip": [0, 0, 40, 20], "groups": [], "text": "b", "live": false, "size": 8, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "segoeui.ttf"},
+        {"id": "p/f3", "type": "text", "x": 12, "y": 10, "opacity": 1, "clip": [0, 0, 40, 20], "groups": [], "text": "c", "live": false, "size": 8, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "segoeui.ttf"},
+        {"id": "p/f4", "type": "text", "x": 18, "y": 10, "opacity": 1, "clip": [0, 0, 40, 20], "groups": [], "text": "d", "live": false, "size": 8, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "Orbitron Bold.ttf"},
+        {"id": "p/f5", "type": "text", "x": 24, "y": 10, "opacity": 1, "clip": [0, 0, 40, 20], "groups": [], "text": "e", "live": false, "size": 8, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "segoeui.ttf"},
+        {"id": "p/f6", "type": "text", "x": 30, "y": 10, "opacity": 1, "clip": [0, 0, 40, 20], "groups": [], "text": "f", "live": false, "size": 8, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "segoeui.ttf"},
+        {"id": "q/good", "type": "image", "x": 0, "y": 30, "w": 4, "h": 4, "opacity": 1, "clip": [0, 30, 40, 50], "groups": [], "src": "widgets/pics/media/ok-4b0edc2b.png", "keep_aspect": false, "tint": null},
+        {"id": "q/deep", "type": "image", "x": 4, "y": 30, "w": 4, "h": 4, "opacity": 1, "clip": [0, 30, 40, 50], "groups": [], "src": "widgets/pics/a/b/c/d.png", "keep_aspect": false, "tint": null},
+        {"id": "q/sp", "type": "image", "x": 0, "y": 34, "w": 4, "h": 4, "opacity": 1, "clip": [0, 30, 40, 50], "groups": [], "src": "widgets/pics/media/ok-4b0edc2b.png", "keep_aspect": false, "tint": null},
+        {"id": "q/in1", "type": "image", "x": 4, "y": 34, "w": 4, "h": 4, "opacity": 1, "clip": [0, 30, 40, 50], "groups": [], "src": "widgets/pics/media/ok-4b0edc2b.png", "keep_aspect": false, "tint": null},
+        {"id": "q/in2", "type": "image", "x": 8, "y": 34, "w": 4, "h": 4, "opacity": 1, "clip": [0, 30, 40, 50], "groups": [], "src": "playlist/inputs/fe20a98c93d7.png", "keep_aspect": false, "tint": null},
+        {"id": "q/f1", "type": "text", "x": 0, "y": 40, "opacity": 1, "clip": [0, 30, 40, 50], "groups": [], "text": "a", "live": false, "size": 8, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "segoeui.ttf"},
+        {"id": "q/f2", "type": "text", "x": 6, "y": 40, "opacity": 1, "clip": [0, 30, 40, 50], "groups": [], "text": "b", "live": false, "size": 8, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "segoeui.ttf"},
+        {"id": "q/f3", "type": "text", "x": 12, "y": 40, "opacity": 1, "clip": [0, 30, 40, 50], "groups": [], "text": "c", "live": false, "size": 8, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "segoeui.ttf"},
+        {"id": "q/f4", "type": "text", "x": 18, "y": 40, "opacity": 1, "clip": [0, 30, 40, 50], "groups": [], "text": "d", "live": false, "size": 8, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "Orbitron Bold.ttf"},
+        {"id": "q/f5", "type": "text", "x": 24, "y": 40, "opacity": 1, "clip": [0, 30, 40, 50], "groups": [], "text": "e", "live": false, "size": 8, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "segoeui.ttf"},
+        {"id": "q/f6", "type": "text", "x": 30, "y": 40, "opacity": 1, "clip": [0, 30, 40, 50], "groups": [], "text": "f", "live": false, "size": 8, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "segoeui.ttf"}
+      ]
+    },
+    {
+      "id": "s2",
+      "note": "media types (docs/widgets.md, Media types): a src, an image value or an image default with another extension (.jfif, .dib, .dat, none, .avi) is left out, as a bad path is; .PNG and .webm are kept",
+      "placement": {"on_top": false, "cut": null},
+      "leaves": [
+        {"id": "k/upper", "type": "image", "x": 20, "y": 0, "w": 4, "h": 4, "opacity": 1, "clip": [0, 0, 40, 10], "groups": [], "src": "widgets/kinds/media/ok-4b0edc2b.PNG", "keep_aspect": false, "tint": null},
+        {"id": "k/webm", "type": "image", "x": 24, "y": 0, "w": 4, "h": 4, "opacity": 1, "clip": [0, 0, 40, 10], "groups": [], "src": "widgets/kinds/media/clip.webm", "keep_aspect": false, "tint": null},
+        {"id": "k/in2", "type": "image", "x": 32, "y": 0, "w": 4, "h": 4, "opacity": 1, "clip": [0, 0, 40, 10], "groups": [], "src": "widgets/kinds/media/ok-4b0edc2b.PNG", "keep_aspect": false, "tint": null},
+        {"id": "m/upper", "type": "image", "x": 20, "y": 20, "w": 4, "h": 4, "opacity": 1, "clip": [0, 20, 40, 30], "groups": [], "src": "widgets/kinds/media/ok-4b0edc2b.PNG", "keep_aspect": false, "tint": null},
+        {"id": "m/webm", "type": "image", "x": 24, "y": 20, "w": 4, "h": 4, "opacity": 1, "clip": [0, 20, 40, 30], "groups": [], "src": "widgets/kinds/media/clip.webm", "keep_aspect": false, "tint": null},
+        {"id": "m/in2", "type": "image", "x": 32, "y": 20, "w": 4, "h": 4, "opacity": 1, "clip": [0, 20, 40, 30], "groups": [], "src": "widgets/kinds/media/ok-4b0edc2b.PNG", "keep_aspect": false, "tint": null},
+        {"id": "n/upper", "type": "image", "x": 20, "y": 40, "w": 4, "h": 4, "opacity": 1, "clip": [0, 40, 40, 50], "groups": [], "src": "widgets/kinds/media/ok-4b0edc2b.PNG", "keep_aspect": false, "tint": null},
+        {"id": "n/webm", "type": "image", "x": 24, "y": 40, "w": 4, "h": 4, "opacity": 1, "clip": [0, 40, 40, 50], "groups": [], "src": "widgets/kinds/media/clip.webm", "keep_aspect": false, "tint": null},
+        {"id": "n/in1", "type": "image", "x": 28, "y": 40, "w": 4, "h": 4, "opacity": 1, "clip": [0, 40, 40, 50], "groups": [], "src": "playlist/inputs/fe20a98c93d7.png", "keep_aspect": false, "tint": null},
+        {"id": "n/in2", "type": "image", "x": 32, "y": 40, "w": 4, "h": 4, "opacity": 1, "clip": [0, 40, 40, 50], "groups": [], "src": "playlist/inputs/fe20a98c93d7.PNG", "keep_aspect": false, "tint": null}
+      ]
+    },
+    {
+      "id": "s3",
+      "note": "picture values on a copy in a scene or Global (docs/widgets.md, A copy's values): only inputs/<file> or sources/<file> (two parts, the folder in any letter case, one of the media types) is a file, read with the folder in lowercase; any other value counts as not set and the widget's default is drawn; \"\" draws nothing. The Global copies g0 and g1 follow the same rule",
+      "placement": {"on_top": false, "cut": null},
+      "leaves": [
+        {"id": "c0/i", "type": "image", "x": 0, "y": 0, "w": 4, "h": 4, "opacity": 1, "clip": [0, 0, 4, 4], "groups": [], "src": "playlist/inputs/fe20a98c93d7.png", "keep_aspect": false, "tint": null},
+        {"id": "c1/i", "type": "image", "x": 5, "y": 0, "w": 4, "h": 4, "opacity": 1, "clip": [5, 0, 9, 4], "groups": [], "src": "playlist/inputs/fe20a98c93d7.png", "keep_aspect": false, "tint": null},
+        {"id": "c2/i", "type": "image", "x": 10, "y": 0, "w": 4, "h": 4, "opacity": 1, "clip": [10, 0, 14, 4], "groups": [], "src": "playlist/sources/fe20a98c93d7.png", "keep_aspect": false, "tint": null},
+        {"id": "c3/i", "type": "image", "x": 15, "y": 0, "w": 4, "h": 4, "opacity": 1, "clip": [15, 0, 19, 4], "groups": [], "src": "playlist/sources/fe20a98c93d7.png", "keep_aspect": false, "tint": null},
+        {"id": "c4/i", "type": "image", "x": 20, "y": 0, "w": 4, "h": 4, "opacity": 1, "clip": [20, 0, 24, 4], "groups": [], "src": "widgets/one/media/ok-4b0edc2b.png", "keep_aspect": false, "tint": null},
+        {"id": "c5/i", "type": "image", "x": 25, "y": 0, "w": 4, "h": 4, "opacity": 1, "clip": [25, 0, 29, 4], "groups": [], "src": "widgets/one/media/ok-4b0edc2b.png", "keep_aspect": false, "tint": null},
+        {"id": "c6/i", "type": "image", "x": 30, "y": 0, "w": 4, "h": 4, "opacity": 1, "clip": [30, 0, 34, 4], "groups": [], "src": "widgets/one/media/ok-4b0edc2b.png", "keep_aspect": false, "tint": null},
+        {"id": "c7/i", "type": "image", "x": 35, "y": 0, "w": 4, "h": 4, "opacity": 1, "clip": [35, 0, 39, 4], "groups": [], "src": "widgets/one/media/ok-4b0edc2b.png", "keep_aspect": false, "tint": null},
+        {"id": "c8/i", "type": "image", "x": 40, "y": 0, "w": 4, "h": 4, "opacity": 1, "clip": [40, 0, 44, 4], "groups": [], "src": "widgets/one/media/ok-4b0edc2b.png", "keep_aspect": false, "tint": null},
+        {"id": "c9/i", "type": "image", "x": 45, "y": 0, "w": 4, "h": 4, "opacity": 1, "clip": [45, 0, 49, 4], "groups": [], "src": "widgets/one/media/ok-4b0edc2b.png", "keep_aspect": false, "tint": null},
+        {"id": "c10/i", "type": "image", "x": 50, "y": 0, "w": 4, "h": 4, "opacity": 1, "clip": [50, 0, 54, 4], "groups": [], "src": "widgets/one/media/ok-4b0edc2b.png", "keep_aspect": false, "tint": null},
+        {"id": "c11/i", "type": "image", "x": 55, "y": 0, "w": 4, "h": 4, "opacity": 1, "clip": [55, 0, 59, 4], "groups": [], "src": "widgets/one/media/ok-4b0edc2b.png", "keep_aspect": false, "tint": null}
+      ]
+    }
+  ],
+  "global": {
+    "leaves": [
+      {"id": "g0/i", "type": "image", "x": 0, "y": 100, "w": 4, "h": 4, "opacity": 1, "clip": [0, 100, 4, 104], "groups": [], "src": "widgets/one/media/ok-4b0edc2b.png", "keep_aspect": false, "tint": null},
+      {"id": "g1/i", "type": "image", "x": 5, "y": 100, "w": 4, "h": 4, "opacity": 1, "clip": [5, 100, 9, 104], "groups": [], "src": "playlist/sources/fe20a98c93d7.png", "keep_aspect": false, "tint": null}
+    ]
+  }
+}

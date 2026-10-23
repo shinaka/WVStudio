@@ -1,0 +1,205 @@
+{
+  "version": 1,
+  "name": "Pictures",
+  "description": "",
+  "w": 40,
+  "h": 20,
+  "background": null,
+  "fonts": {},
+  "inputs": [
+    {
+      "id": "pic",
+      "name": "Picture",
+      "type": "image",
+      "default": "media/ok-4b0edc2b.png"
+    },
+    {
+      "id": "bad",
+      "name": "Bad",
+      "type": "image",
+      "default": "../x.png"
+    }
+  ],
+  "layers": [
+    {
+      "id": "l1",
+      "name": "l1",
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "objects": [
+        {
+          "id": "good",
+          "type": "image",
+          "src": "media/ok-4b0edc2b.png",
+          "x": 0,
+          "y": 0,
+          "w": 4,
+          "h": 4
+        },
+        {
+          "id": "deep",
+          "type": "image",
+          "src": "a/b/c/d.png",
+          "x": 4,
+          "y": 0,
+          "w": 4,
+          "h": 4
+        },
+        {
+          "id": "up",
+          "type": "image",
+          "src": "../x.png",
+          "x": 8,
+          "y": 0,
+          "w": 4,
+          "h": 4
+        },
+        {
+          "id": "drive",
+          "type": "image",
+          "src": "C:/x.png",
+          "x": 12,
+          "y": 0,
+          "w": 4,
+          "h": 4
+        },
+        {
+          "id": "root",
+          "type": "image",
+          "src": "/x.png",
+          "x": 16,
+          "y": 0,
+          "w": 4,
+          "h": 4
+        },
+        {
+          "id": "unc",
+          "type": "image",
+          "src": "\\\\host\\x.png",
+          "x": 20,
+          "y": 0,
+          "w": 4,
+          "h": 4
+        },
+        {
+          "id": "back",
+          "type": "image",
+          "src": "media\\x.png",
+          "x": 24,
+          "y": 0,
+          "w": 4,
+          "h": 4
+        },
+        {
+          "id": "dot",
+          "type": "image",
+          "src": "media./x.png",
+          "x": 28,
+          "y": 0,
+          "w": 4,
+          "h": 4
+        },
+        {
+          "id": "five",
+          "type": "image",
+          "src": "a/b/c/d/e.png",
+          "x": 32,
+          "y": 0,
+          "w": 4,
+          "h": 4
+        },
+        {
+          "id": "res",
+          "type": "image",
+          "src": "media/CON.png",
+          "x": 36,
+          "y": 0,
+          "w": 4,
+          "h": 4
+        },
+        {
+          "id": "sp",
+          "type": "image",
+          "src": " media/ok-4b0edc2b.png ",
+          "x": 0,
+          "y": 4,
+          "w": 4,
+          "h": 4
+        },
+        {
+          "id": "in1",
+          "type": "image",
+          "src": "{$pic}",
+          "x": 4,
+          "y": 4,
+          "w": 4,
+          "h": 4
+        },
+        {
+          "id": "in2",
+          "type": "image",
+          "src": "{$bad}",
+          "x": 8,
+          "y": 4,
+          "w": 4,
+          "h": 4
+        },
+        {
+          "id": "f1",
+          "type": "text",
+          "text": "a",
+          "font": "fonts/x.ttf",
+          "size": 8,
+          "x": 0,
+          "y": 10
+        },
+        {
+          "id": "f2",
+          "type": "text",
+          "text": "b",
+          "font": "con.ttf",
+          "size": 8,
+          "x": 6,
+          "y": 10
+        },
+        {
+          "id": "f3",
+          "type": "text",
+          "text": "c",
+          "font": " x.ttf",
+          "size": 8,
+          "x": 12,
+          "y": 10
+        },
+        {
+          "id": "f4",
+          "type": "text",
+          "text": "d",
+          "font": "Orbitron Bold.ttf",
+          "size": 8,
+          "x": 18,
+          "y": 10
+        },
+        {
+          "id": "f5",
+          "type": "text",
+          "text": "e",
+          "font": "x.ttf.",
+          "size": 8,
+          "x": 24,
+          "y": 10
+        },
+        {
+          "id": "f6",
+          "type": "text",
+          "text": "f",
+          "font": "C:\\Windows\\Fonts\\arial.ttf",
+          "size": 8,
+          "x": 30,
+          "y": 10
+        }
+      ]
+    }
+  ]
+}

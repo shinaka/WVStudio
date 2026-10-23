@@ -1,0 +1,29 @@
+{
+  "scenes": [
+    {
+      "id": "s1",
+      "placement": {"on_top": false, "cut": "k/background"},
+      "leaves": [
+        {"id": "k/background", "type": "shape", "x": 100, "y": 50, "w": 80, "h": 60, "opacity": 1, "clip": [100, 50, 180, 110], "groups": [["k", 0.5, [100, 50, 180, 110]]], "shape": "rect", "radius": 0, "color": "#222222", "stroke_width": null, "stroke_color": null, "crisp": true},
+        {"id": "k/frame", "type": "shape", "x": 100, "y": 50, "w": 80, "h": 60, "opacity": 1, "clip": [100, 50, 180, 110], "groups": [["k", 0.5, [100, 50, 180, 110]]], "shape": "rect", "radius": 0, "color": null, "stroke_width": 2, "stroke_color": "#00ff00", "crisp": false},
+        {"id": "k/lb/bg", "type": "shape", "x": 106, "y": 56, "w": 60, "h": 30, "opacity": 1, "clip": [106, 56, 166, 86], "groups": [["k", 0.5, [100, 50, 180, 110]], ["k/top", 0.8, [100, 50, 180, 110]], ["k/lb", 0.5, [106, 56, 166, 86]], ["k/lb/l1", 0.5, [106, 56, 166, 86]]], "shape": "rect", "radius": 0, "color": "#00ff00", "stroke_width": null, "stroke_color": null, "crisp": false},
+        {"id": "k/lb/tx", "type": "text", "x": 109, "y": 59, "opacity": 1, "clip": [106, 56, 166, 86], "groups": [["k", 0.5, [100, 50, 180, 110]], ["k/top", 0.8, [100, 50, 180, 110]], ["k/lb", 0.5, [106, 56, 166, 86]], ["k/lb/l1", 0.5, [106, 56, 166, 86]]], "text": "[{pc.cpu.temp:d}°]", "live": true, "size": 24, "outline_width": 0, "color": "#00ff00", "outline_color": "#000000", "font": "segoeui.ttf"},
+        {"id": "k/lb/pi", "type": "image", "x": 142, "y": 59, "w": 24, "h": 24, "opacity": 1, "clip": [106, 56, 166, 86], "groups": [["k", 0.5, [100, 50, 180, 110]], ["k/top", 0.8, [100, 50, 180, 110]], ["k/lb", 0.5, [106, 56, 166, 86]], ["k/lb/l1", 0.5, [106, 56, 166, 86]]], "src": "playlist/inputs/8b1c891c1892.png", "keep_aspect": false, "tint": null},
+        {"id": "k/lc/bg", "type": "shape", "x": 160, "y": 90, "w": 40, "h": 20, "opacity": 1, "clip": [160, 90, 180, 110], "groups": [["k", 0.5, [100, 50, 180, 110]], ["k/top", 0.8, [100, 50, 180, 110]], ["k/lc/l1", 0.5, [160, 90, 180, 110]]], "shape": "rect", "radius": 0, "color": "#ffffff", "stroke_width": null, "stroke_color": null, "crisp": false},
+        {"id": "k/lc/tx", "type": "text", "x": 162, "y": 92, "opacity": 1, "clip": [160, 90, 180, 110], "groups": [["k", 0.5, [100, 50, 180, 110]], ["k/top", 0.8, [100, 50, 180, 110]], ["k/lc/l1", 0.5, [160, 90, 180, 110]]], "text": "{pc.cpu.temp:d}°", "live": true, "size": 16, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "segoeui.ttf"},
+        {"id": "k/lc/pi", "type": "image", "x": 184, "y": 92, "w": 16, "h": 16, "opacity": 1, "clip": [160, 90, 180, 110], "groups": [["k", 0.5, [100, 50, 180, 110]], ["k/top", 0.8, [100, 50, 180, 110]], ["k/lc/l1", 0.5, [160, 90, 180, 110]]], "src": "widgets/card/media/star-0e174c91.png", "keep_aspect": false, "tint": null},
+        {"id": "m/background", "type": "shape", "x": 7, "y": 3, "w": 60, "h": 45, "opacity": 1, "clip": [7, 3, 67, 48], "groups": [], "shape": "rect", "radius": 0, "color": "#222222", "stroke_width": null, "stroke_color": null, "crisp": true},
+        {"id": "m/frame", "type": "shape", "x": 7, "y": 3, "w": 60, "h": 45, "opacity": 1, "clip": [7, 3, 67, 48], "groups": [], "shape": "rect", "radius": 0, "color": null, "stroke_width": 1.5, "stroke_color": "#ff0000", "crisp": false},
+        {"id": "m/lb/bg", "type": "shape", "x": 12, "y": 8, "w": 45, "h": 23, "opacity": 1, "clip": [12, 8, 57, 31], "groups": [["m/top", 0.8, [7, 3, 67, 48]], ["m/lb", 0.5, [12, 8, 57, 31]], ["m/lb/l1", 0.5, [12, 8, 57, 31]]], "shape": "rect", "radius": 0, "color": "#ff0000", "stroke_width": null, "stroke_color": null, "crisp": false},
+        {"id": "m/lb/tx", "type": "text", "x": 14, "y": 10, "opacity": 1, "clip": [12, 8, 57, 31], "groups": [["m/top", 0.8, [7, 3, 67, 48]], ["m/lb", 0.5, [12, 8, 57, 31]], ["m/lb/l1", 0.5, [12, 8, 57, 31]]], "text": "[Card]", "live": false, "size": 18, "outline_width": 0, "color": "#ff0000", "outline_color": "#000000", "font": "segoeui.ttf"},
+        {"id": "m/lb/pi", "type": "image", "x": 39, "y": 10, "w": 18, "h": 18, "opacity": 1, "clip": [12, 8, 57, 31], "groups": [["m/top", 0.8, [7, 3, 67, 48]], ["m/lb", 0.5, [12, 8, 57, 31]], ["m/lb/l1", 0.5, [12, 8, 57, 31]]], "src": "widgets/card/media/star-0e174c91.png", "keep_aspect": false, "tint": null},
+        {"id": "m/lc/bg", "type": "shape", "x": 52, "y": 33, "w": 30, "h": 15, "opacity": 1, "clip": [52, 33, 67, 48], "groups": [["m/top", 0.8, [7, 3, 67, 48]], ["m/lc/l1", 0.5, [52, 33, 67, 48]]], "shape": "rect", "radius": 0, "color": "#ffffff", "stroke_width": null, "stroke_color": null, "crisp": false},
+        {"id": "m/lc/tx", "type": "text", "x": 54, "y": 35, "opacity": 1, "clip": [52, 33, 67, 48], "groups": [["m/top", 0.8, [7, 3, 67, 48]], ["m/lc/l1", 0.5, [52, 33, 67, 48]]], "text": "Card", "live": false, "size": 12, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "segoeui.ttf"},
+        {"id": "m/lc/pi", "type": "image", "x": 70, "y": 35, "w": 12, "h": 12, "opacity": 1, "clip": [52, 33, 67, 48], "groups": [["m/top", 0.8, [7, 3, 67, 48]], ["m/lc/l1", 0.5, [52, 33, 67, 48]]], "src": "widgets/card/media/star-0e174c91.png", "keep_aspect": false, "tint": null}
+      ]
+    }
+  ],
+  "global": {
+    "leaves": []
+  }
+}

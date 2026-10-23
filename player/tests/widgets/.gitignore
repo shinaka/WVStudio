@@ -1,0 +1,2 @@
+# The fixtures' playlist folders are test data: the root .gitignore skips every playlist/ folder.
+!playlist/

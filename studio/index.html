@@ -110,7 +110,7 @@
   .small { font-size: 12px; }
   .warn { color: var(--warn); } .info { color: var(--info); }
   .row[hidden], div[hidden] { display: none; }
-  #wFont { display: block; width: 100%; padding: 2px; }
+  #tFont { display: block; width: 100%; padding: 2px; }
   kbd { font: 11px ui-monospace, monospace; background: var(--raised); border: 1px solid var(--line);
         border-radius: 4px; padding: 0 4px; }
   .keys { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; }
@@ -210,12 +210,144 @@
   .ac-meta { grid-column: 1 / -1; color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .ac-mirror { position: fixed; top: 0; left: 0; visibility: hidden; white-space: pre-wrap; overflow-wrap: break-word;
                word-wrap: break-word; pointer-events: none; }
+  /* widgets: editor */
+  body.widget #screen { background: #000; }  /* behind a transparent widget, in its editor only: checks, black or white */
+  body.widget.backdrop-checks #screen { background: repeating-conic-gradient(#8a8f96 0% 25%, #5b6068 0% 50%) 0 0 / 16px 16px; }
+  body.widget.backdrop-white #screen { background: #fff; }
+  #back { padding: 1px 9px; flex: none; }
+  #previewNote, #readOnlyNote { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  #previewNote button.link, #readOnlyNote button { padding: 0 6px; font-size: 12px; }
+  button.link { background: none; border: 0; color: var(--info); text-decoration: underline; cursor: pointer; }
+  body.readonly #propsPane section:not(#pWidget):not(.small) { opacity: .55; pointer-events: none; }  /* a read-only widget */
+  #layers .badge.warn { background: #3f1d14; color: var(--warn); }
+  #layers .badge.in { background: #2a2140; color: #c3a6ff; }
+  #tFontOffer { margin-top: 4px; }
+
+  /* widgets: library */
+  #stripTabs { flex: none; display: flex; flex-direction: column; gap: 4px; padding: 8px 0 8px 8px; }
+  #stripTabs[hidden], #widgetCards[hidden], #scenes[hidden] { display: none; }
+  #stripTabs button { flex: 1; padding: 0 9px; border-radius: 6px; font-size: 12px; }
+  #stripTabs button[aria-pressed="true"] { background: #3a2c0a; border-color: var(--accent); color: var(--accent); }
+  #widgetCards { display: flex; gap: 8px; padding: 8px 10px; overflow-x: auto; overflow-y: hidden; flex: 1; min-width: 0; align-items: flex-start; }
+  #wcFilter { flex: none; width: 120px; align-self: center; }
+  #wcList { display: contents; }
+  .wcard { flex: none; width: 164px; background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 3px;
+           cursor: pointer; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 4px; align-items: center; position: relative; }
+  .wcard:hover { border-color: #4a5058; }
+  .wcard.current { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .wcard canvas { grid-column: 1 / -1; width: 156px; height: 70px; border-radius: 4px; display: block;
+                  background: repeating-conic-gradient(#8a8f96 0% 25%, #5b6068 0% 50%) 0 0 / 10px 10px; }
+  .wcard .wc-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; padding-left: 3px; }
+  .wcard .wc-meta { display: flex; gap: 2px; align-items: center; color: var(--muted); font-size: 11px; }
+  .wcard .wc-meta button { padding: 0 3px; font-size: 11px; line-height: 18px; }
+  .wcard .wc-tag { position: absolute; left: 7px; top: 7px; font-size: 10px; padding: 0 5px; border-radius: 8px;
+                   background: rgba(13, 14, 16, .8); color: var(--muted); pointer-events: none; }
+  .wcard.problem { background: #1b1d20; cursor: default; color: var(--muted); }
+  .wcard.problem.openable { cursor: pointer; }
+  .wcard .wc-why { grid-column: 1 / -1; height: 70px; overflow: hidden; font-size: 11px; line-height: 1.3; padding: 4px 5px;
+                   border: 1px dashed #3a3f46; border-radius: 4px; overflow-wrap: anywhere; display: flex; flex-direction: column; }
+  .wcard .wc-why > span { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden; }
+  .wcard .wc-why > span:not(:last-child) { -webkit-line-clamp: 2; }  /* Show folder under it */
+  .wcard .wc-why > button { flex: none; align-self: flex-start; margin-top: 3px; padding: 0 6px; font-size: 11px; line-height: 16px; }
+  .wc-actions { flex: none; display: flex; flex-direction: column; gap: 3px; align-self: stretch; justify-content: center; }
+  .wc-actions button { padding: 1px 9px; font-size: 12px; }
+  .wc-pop { position: fixed; z-index: 40; background: var(--raised); border: 1px solid #4a5058; border-radius: 8px; padding: 4px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, .5); max-height: 50vh; overflow-y: auto; min-width: 180px; max-width: min(380px, 94vw); }
+  .wc-pop[hidden] { display: none; }
+  .wc-pop .wc-del { display: flex; gap: 8px; align-items: center; padding: 3px 6px; }
+  .wc-pop .wc-del span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .wc-pop button[role=menuitem] { display: block; width: 100%; text-align: left; border: 0; background: none; padding: 3px 10px; }
+  .wc-pop button[role=menuitem]:hover:not(:disabled) { background: #3a2c0a; }
+  #pWidget code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
+  #pWidget .row > .label { width: 86px; }
+  #wdDescription { flex: 1; width: auto; }
+  .wd-head { display: flex; align-items: center; gap: 4px; margin: 12px 0 4px; }
+  .wd-head h2 { flex: 1; margin: 0; }
+  .wd-head button { padding: 1px 7px; font-size: 12px; }
+  .wd-input { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto auto; gap: 3px 5px; align-items: center;
+              padding: 4px 0; border-top: 1px solid var(--line); }
+  .wd-input .wd-type { color: var(--muted); text-align: center; }
+  .wd-input .wd-iname { padding: 2px 5px; }
+  .wd-input .wd-chip { font: 11px ui-monospace, monospace; padding: 1px 5px; color: var(--info); }
+  .wd-input .wd-more { padding: 1px 7px; }
+  .wd-input .wd-default { grid-column: 2 / -1; min-width: 0; }
+  .wd-default > .input-row > .label { display: none; }  /* copies.js's row: the name is in the row's own field already */
+  #wdNewRow input { flex: 1; width: auto; }
+  #wdUsedIn { display: inline-flex; flex-wrap: wrap; gap: 0 4px; align-items: center; min-width: 0; flex: 1; }
+  #wdUsedIn button.link { padding: 0; }
+  #wdPreview { flex: 1; min-width: 0; }
+  #widgetDlg, #deleteDlg, #conflictDlg { width: min(480px, 94vw); height: fit-content; max-height: 92vh; }
+  #exportDlg, #importDlg { width: min(680px, 96vw); height: fit-content; max-height: 92vh; }
+  #widgetDlg[open], #deleteDlg[open], #conflictDlg[open], #exportDlg[open], #importDlg[open] { display: flex; flex-direction: column; }
+  .dlg-body { padding: 10px 14px; overflow-y: auto; min-height: 0; flex: 1; }
+  .dlg-body p { margin: 4px 0 8px; overflow-wrap: anywhere; }
+  .dlg-body .row > .label { width: 84px; }
+  #wgFolderRow code, #exportDlg code { overflow-wrap: anywhere; }
+  .wi-item { display: grid; grid-template-columns: 128px minmax(0, 1fr); gap: 4px 12px; padding: 10px 0; border-top: 1px solid var(--line); }
+  .wi-item:first-child { border-top: 0; }
+  .wi-pic { width: 128px; height: 72px; border-radius: 4px; object-fit: contain; display: block;
+            background: repeating-conic-gradient(#8a8f96 0% 25%, #5b6068 0% 50%) 0 0 / 12px 12px; }
+  .wi-item h3 { margin: 0; font-size: 14px; overflow-wrap: anywhere; }
+  .wi-item .small { overflow-wrap: anywhere; }
+  .wi-item ul, .wx-fonts { margin: 4px 0; padding-left: 18px; }
+  .wi-item label { margin-right: 12px; }
+  .wx-fonts { list-style: none; padding-left: 0; }
+
+  /* widgets: copies */
+  body:not(.widget) .widget-only, body:not(.widget) .bind-slot { display: none; }  /* bind buttons: in a widget only */
+  .bind-slot, .bind { display: inline-flex; gap: 4px; align-items: center; }
+  .bind-open { padding: 2px 7px; }
+  .bound-hide { display: none !important; }  /* a colour control while its colour is bound to an input */
+  .chip { display: inline-flex; gap: 4px; align-items: center; padding: 1px 2px 1px 7px; border-radius: 10px;
+          background: #2a2140; color: #c3a6ff; font-size: 12px; white-space: nowrap; }
+  .chip[hidden] { display: none; }
+  .chip.broken { background: #3f1d14; color: var(--warn); }
+  .chip button { padding: 0 5px; border: 0; background: none; color: inherit; font-size: 11px; }
+  .popmenu { position: fixed; z-index: 60; display: flex; flex-direction: column; min-width: 160px; max-width: 320px;
+             max-height: 60vh; overflow-y: auto; padding: 4px; background: var(--raised); border: 1px solid #4a5058;
+             border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, .5); }
+  .popmenu[hidden] { display: none; }
+  .popmenu button { border: 0; background: none; text-align: left; padding: 4px 8px; border-radius: 5px;
+                    overflow: hidden; text-overflow: ellipsis; }
+  .popmenu button:hover:not(:disabled) { background: #3a2c0a; }
+  .popmenu .sep { border-top: 1px solid var(--line); margin: 3px 0; }
+  #tools #widgetTool { font-size: 15px; }
+  #widgetMenu { position: fixed; z-index: 55; width: 250px; max-height: 70vh; display: flex; flex-direction: column; gap: 4px;
+                padding: 6px; background: var(--raised); border: 1px solid #4a5058; border-radius: 8px;
+                box-shadow: 0 8px 24px rgba(0, 0, 0, .5); }
+  #widgetMenu[hidden] { display: none; }
+  #widgetMenu .wm-list { display: flex; flex-direction: column; gap: 2px; overflow-y: auto; min-height: 0; }
+  #tools #widgetMenu .wm-item { width: auto; height: auto; display: flex; gap: 8px; align-items: center; padding: 3px 6px;
+                                font-size: 12px; font-weight: 400; text-align: left; border-color: transparent; background: none; }
+  #tools #widgetMenu .wm-item:hover:not(:disabled) { background: #3a2c0a; }
+  #widgetMenu .wm-item canvas { width: 64px; height: 32px; flex: none; border-radius: 3px;
+                                background: repeating-conic-gradient(#8a8f96 0% 25%, #5b6068 0% 50%) 0 0 / 8px 8px; }
+  #widgetMenu .wm-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #widgetMenu .wm-empty { color: var(--muted); font-size: 12px; padding: 4px; }
+  #pCopy h3 { margin: 10px 0 2px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 650; }
+  #pCopy h3[hidden], #cpMessage:empty, #cpNote:empty { display: none; }
+  #cpWidget { max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
+  #cpScale { min-width: 54px; text-align: center; font-variant-numeric: tabular-nums; }
+  .input-row { display: grid; grid-template-columns: 72px minmax(0, 1fr) auto; gap: 2px 6px; align-items: start; margin: 6px 0; }
+  .input-row > .label { color: var(--muted); padding-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .input-row .field { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; min-width: 0; }
+  .input-row textarea { resize: none; min-height: 28px; }
+  .input-row .tools { display: flex; gap: 2px; }
+  .input-row .tools button { padding: 2px 6px; }
+  .input-row .note { grid-column: 2 / -1; }
+  .input-row .note:empty { display: none; }
+  .input-row.is-default textarea { color: var(--muted); }
+  .input-row.is-default input[type=color], .input-row.is-default canvas { opacity: .6; }
+  .input-row canvas.thumb { width: 48px; height: 32px; border-radius: 3px; border: 1px solid var(--line);
+                            background: repeating-conic-gradient(#8a8f96 0% 25%, #5b6068 0% 50%) 0 0 / 8px 8px; }
+
 </style>
 </head>
 <body>
 <header>
   <h1>Wonder Vision Studio</h1>
   <span id="sceneTitle"></span>
+  <button id="back" hidden></button>
   <span id="msg"></span>
   <span class="spacer"></span>
   <label title="Pause the animations in the preview"><input id="pause" type="checkbox"> Pause</label>
@@ -238,6 +370,8 @@
     <button data-shape="ellipse" title="Ellipse">◯</button>
     <button data-shape="line" title="Line">╱</button>
   </div>
+  <button data-tool="widget" id="widgetTool" title="Widget: pick one, then click the canvas to place a copy (W)" hidden>▣<kbd>W</kbd></button>
+  <div id="widgetMenu" hidden></div>
   <button data-tool="hand" title="Hand: drag to scroll (H, or hold Space)">✋<kbd>H</kbd></button>
   <div class="gap"></div>
   <button id="zoomIn" title="Zoom in (Ctrl +)">+</button>
@@ -278,6 +412,38 @@
       <h2>Global</h2>
       <div class="small muted">These layers are drawn over every scene. The scene behind is shown dimmed for reference.</div>
     </section>
+    <section id="pWidget" hidden>
+      <h2>Widget</h2>
+      <div class="row"><span class="label">Name</span><input id="wdName" type="text" spellcheck="false" style="width: auto; flex: 1"></div>
+      <div class="row"><span class="label">Folder</span><code id="wdFolder"></code></div>
+      <div class="row"><span class="label"></span><button id="wdReveal" title="Open the widget's folder">Show folder</button>
+        <button id="wdChange" title="Give the widget another folder name, and point every copy on this PC at it">Change…</button></div>
+      <div class="row"><span class="label">Size</span>
+        <label>W <input id="wdW" type="number" min="1" max="1600" step="1"></label>
+        <label>H <input id="wdH" type="number" min="1" max="720" step="1"></label>
+        <button id="wdFit" title="Make the widget the size of what's in it">Fit to content</button></div>
+      <div class="row"><span class="label">Background</span>
+        <label><input id="wdBgNone" type="radio" name="wdBg"> None</label>
+        <label title="A colour behind everything in the widget"><input id="wdBgOn" type="radio" name="wdBg"> <input id="wdBgColor" type="color"></label>
+        <span id="wdBgBind"></span></div>
+      <div class="row"><span class="label">Description</span><input id="wdDescription" type="text" spellcheck="false"
+        title="Shown on the widget's card, and to people you share it with"></div>
+      <div class="row"><span class="label">Backdrop</span><span class="seg" id="wdBackdrop">
+        <button data-value="checks">Checks</button><button data-value="black">Black</button><button data-value="white">White</button></span>
+        <span class="small muted">only in the editor</span></div>
+      <div class="wd-head"><h2>Inputs</h2>
+        <button id="wdAddText" title="A text each copy can change">+ Text</button>
+        <button id="wdAddColor" title="A colour each copy can change">+ Colour</button>
+        <button id="wdAddImage" title="A picture each copy can change">+ Image</button></div>
+      <div class="row" id="wdNewRow" hidden><span class="label" id="wdNewLabel">Name</span>
+        <input id="wdNewName" type="text" spellcheck="false" placeholder="Name, then Enter"></div>
+      <div id="wdInputs"></div>
+      <div id="wdNoInputs" class="small muted">No inputs: every copy shows the same. Add one for each thing a copy should change.</div>
+      <div class="row"><span class="label">Preview with</span><select id="wdPreview" title="The values the editor draws the widget with"></select></div>
+      <div id="wdCutNote" class="small warn" hidden></div>
+      <div class="row"><span class="label">Used in</span><span id="wdUsedIn"></span></div>
+      <div class="row"><button id="wdDuplicate">Duplicate…</button><button id="wdExport">Export…</button><button id="wdDelete">Delete…</button></div>
+    </section>
     <section id="pLayer" hidden>
       <h2>Layer</h2>
       <div class="row"><span class="label">Name</span><input id="lName" type="text" spellcheck="false" style="width: auto; flex: 1"></div>
@@ -301,6 +467,7 @@
       <div class="row" id="oTurnRow"><span class="label">Rotate</span><span class="seg" id="oRotate">
         <button data-value="0">0</button><button data-value="90">90</button><button data-value="180">180</button><button data-value="270">270</button></span>
         <label><input id="oFlip" type="checkbox"> Flip</label></div>
+      <div class="row" id="oWidgetRow" hidden><button id="oFromSelection" title="Make a widget from the selected objects, and put a copy of it in their place (Ctrl+G)">From selection</button></div>
     </section>
     <section id="pMedia" hidden>
       <h2 id="mKind">Image</h2>
@@ -323,47 +490,67 @@
         <button data-value="none">Nothing</button><button data-value="extend" title="Repeat the outermost pixels outward">Stretch edges</button><button data-value="mirror">Mirror</button><button data-value="tile">Tile</button></span></div>
       <div class="row"><span class="label">Background</span><button id="mPick" aria-pressed="false" title="Set the scene's background from a colour on the canvas">Eyedropper</button>
         <button id="mEdge" title="Set the scene's background to this file's edge colour">Edge colour</button></div>
+      <div class="row" id="mTintRow" hidden><span class="label">Tint</span><button id="mTintNone" title="The picture's own colours">None</button>
+        <input id="mTint" type="color" title="Every pixel the picture draws takes this colour and keeps its own transparency"><span class="bind-slot" data-bind="mTint"></span></div>
+      <div class="row widget-only" id="mPictureRow"><span class="label">Picture</span><span class="bind-slot" data-bind="src"></span></div>
+      <div class="row widget-only"><label title="The file fits inside its box, keeping its own shape, centred: for pictures a copy chooses">
+        <input id="mKeepAspect" type="checkbox"> Keep its shape inside the box</label></div>
       <div id="mNote" class="small muted"></div>
     </section>
     <section id="pText" hidden>
       <h2>Text</h2>
       <div id="liveNote" class="small warn" hidden></div>
-      <textarea id="wText" rows="3" spellcheck="false" title="Each line of text on its own line. Type { for a live value."></textarea>
-      <div class="row"><input id="wFontFilter" type="search" spellcheck="false" placeholder="Font: type to filter"></div>
-      <select id="wFont" size="5" title="Font"></select>
+      <textarea id="tText" rows="3" spellcheck="false" title="Each line of text on its own line. Type { for a live value."></textarea>
+      <div class="row widget-only"><span class="bind-slot" data-bind="tText"></span></div>
+      <div class="row"><input id="tFontFilter" type="search" spellcheck="false" placeholder="Font: type to filter"></div>
+      <select id="tFont" size="5" title="Font"></select>
       <div class="row">
-        <label title="Size in screen pixels (the em size)">Size <input id="wSize" type="number" min="1" step="1"></label>
-        <input id="wColor" type="color" title="Colour">
-        <label title="Distance between lines, as a multiple of the size">Lines × <input id="wLineHeight" type="number" min="0.1" step="0.05"></label>
+        <label title="Size in screen pixels (the em size)">Size <input id="tSize" type="number" min="1" step="1"></label>
+        <input id="tColor" type="color" title="Colour"><span class="bind-slot" data-bind="tColor"></span>
+        <label title="Distance between lines, as a multiple of the size">Lines × <input id="tLineHeight" type="number" min="0.1" step="0.05"></label>
       </div>
-      <div class="row"><span class="label">Across</span><span class="seg" id="wAlign">
+      <div class="row"><span class="label">Across</span><span class="seg" id="tAlign">
         <button data-value="left" title="Lines start at X">Left</button><button data-value="center" title="Lines are centred on X">Centre</button><button data-value="right" title="Lines end at X">Right</button>
       </span></div>
-      <div class="row"><span class="label">Down</span><span class="seg" id="wValign">
+      <div class="row"><span class="label">Down</span><span class="seg" id="tValign">
         <button data-value="top" title="The text's top is at Y">Top</button><button data-value="middle" title="The text's middle is at Y">Middle</button><button data-value="bottom" title="The text's bottom is at Y">Bottom</button>
       </span></div>
       <div class="row">
         <span class="label">Outline</span>
-        <input id="wOutlineColor" type="color" title="Outline colour">
-        <label title="Outline thickness in screen pixels, 0 for none"><input id="wOutlineWidth" type="number" min="0" step="1"> px</label>
+        <input id="tOutlineColor" type="color" title="Outline colour"><span class="bind-slot" data-bind="tOutlineColor"></span>
+        <label title="Outline thickness in screen pixels, 0 for none"><input id="tOutlineWidth" type="number" min="0" step="1"> px</label>
       </div>
       <div class="row"><label title="No smoothed edges: every pixel all or nothing. For pixel fonts.">
-        <input id="wCrisp" type="checkbox"> Crisp edges (pixel fonts)</label></div>
+        <input id="tCrisp" type="checkbox"> Crisp edges (pixel fonts)</label></div>
       <div class="row small"><button id="openSources2">Data sources…</button><span id="dataNote" class="warn" hidden>The player isn't running: no live values.</span></div>
     </section>
     <section id="pShape" hidden>
       <h2 id="shKind">Shape</h2>
       <div class="row"><span class="label">Fill</span><select id="shFillType"><option value="none">None</option><option value="solid">Solid</option><option value="linear">Gradient</option></select>
-        <input id="shColor" type="color" title="Fill colour"></div>
+        <input id="shColor" type="color" title="Fill colour"><span class="bind-slot" data-bind="shColor"></span></div>
       <div class="row" id="shGradRow"><span class="label"></span>
-        <input id="shColor2" type="color" title="Gradient end colour">
+        <input id="shColor2" type="color" title="Gradient end colour"><span class="bind-slot" data-bind="shColor2"></span>
         <label title="0 runs left to right, 90 top to bottom">angle <input id="shAngle" type="number" step="15"></label></div>
       <div class="row"><span class="label">Stroke</span><label><input id="shStrokeOn" type="checkbox"></label>
-        <input id="shStrokeColor" type="color" title="Stroke colour">
+        <input id="shStrokeColor" type="color" title="Stroke colour"><span class="bind-slot" data-bind="shStrokeColor"></span>
         <label><input id="shStrokeWidth" type="number" min="0" step="1"> px</label></div>
       <div class="row" id="shRadiusRow"><span class="label">Corners</span><label><input id="shRadius" type="number" min="0" step="1"> px radius</label></div>
       <div class="row"><label title="A pixel is painted exactly when its centre is inside: no anti-aliasing, so the player matches exactly">
         <input id="shCrisp" type="checkbox"> Crisp edges</label></div>
+    </section>
+    <section id="pCopy" hidden>
+      <h2>Widget</h2>
+      <div class="row"><button id="cpWidget" title="Swap this copy to another widget: values for inputs with the same ids carry over">▣ <span id="cpWidgetName"></span> ▾</button>
+        <span class="spacer"></span><button id="cpEdit" title="Open the widget, previewing this copy's inputs (Enter, or double-click the copy)">Edit widget</button></div>
+      <div class="row" id="cpScaleRow"><span class="label">Scale</span>
+        <button id="cpSmaller" title="Down to the next whole scale">−</button>
+        <span id="cpScale" class="muted"></span>
+        <button id="cpBigger" title="Up to the next whole scale">+</button>
+        <button id="cpOne" title="The widget's own size">1×</button></div>
+      <div id="cpNote" class="small muted"></div>
+      <div id="cpMessage" class="small"></div>
+      <h3 id="cpInputsHead">Inputs</h3>
+      <div id="cpInputs"></div>
     </section>
     <section id="pExport" hidden>
       <h2>Export</h2>
@@ -381,14 +568,33 @@
         <span><kbd>Ctrl</kbd> <kbd>C</kbd> <kbd>V</kbd> <kbd>D</kbd></span><span>copy, paste, duplicate</span>
         <span><kbd>Del</kbd> <kbd>Esc</kbd></span><span>delete / deselect</span>
         <span><kbd>G</kbd></span><span>guides</span>
+        <span class="widget-keys" hidden><kbd>W</kbd></span><span class="widget-keys" hidden>place a widget</span>
+        <span class="widget-keys" hidden><kbd>Ctrl</kbd> <kbd>G</kbd></span><span class="widget-keys" hidden>make a widget from the selection</span>
+        <span class="widget-keys" hidden><kbd>Enter</kbd></span><span class="widget-keys" hidden>edit the selected copy's widget</span>
+        <span class="widget-keys" hidden>Double-click</span><span class="widget-keys" hidden>a copy: edit its widget</span>
       </div>
     </section>
   </div>
 </div>
 
 <div id="strip">
+  <div id="stripTabs" hidden>
+    <button data-tab="scenes" title="The playlist's scenes">Scenes</button>
+    <button data-tab="widgets" title="Your widgets: drag one onto the canvas to place a copy">Widgets</button>
+  </div>
   <div id="scenes"></div>
   <button id="addScene" title="Add a scene">+</button>
+  <div id="widgetCards" hidden>
+    <input id="wcFilter" type="search" spellcheck="false" placeholder="Filter widgets" hidden>
+    <div id="wcList"></div>
+    <div class="wc-actions">
+      <button id="wcNew" title="Make a new, empty widget">+ New</button>
+      <button id="wcFromSel" title="Make a widget from the selected objects, and put a copy of it in their place (Ctrl+G)">From selection</button>
+      <button id="wcImport" title="Add the widgets in a .zip someone shared (or drop the .zip on the page)">Import…</button>
+      <button id="wcDeleted" hidden>Recently deleted</button>
+    </div>
+    <input id="wcFile" type="file" accept=".zip" hidden>
+  </div>
   <div id="playerBox">
     <div class="row">
       <button id="playerStart" class="primary">Play on cooler</button>
@@ -417,8 +623,66 @@
     <span id="srcMsg"></span>
   </div>
 </dialog>
+<dialog id="widgetDlg" aria-labelledby="wgTitle">
+  <div class="dlg-head"><h2 id="wgTitle">New widget</h2></div>
+  <div class="dlg-body">
+    <div class="row"><span class="label">Name</span><input id="wgName" type="text" spellcheck="false" style="width: auto; flex: 1"></div>
+    <div class="row" id="wgFolderRow"><span class="label"></span><span class="small muted">Its folder: <code id="wgFolder"></code></span></div>
+    <div id="wgSize">
+      <div class="row"><span class="label">Size</span><select id="wgPreset" title="A size to start from">
+          <option value="360x120">Label 360 × 120</option><option value="600x100">Wide 600 × 100</option>
+          <option value="240x240">Square 240 × 240</option><option value="360x360">Gauge 360 × 360</option>
+          <option value="1600x720">Whole screen 1600 × 720</option><option value="">W × H</option></select></div>
+      <div class="row"><span class="label"></span>
+        <label>W <input id="wgW" type="number" min="1" max="1600" step="1"></label>
+        <label>H <input id="wgH" type="number" min="1" max="720" step="1"></label></div>
+      <div class="row"><span class="label">Background</span>
+        <label><input id="wgBgNone" type="radio" name="wgBg" checked> Transparent</label>
+        <label><input id="wgBgOn" type="radio" name="wgBg"> <input id="wgBgColor" type="color" value="#000000"></label></div>
+    </div>
+    <div class="row" id="wgReplaceRow"><label><input id="wgReplace" type="checkbox" checked> Replace the selection with a copy</label></div>
+    <div id="wgNote" class="small muted"></div>
+  </div>
+  <div class="dlg-foot"><span id="wgMsg" class="small warn"></span><span class="spacer"></span>
+    <button id="wgCancel">Cancel</button><button id="wgCreate" class="primary">Create</button></div>
+</dialog>
+<dialog id="deleteDlg" aria-labelledby="dlTitle">
+  <div class="dlg-head"><h2 id="dlTitle">Delete widget</h2></div>
+  <div class="dlg-body"><p id="dlText"></p>
+    <p class="small muted">Its folder moves to Recently deleted, in the Widgets tab. Ctrl+Z brings it back.</p></div>
+  <div class="dlg-foot"><span class="spacer"></span>
+    <button id="dlCancel">Cancel</button><button id="dlKeep" title="The copies stay, shown as missing until the widget comes back">Keep the copies</button>
+    <button id="dlAll" class="primary">Delete widget and copies</button></div>
+</dialog>
+<dialog id="exportDlg" aria-labelledby="wxTitle">
+  <div class="dlg-head"><h2 id="wxTitle">Export</h2></div>
+  <div class="dlg-body">
+    <p id="wxText"></p>
+    <div id="wxFontsBox"><p class="small">Fonts to include, so it looks the same on another PC (only if each font's licence lets you share it):</p>
+      <ul id="wxFonts" class="wx-fonts"></ul></div>
+    <ul id="wxNotes" class="small warn"></ul>
+  </div>
+  <div class="dlg-foot"><span id="wxMsg" class="small"></span><span class="spacer"></span>
+    <button id="wxCancel">Close</button><button id="wxGo" class="primary">Export</button></div>
+</dialog>
+<dialog id="importDlg" aria-labelledby="wiTitle">
+  <div class="dlg-head"><h2 id="wiTitle">Import widgets</h2></div>
+  <div class="dlg-body"><div id="wiList"></div><ul id="wiNotes" class="small muted"></ul></div>
+  <div class="dlg-foot"><span id="wiMsg" class="small warn"></span><span class="spacer"></span>
+    <button id="wiCancel">Cancel</button><button id="wiGo" class="primary">Import</button></div>
+</dialog>
+<dialog id="conflictDlg" aria-labelledby="wcfTitle">
+  <div class="dlg-head"><h2 id="wcfTitle">Changed in two places</h2></div>
+  <div class="dlg-body"><p id="wcfText"></p></div>
+  <div class="dlg-foot"><span class="spacer"></span>
+    <button id="wcfFile" title="Take in what's on disk now: your changes here are dropped">Use the file's version</button>
+    <button id="wcfMine" class="primary" title="Save this page's version over the file">Keep mine</button></div>
+</dialog>
 <div id="acPop" class="ac" role="listbox" hidden></div>
 
+<script src="/widgets.js"></script>
 <script src="/studio.js"></script>
+<script src="/library.js"></script>
+<script src="/copies.js"></script>
 </body>
 </html>

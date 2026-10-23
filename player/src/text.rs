@@ -1,5 +1,5 @@
-//! Text widgets (docs/widgets.md): a piece's own text plus the global layer, drawn into one transparent
-//! 1600x720 layer that's then laid over each of the piece's frames.
+//! Text objects (docs/text.md): a piece's own text plus the global layer, drawn into one transparent
+//! layer covering just the box the text touches, that's then laid over each of the piece's frames.
 //!
 //! The geometry follows the spec to the letter, and lays text out as Chrome does on Windows (its line
 //! metrics, HarfBuzz shaping), so the studio's preview matches the cooler. Drawing a layer doesn't depend
@@ -17,9 +17,9 @@ use image::{RgbImage, Rgba, RgbaImage};
 use rustybuzz::{Face, UnicodeBuffer, ttf_parser};
 
 use crate::art::{HEIGHT, WIDTH};
-use crate::playlist::{self, Align, Valign, Widget};
+use crate::playlist::{self, Align, Rect, Text, Valign};
 
-/// Used when a widget's own font is missing or unreadable.
+/// Used when a text's own font is missing or unreadable.
 pub const DEFAULT_FONT: &str = r"C:\Windows\Fonts\segoeui.ttf";
 /// Bump when drawing changes, so text prepared by an older player is drawn again.
 pub const VERSION: u32 = 2;
@@ -35,10 +35,14 @@ const NONE: u32 = u32::MAX;
 /// 127; the studio turns on at 128 of 255, Chrome's half.
 const HALF: f32 = 127.0 / 255.0;
 
-/// Text ready to lay over frames: RGBA (not premultiplied) in upright panel pixels.
+/// Text ready to lay over frames: RGBA (not premultiplied) in upright panel pixels, over the box the
+/// text can touch (each text's mask, cut to its clip or the panel), not the whole panel.
 pub struct Layer {
     /// Empty (0x0) while there's no text, so a piece without any costs nothing.
     image: RgbaImage,
+    /// Where the image's top-left sits on the panel.
+    left: u32,
+    top: u32,
     bounds: Option<Bounds>,
 }
 
@@ -64,11 +68,11 @@ impl Bounds {
 }
 
 impl Layer {
-    /// Draws the widgets in order, each over the ones before. Any it can't draw (an unknown type, no
+    /// Draws the texts in order, each over the ones before. Any it can't draw (an unknown type, no
     /// usable font) are skipped.
-    pub fn render<'a>(widgets: impl IntoIterator<Item = &'a Widget>) -> Layer {
-        let mut layer = Layer { image: RgbaImage::new(0, 0), bounds: None };
-        for w in widgets {
+    pub fn render<'a>(texts: impl IntoIterator<Item = &'a Text>) -> Layer {
+        let mut layer = Layer { image: RgbaImage::new(0, 0), left: 0, top: 0, bounds: None };
+        for w in texts {
             if w.kind == "text" {
                 layer.draw(w);
             }
@@ -80,9 +84,19 @@ impl Layer {
         self.bounds
     }
 
-    /// The whole 1600x720 layer (0x0 while there's no text).
+    /// The layer's pixels, covering the box from `origin` (0x0 while there's no text).
     pub fn image(&self) -> &RgbaImage {
         &self.image
+    }
+
+    /// Where `image`'s top-left sits on the panel.
+    pub fn origin(&self) -> (u32, u32) {
+        (self.left, self.top)
+    }
+
+    /// The origin and the pixels, for laying the layer over a buffer.
+    pub fn into_parts(self) -> (u32, u32, RgbaImage) {
+        (self.left, self.top, self.image)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -102,11 +116,13 @@ impl Layer {
             return;
         }
         let last = (WIDTH * HEIGHT) as usize - 1;
+        let stride = self.image.width() as usize;
         let (text, frame): (&[u8], &mut [u8]) = (&self.image, frame);
         for y in b.top as usize..b.bottom as usize {
             for x in b.left as usize..b.right as usize {
-                let i = y * WIDTH as usize + x;
-                let j = if turned { last - i } else { i };
+                let i = (y - self.top as usize) * stride + (x - self.left as usize);
+                let j = y * WIDTH as usize + x;
+                let j = if turned { last - j } else { j };
                 let (src, dst) = (&text[i * 4..i * 4 + 4], &mut frame[j * 3..j * 3 + 3]);
                 let a = src[3] as u32;
                 if a == 0 {
@@ -119,7 +135,7 @@ impl Layer {
         }
     }
 
-    fn draw(&mut self, w: &Widget) {
+    fn draw(&mut self, w: &Text) {
         if !(w.size > 0.0) || !(w.opacity > 0.0) {
             return;
         }
@@ -128,7 +144,7 @@ impl Layer {
         let outline = if w.outline.width > 0.0 { w.outline.width.min(MAX_OUTLINE) } else { 0.0 };
         // how far beyond the glyphs the outline can reach
         let pad = if outline > 0.0 { outline.ceil() as i32 + 1 } else { 0 };
-        let Some(mut mask) = coverage(&font.glyphs, size, &layout(&font, w, size), pad) else { return };
+        let Some(mut mask) = coverage(&font.glyphs, size, &layout(&font, w, size), pad, w.clip) else { return };
         let mut ring = (outline > 0.0).then(|| dilate(&mask, outline));
         if w.crisp {
             // each mask on its own, so the fill and outline meet with a hard edge, like the studio's
@@ -137,17 +153,20 @@ impl Layer {
         }
         let fill = rgb(&w.color, [255, 255, 255]);
         let edge = rgb(&w.outline.color, [0, 0, 0]);
-        self.paint(&mask, fill, ring.as_deref().map(|r| (r, edge)), w.opacity.min(1.0));
+        self.paint(&mask, fill, ring.as_deref().map(|r| (r, edge)), w.opacity.min(1.0), w.clip);
     }
 
     /// Paints the fill over the outline (if any), then the two as one over the layer at `opacity`, so
-    /// the outline doesn't show through faint text.
-    fn paint(&mut self, mask: &Mask, fill: [u8; 3], ring: Option<(&[f32], [u8; 3])>, opacity: f32) {
-        if self.image.width() == 0 {
-            self.image = RgbaImage::new(WIDTH, HEIGHT);
+    /// the outline doesn't show through faint text. `clip` is where it may draw, in panel pixels (the
+    /// panel's edges cut it anyway).
+    fn paint(&mut self, mask: &Mask, fill: [u8; 3], ring: Option<(&[f32], [u8; 3])>, opacity: f32, clip: Option<Rect>) {
+        let (cl, ct, cr, cb) = visible(clip);
+        let (x0, x1) = (mask.left.max(cl), (mask.left + mask.width as i32).min(cr));
+        let (y0, y1) = (mask.top.max(ct), (mask.top + mask.height as i32).min(cb));
+        if x0 >= x1 || y0 >= y1 {
+            return;
         }
-        let (x0, x1) = (mask.left.max(0), (mask.left + mask.width as i32).min(WIDTH as i32));
-        let (y0, y1) = (mask.top.max(0), (mask.top + mask.height as i32).min(HEIGHT as i32));
+        self.reserve(x0, y0, x1, y1);
         let mut drawn: Option<Bounds> = None;
         for y in y0..y1 {
             for x in x0..x1 {
@@ -159,7 +178,7 @@ impl Layer {
                     continue;
                 }
                 let color = [0, 1, 2].map(|c| (fill[c] as f32 * body + edge_color[c] as f32 * edge) / alpha);
-                let px = self.image.get_pixel_mut(x as u32, y as u32);
+                let px = self.image.get_pixel_mut(x as u32 - self.left, y as u32 - self.top);
                 over(px, color, alpha * opacity);
                 if px[3] > 0 {
                     let (x, y) = (x as u32, y as u32);
@@ -171,6 +190,34 @@ impl Layer {
             self.bounds = Some(drawn.union(self.bounds));
         }
     }
+
+    /// Makes the image cover the box (panel pixels, inside the panel), keeping what's drawn: the first
+    /// text's box, then the union with each later one's.
+    fn reserve(&mut self, x0: i32, y0: i32, x1: i32, y1: i32) {
+        if self.image.width() == 0 {
+            self.image = RgbaImage::new((x1 - x0) as u32, (y1 - y0) as u32);
+            (self.left, self.top) = (x0 as u32, y0 as u32);
+            return;
+        }
+        let (l, t) = (self.left as i32, self.top as i32);
+        let (r, b) = (l + self.image.width() as i32, t + self.image.height() as i32);
+        if x0 >= l && y0 >= t && x1 <= r && y1 <= b {
+            return;
+        }
+        let (nl, nt, nr, nb) = (l.min(x0), t.min(y0), r.max(x1), b.max(y1));
+        let mut bigger = RgbaImage::new((nr - nl) as u32, (nb - nt) as u32);
+        image::imageops::replace(&mut bigger, &self.image, (l - nl) as i64, (t - nt) as i64);
+        self.image = bigger;
+        (self.left, self.top) = (nl as u32, nt as u32);
+    }
+}
+
+/// Where text may show: the clip cut to the panel, or the panel. Left and top inclusive, right and
+/// bottom exclusive; an empty box when nothing can show.
+fn visible(clip: Option<Rect>) -> (i32, i32, i32, i32) {
+    let (w, h) = (WIDTH as i64, HEIGHT as i64);
+    let [l, t, r, b] = clip.unwrap_or([0, 0, w, h]);
+    (l.clamp(0, w) as i32, t.clamp(0, h) as i32, r.clamp(0, w) as i32, b.clamp(0, h) as i32)
 }
 
 /// Paints `color` at `alpha` over a pixel (source-over, not premultiplied).
@@ -207,7 +254,7 @@ struct Placed {
 
 /// The spec's geometry: lines `size * line_height` apart from the block's top, each lined up on `x` by
 /// its width.
-fn layout(font: &Typeface, w: &Widget, size: f32) -> Vec<Placed> {
+fn layout(font: &Typeface, w: &Text, size: f32) -> Vec<Placed> {
     let Some(face) = Face::from_slice(&font.data, 0) else { return Vec::new() };
     let (ascent, descent) = font.line_metrics(size);
     let lines: Vec<String> = w.text
@@ -284,8 +331,9 @@ struct Mask {
 }
 
 /// The glyphs' coverage, over the area they cover plus `pad` all round, cut down to what can still
-/// show on the panel.
-fn coverage(font: &Font, size: f32, glyphs: &[Placed], pad: i32) -> Option<Mask> {
+/// show: inside the clip (or the panel) by `pad`, so the outline is right at the clip's edge and hidden
+/// text isn't rasterized.
+fn coverage(font: &Font, size: f32, glyphs: &[Placed], pad: i32, clip: Option<Rect>) -> Option<Mask> {
     // where each glyph's bitmap goes: pen positions round to whole pixels
     let whole = |v: f32| v.clamp(-1e6, 1e6).round() as i32;
     let boxes: Vec<(u16, i32, i32, Metrics)> = glyphs
@@ -297,11 +345,15 @@ fn coverage(font: &Font, size: f32, glyphs: &[Placed], pad: i32) -> Option<Mask>
                 .then(|| (g.index, whole(g.x) + m.xmin, whole(g.y) - m.ymin - m.height as i32, m))
         })
         .collect();
-    // beyond the panel's edge by more than the outline reaches, nothing can show
-    let left = (boxes.iter().map(|b| b.1).min()? - pad).max(-pad);
-    let top = (boxes.iter().map(|b| b.2).min()? - pad).max(-pad);
-    let right = (boxes.iter().map(|b| b.1 + b.3.width as i32).max()? + pad).min(WIDTH as i32 + pad);
-    let bottom = (boxes.iter().map(|b| b.2 + b.3.height as i32).max()? + pad).min(HEIGHT as i32 + pad);
+    // beyond the edge by more than the outline reaches, nothing can show
+    let (cl, ct, cr, cb) = visible(clip);
+    if cl >= cr || ct >= cb {
+        return None;
+    }
+    let left = (boxes.iter().map(|b| b.1).min()? - pad).max(cl - pad);
+    let top = (boxes.iter().map(|b| b.2).min()? - pad).max(ct - pad);
+    let right = (boxes.iter().map(|b| b.1 + b.3.width as i32).max()? + pad).min(cr + pad);
+    let bottom = (boxes.iter().map(|b| b.2 + b.3.height as i32).max()? + pad).min(cb + pad);
     if left >= right || top >= bottom {
         return None;
     }
@@ -463,8 +515,13 @@ struct Typeface {
 }
 
 impl Typeface {
+    /// None for a file that can't be used, whose text is then drawn in Segoe UI. A font from a shared widget
+    /// is untrusted: a broken one must never stop the player.
     fn read(data: Vec<u8>) -> Option<Typeface> {
         let face = ttf_parser::Face::parse(&data, 0).ok()?;
+        if !full_name_ok(&face) {
+            return None;
+        }
         let hhea = face.tables().hhea;
         let (ascent, descent) = match face.tables().os2 {
             Some(os2) if os2.use_typographic_metrics() => {
@@ -479,7 +536,9 @@ impl Typeface {
         let units_per_em = face.units_per_em() as f32;
         // substitutions too: shaping can pick glyphs that only GSUB reaches (ligatures, say)
         let settings = FontSettings { scale: CURVES_FOR, load_substitutions: true, ..FontSettings::default() };
-        let glyphs = Font::from_bytes(&data[..], settings).ok()?;
+        // fontdue isn't hardened against broken files the way ttf_parser is: one it panics on is a font that
+        // can't be used, like any other
+        let glyphs = std::panic::catch_unwind(|| Font::from_bytes(&data[..], settings)).ok()?.ok()?;
         Some(Typeface { data, glyphs, units_per_em, ascent: ascent as f32, descent: descent as f32 })
     }
 
@@ -487,6 +546,19 @@ impl Typeface {
     fn line_metrics(&self, size: f32) -> (f32, f32) {
         let px = |units: f32| (units * size / self.units_per_em + 0.5).floor();
         (px(self.ascent), px(self.descent))
+    }
+}
+
+/// Whether the font's full name, as fontdue reads it (the first Unicode name record with ID 4), is whole
+/// UTF-16: an even number of bytes, and every surrogate in a pair. fontdue decodes it without checking, and
+/// one that isn't reads past its end (a panic) or makes a char that can't exist.
+fn full_name_ok(face: &ttf_parser::Face) -> bool {
+    match face.names().into_iter().find(|n| n.name_id == ttf_parser::name_id::FULL_NAME && n.is_unicode()) {
+        None => true,
+        Some(n) => {
+            n.name.len() % 2 == 0
+                && char::decode_utf16(n.name.chunks_exact(2).map(|b| u16::from_be_bytes([b[0], b[1]]))).all(|c| c.is_ok())
+        }
     }
 }
 
@@ -501,22 +573,27 @@ fn font(path: &Path) -> Option<Arc<Typeface>> {
     {
         return font.clone();
     }
-    let font = std::fs::read(path).ok().and_then(Typeface::read).map(Arc::new);
+    let data = std::fs::read(path).ok();
+    let read = data.is_some();
+    let font = data.and_then(Typeface::read).map(Arc::new);
+    if read && font.is_none() {
+        crate::player::log(format_args!("font {}: can't be read, its text is drawn in Segoe UI", path.display()));
+    }
     fonts.insert(path.to_path_buf(), (stamp, font.clone()));
     font
 }
 
-/// Identifies how text looks: the widgets, plus the size and modified time of each font they use and
-/// of the fallback. None when there's no text, so pieces without any keep the cache keys they had.
-pub fn key<'a>(widgets: impl IntoIterator<Item = &'a Widget>) -> Option<u64> {
-    let widgets: Vec<&Widget> = widgets.into_iter().collect();
-    if widgets.is_empty() {
+/// Identifies how text looks: the texts, plus the size and modified time of each font they use and of
+/// the fallback. None when there's no text, so pieces without any keep the cache keys they had.
+pub fn key<'a>(texts: impl IntoIterator<Item = &'a Text>) -> Option<u64> {
+    let texts: Vec<&Text> = texts.into_iter().collect();
+    if texts.is_empty() {
         return None;
     }
     let mut h = DefaultHasher::new(); // fixed keys, so the same text hashes the same every run
     VERSION.hash(&mut h);
-    serde_json::to_string(&widgets).ok()?.hash(&mut h);
-    for font in widgets.iter().map(|w| w.font.as_path()).chain([Path::new(DEFAULT_FONT)]) {
+    serde_json::to_string(&texts).ok()?.hash(&mut h);
+    for font in texts.iter().map(|w| w.font.as_path()).chain([Path::new(DEFAULT_FONT)]) {
         (font, playlist::stamp(font)).hash(&mut h);
     }
     Some(h.finish())
@@ -527,12 +604,137 @@ mod tests {
     use super::*;
     use image::Rgb;
 
-    fn text(s: &str) -> Widget {
-        Widget { id: "t".into(), kind: "text".into(), text: s.into(), size: 100.0, ..Widget::default() }
+    fn text(s: &str) -> Text {
+        Text { id: "t".into(), kind: "text".into(), text: s.into(), size: 100.0, ..Text::default() }
     }
 
     fn have_default_font() -> bool {
         Path::new(DEFAULT_FONT).exists()
+    }
+
+    impl Layer {
+        /// The pixel at a panel position: transparent outside the image.
+        fn at(&self, x: u32, y: u32) -> Rgba<u8> {
+            let (l, t) = self.origin();
+            if x < l || y < t || x - l >= self.image.width() || y - t >= self.image.height() {
+                return Rgba([0, 0, 0, 0]);
+            }
+            *self.image.get_pixel(x - l, y - t)
+        }
+    }
+
+    /// Lays the layer onto a black frame: what it draws, as a whole-panel picture.
+    fn flat(layer: &Layer) -> RgbImage {
+        let mut frame = RgbImage::new(WIDTH, HEIGHT);
+        layer.draw_onto(&mut frame);
+        frame
+    }
+
+    /// The texts drawn as the player drew them while every layer was a whole 1600x720 image: the same
+    /// coverage, outline and blend, painted at panel positions, with only the panel's edges cutting them.
+    fn whole_panel(texts: &[&Text]) -> RgbaImage {
+        let mut image = RgbaImage::new(WIDTH, HEIGHT);
+        for w in texts {
+            let font = font(&w.font).or_else(|| font(Path::new(DEFAULT_FONT))).unwrap();
+            let size = w.size.min(MAX_SIZE);
+            let outline = if w.outline.width > 0.0 { w.outline.width.min(MAX_OUTLINE) } else { 0.0 };
+            let pad = if outline > 0.0 { outline.ceil() as i32 + 1 } else { 0 };
+            let Some(mut mask) = coverage(&font.glyphs, size, &layout(&font, w, size), pad, None) else { continue };
+            let mut ring = (outline > 0.0).then(|| dilate(&mask, outline));
+            if w.crisp {
+                threshold(&mut mask.alpha);
+                ring.iter_mut().for_each(|r| threshold(r));
+            }
+            let (fill, edge) = (rgb(&w.color, [255, 255, 255]), rgb(&w.outline.color, [0, 0, 0]));
+            for y in mask.top.max(0)..(mask.top + mask.height as i32).min(HEIGHT as i32) {
+                for x in mask.left.max(0)..(mask.left + mask.width as i32).min(WIDTH as i32) {
+                    let i = (y - mask.top) as usize * mask.width + (x - mask.left) as usize;
+                    let body = mask.alpha[i];
+                    let rim = ring.as_ref().map_or(0.0, |r| r[i] * (1.0 - body));
+                    if body + rim <= 0.0 {
+                        continue;
+                    }
+                    let color = [0, 1, 2].map(|c| (fill[c] as f32 * body + edge[c] as f32 * rim) / (body + rim));
+                    over(image.get_pixel_mut(x as u32, y as u32), color, (body + rim) * w.opacity.min(1.0));
+                }
+            }
+        }
+        image
+    }
+
+    /// Every panel pixel of the layer equals the whole-panel drawing's.
+    fn same_as_whole_panel(layer: &Layer, texts: &[&Text]) {
+        let want = whole_panel(texts);
+        for (x, y, p) in want.enumerate_pixels() {
+            assert_eq!(layer.at(x, y), *p, "at {x},{y}");
+        }
+    }
+
+    /// A text's layer is the box its glyphs (and outline) cover, cut to the panel, not 1600x720, and it
+    /// draws exactly what the whole-panel layer drew; more texts grow it to the box holding them all.
+    #[test]
+    fn text_layer_is_small() {
+        if !have_default_font() {
+            return;
+        }
+        let outlined = Text { x: 300.0, y: 200.0, outline: playlist::Outline { color: "#ff0000".into(), width: 3.0 }, ..text("Small") };
+        let layer = Layer::render([&outlined]);
+        // the image is the mask's box: the glyphs plus the outline's reach
+        let font = font(Path::new(DEFAULT_FONT)).unwrap();
+        let mask = coverage(&font.glyphs, 100.0, &layout(&font, &outlined, 100.0), 4, None).unwrap();
+        assert_eq!(layer.origin(), (mask.left as u32, mask.top as u32));
+        assert_eq!(layer.image().dimensions(), (mask.width as u32, mask.height as u32));
+        assert!(mask.width < 400 && mask.height < 150, "{}x{}", mask.width, mask.height);
+        same_as_whole_panel(&layer, &[&outlined]);
+        // the same through draw_onto: the layer lands where the whole-panel one did
+        let mut frame = RgbImage::new(WIDTH, HEIGHT);
+        for (x, y, p) in whole_panel(&[&outlined]).enumerate_pixels() {
+            let a = p[3] as u32;
+            frame.put_pixel(x, y, Rgb([0, 1, 2].map(|c| ((p[c] as u32 * a + 127) / 255) as u8)));
+        }
+        assert!(flat(&layer) == frame);
+        // faint, crisp, and hanging off the panel's edges (cut there, as before)
+        for t in [Text { opacity: 0.4, ..outlined.clone() }, Text { crisp: true, ..outlined.clone() },
+                  Text { x: -30.0, y: -40.0, ..outlined.clone() }, Text { x: 1590.0, y: 690.0, ..outlined.clone() }] {
+            let layer = Layer::render([&t]);
+            let (w, h) = layer.image().dimensions();
+            assert!(w < 400 && h < 150, "{w}x{h}");
+            same_as_whole_panel(&layer, &[&t]);
+        }
+        // a second text far away grows the image to the box holding both; an overlapping one paints over
+        // the first as it did
+        let far = Text { x: 1200.0, y: 600.0, ..text("Far") };
+        let across = Text { x: 320.0, y: 230.0, color: "#00ff00".into(), opacity: 0.5, ..text("Over") };
+        let all = Layer::render([&outlined, &far, &across]);
+        let (l, t) = all.origin();
+        assert!(l <= layer.origin().0 && t <= layer.origin().1 && all.image().width() > 800 && all.image().height() > 300);
+        same_as_whole_panel(&all, &[&outlined, &far, &across]);
+    }
+
+    /// Inside its clip a text is drawn exactly as without one, outline and all; outside it nothing is.
+    #[test]
+    fn clipped_to_its_box() {
+        if !have_default_font() {
+            return;
+        }
+        let plain = Text { x: 100.0, y: 100.0, outline: playlist::Outline { color: "#00ff00".into(), width: 4.0 }, ..text("Clip me") };
+        let whole = Layer::render([&plain]);
+        let b = whole.bounds().unwrap();
+        let clip = [b.left as i64 + 20, b.top as i64 + 10, b.right as i64 - 30, b.bottom as i64 - 15];
+        let cut = Layer::render([&Text { clip: Some(clip), ..plain.clone() }]);
+        let c = cut.bounds().unwrap();
+        assert!(c.left as i64 >= clip[0] && c.top as i64 >= clip[1] && c.right as i64 <= clip[2] && c.bottom as i64 <= clip[3], "{c:?}");
+        assert!(cut.image().width() as i64 <= clip[2] - clip[0] && cut.image().height() as i64 <= clip[3] - clip[1]);
+        for (x, y, p) in flat(&whole).enumerate_pixels() {
+            let inside = (clip[0]..clip[2]).contains(&(x as i64)) && (clip[1]..clip[3]).contains(&(y as i64));
+            assert_eq!(cut.at(x, y), if inside { whole.at(x, y) } else { Rgba([0, 0, 0, 0]) }, "at {x},{y}: {p:?}");
+        }
+        // a clip holding the whole text changes nothing; one past the panel, or empty, draws nothing
+        let roomy = Layer::render([&Text { clip: Some([-50, -50, 2000, 1000]), ..plain.clone() }]);
+        assert!(roomy.image() == whole.image() && roomy.origin() == whole.origin());
+        assert!(Layer::render([&Text { clip: Some([-100, -100, -1, -1]), ..plain.clone() }]).is_empty());
+        assert!(Layer::render([&Text { clip: Some([200, 200, 200, 300]), ..plain.clone() }]).is_empty());
+        assert!(Layer::render([&Text { clip: Some([300, 300, 200, 200]), ..plain.clone() }]).is_empty());
     }
 
     #[test]
@@ -560,7 +762,7 @@ mod tests {
     fn no_text_costs_nothing() {
         let layer = Layer::render([]);
         assert!(layer.is_empty() && layer.image.width() == 0);
-        let unknown = Widget { kind: "image".into(), ..text("x") };
+        let unknown = Text { kind: "image".into(), ..text("x") };
         assert!(Layer::render([&unknown]).is_empty());
         assert!(Layer::render([&text("")]).is_empty());
         assert!(Layer::render([&text("   ")]).is_empty());
@@ -577,7 +779,7 @@ mod tests {
             return;
         }
         let at = |align, valign| {
-            let w = Widget { x: 800.0, y: 360.0, align, valign, ..text("HH\nHHHH") };
+            let w = Text { x: 800.0, y: 360.0, align, valign, ..text("HH\nHHHH") };
             Layer::render([&w]).bounds().unwrap()
         };
         let font = font(Path::new(DEFAULT_FONT)).unwrap();
@@ -596,10 +798,10 @@ mod tests {
         assert_eq!(at(Align::Left, Valign::Middle).bottom, last_baseline(360.0 - height / 2.0));
         assert_eq!(at(Align::Left, Valign::Bottom).bottom, last_baseline(360.0 - height));
         // lines are aligned one by one: the short line's centre matches the long one's
-        let w = Widget { x: 800.0, y: 100.0, align: Align::Center, ..text("HH\nHHHH") };
+        let w = Text { x: 800.0, y: 100.0, align: Align::Center, ..text("HH\nHHHH") };
         let layer = Layer::render([&w]);
         let row_span = |y: u32| {
-            let xs: Vec<u32> = (0..WIDTH).filter(|&x| layer.image.get_pixel(x, y)[3] > 0).collect();
+            let xs: Vec<u32> = (0..WIDTH).filter(|&x| layer.at(x, y)[3] > 0).collect();
             (xs[0] + xs[xs.len() - 1]) as f32 / 2.0
         };
         let mid_line = |i: f32| (100.0 + ascent + i * 120.0 - 30.0) as u32;
@@ -616,7 +818,7 @@ mod tests {
         let advance = |c| font.glyphs.metrics(c, 100.0).advance_width;
         assert!(placed[1].x - placed[0].x < advance('A') - 1.0);
         // and the line's width includes it: right-aligned, V ends where it would unkerned, less the kern
-        let right = layout(&font, &Widget { align: Align::Right, x: 500.0, ..text("AV") }, 100.0);
+        let right = layout(&font, &Text { align: Align::Right, x: 500.0, ..text("AV") }, 100.0);
         let kern = placed[1].x - placed[0].x - advance('A');
         assert!((right[0].x - (500.0 - (advance('A') + kern + advance('V')))).abs() < 1e-3);
     }
@@ -675,9 +877,9 @@ mod tests {
         if !have_default_font() {
             return;
         }
-        let plain = Widget { x: 100.0, y: 100.0, ..text("Hg") };
+        let plain = Text { x: 100.0, y: 100.0, ..text("Hg") };
         let b = Layer::render([&plain]).bounds().unwrap();
-        let outlined = Widget { outline: playlist::Outline { color: "#ff0000".into(), width: 6.0 }, ..plain.clone() };
+        let outlined = Text { outline: playlist::Outline { color: "#ff0000".into(), width: 6.0 }, ..plain.clone() };
         let layer = Layer::render([&outlined]);
         let o = layer.bounds().unwrap();
         assert!((b.left - o.left).abs_diff(6) <= 1 && (o.right - b.right).abs_diff(6) <= 1, "{b:?} {o:?}");
@@ -686,15 +888,15 @@ mod tests {
         assert!(layer.image.pixels().any(|p| p.0 == [255, 0, 0, 255]));
         assert!(layer.image.pixels().any(|p| p.0 == [255, 255, 255, 255]));
 
-        let faint = Layer::render([&Widget { opacity: 0.5, ..plain.clone() }]);
+        let faint = Layer::render([&Text { opacity: 0.5, ..plain.clone() }]);
         assert_eq!(faint.image.pixels().map(|p| p[3]).max(), Some(128));
         // opacity applies to fill and outline as one: the outline doesn't show through the fill
-        let faint = Layer::render([&Widget { opacity: 0.5, ..outlined.clone() }]);
+        let faint = Layer::render([&Text { opacity: 0.5, ..outlined.clone() }]);
         assert_eq!(faint.image.pixels().map(|p| p[3]).max(), Some(128));
         assert!(faint.image.pixels().any(|p| p.0 == [255, 255, 255, 128]));
         assert!(faint.image.pixels().any(|p| p.0 == [255, 0, 0, 128]));
 
-        let crisp = Layer::render([&Widget { crisp: true, ..outlined.clone() }]);
+        let crisp = Layer::render([&Text { crisp: true, ..outlined.clone() }]);
         assert!(crisp.image.pixels().all(|p| p[3] == 0 || p[3] == 255));
         assert!(crisp.image.pixels().all(|p| p[3] == 0 || matches!(p.0, [255, 0, 0, _] | [255, 255, 255, _])));
     }
@@ -705,10 +907,95 @@ mod tests {
             return;
         }
         let normal = Layer::render([&text("Fallback")]);
-        let missing = Layer::render([&Widget { font: r"C:\nowhere\nothing.ttf".into(), ..text("Fallback") }]);
+        let missing = Layer::render([&Text { font: r"C:\nowhere\nothing.ttf".into(), ..text("Fallback") }]);
         assert!(!normal.is_empty());
         assert_eq!(normal.bounds(), missing.bounds());
         assert!(normal.image == missing.image);
+    }
+
+    /// A font's tables, as (tag, offset, length).
+    fn tables(data: &[u8]) -> Vec<([u8; 4], usize, usize)> {
+        let be32 = |at: usize| u32::from_be_bytes(data[at..at + 4].try_into().unwrap()) as usize;
+        let count = u16::from_be_bytes([data[4], data[5]]) as usize;
+        (0..count).map(|i| (data[12 + 16 * i..16 + 16 * i].try_into().unwrap(), be32(20 + 16 * i), be32(24 + 16 * i))).collect()
+    }
+
+    /// The font with its full name (the record fontdue reads: name ID 4, Unicode) changed by `change`, given
+    /// the record's length field's place and the name's own bytes' place.
+    fn with_full_name(data: &[u8], change: impl Fn(&mut Vec<u8>, usize, usize)) -> Vec<u8> {
+        let mut data = data.to_vec();
+        let (_, at, _) = tables(&data).into_iter().find(|t| &t.0 == b"name").expect("no name table");
+        let be16 = |d: &[u8], i: usize| u16::from_be_bytes([d[i], d[i + 1]]) as usize;
+        let (count, strings) = (be16(&data, at + 2), at + be16(&data, at + 4));
+        let record = (0..count).map(|k| at + 6 + 12 * k).find(|&r| {
+            let (platform, encoding, id) = (be16(&data, r), be16(&data, r + 2), be16(&data, r + 6));
+            id == 4 && (platform == 0 || (platform == 3 && [0, 1, 10].contains(&encoding)))
+        });
+        let r = record.expect("no full name");
+        let name = strings + be16(&data, r + 10);
+        change(&mut data, r + 8, name);
+        data
+    }
+
+    /// A shared widget's font is untrusted: one fontdue can't read (a full name of an odd length, a half
+    /// surrogate pair, bytes changed anywhere in its tables) draws its text in Segoe UI, and never panics.
+    #[test]
+    fn broken_fonts_fall_back() {
+        let fonts = Path::new(r"C:\Windows\Fonts");
+        let Some(source) = ["framd.ttf", "arial.ttf", "bahnschrift.ttf"].iter().map(|f| fonts.join(f)).find(|p| p.exists()) else { return };
+        if !have_default_font() {
+            return;
+        }
+        let good = std::fs::read(&source).unwrap();
+        let dir = std::env::temp_dir().join(format!("wvplay-text-broken-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sample = |font: &Path| Layer::render([&Text { font: font.into(), ..text("12:34 Hello") }]);
+        let normal = Layer::render([&text("12:34 Hello")]);
+        let own = sample(&source);
+        assert!(own.image != normal.image, "the font draws like Segoe UI: pick another");
+        let odd = with_full_name(&good, |d, len, _| {
+            let n = u16::from_be_bytes([d[len], d[len + 1]]);
+            d[len..len + 2].copy_from_slice(&(n - 1).to_be_bytes());
+        });
+        // a high surrogate with no low one after it, at the end of the name
+        let half = with_full_name(&good, |d, len, name| {
+            let n = u16::from_be_bytes([d[len], d[len + 1]]) as usize;
+            d[name + n - 2..name + n].copy_from_slice(&[0xD8, 0x3D]);
+        });
+        // a low surrogate on its own, which fontdue would turn into a char past U+10FFFF
+        let low = with_full_name(&good, |d, _, name| d[name..name + 4].copy_from_slice(&[0xDF, 0xFF, 0xFF, 0xFF]));
+        for (name, bytes) in [("odd.ttf", &odd), ("half.ttf", &half), ("low.ttf", &low)] {
+            let path = dir.join(name);
+            std::fs::write(&path, bytes).unwrap();
+            let drawn = sample(&path);
+            assert!(drawn.image == normal.image && drawn.bounds() == normal.bounds(), "{name} isn't drawn in Segoe UI");
+        }
+        // a small font with bytes changed inside its tables (the table directory kept whole), as a fuzzer
+        // would: each one draws, in itself or in Segoe UI, without a panic
+        let small = fonts.join("marlett.ttf");
+        let seed = if small.exists() { std::fs::read(&small).unwrap() } else { good.clone() };
+        let spans: Vec<(usize, usize)> = tables(&seed).into_iter().filter(|t| t.2 > 0 && t.1 + t.2 <= seed.len()).map(|t| (t.1, t.2)).collect();
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move |n: usize| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % n as u64) as usize
+        };
+        for case in 0..300 {
+            let mut bytes = seed.clone();
+            for _ in 0..[1, 2, 3, 5, 10, 30][next(6)] {
+                let (off, len) = spans[next(spans.len())];
+                let at = off + next(len);
+                let word: &[u8] = &[[0x00, 0x00], [0x7F, 0xFF], [0x80, 0x00], [0xFF, 0xFF], [0xFF, 0xFE], [next(256) as u8, next(256) as u8]][next(6)];
+                let end = (at + if next(2) == 0 { 1 } else { 2 }).min(off + len);
+                bytes[at..end].copy_from_slice(&word[..end - at]);
+            }
+            let path = dir.join(format!("fuzz-{case}.ttf"));
+            std::fs::write(&path, &bytes).unwrap();
+            let _ = sample(&path);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -716,10 +1003,10 @@ mod tests {
         if !have_default_font() {
             return;
         }
-        let off = Widget { x: -20.0, y: 620.0, outline: playlist::Outline { width: 4.0, ..Default::default() }, ..text("Edge") };
+        let off = Text { x: -20.0, y: 620.0, outline: playlist::Outline { width: 4.0, ..Default::default() }, ..text("Edge") };
         let b = Layer::render([&off]).bounds().unwrap();
         assert_eq!((b.left, b.bottom), (0, HEIGHT));
-        let gone = Widget { x: 5000.0, y: -5000.0, ..text("Gone") };
+        let gone = Text { x: 5000.0, y: -5000.0, ..text("Gone") };
         assert!(Layer::render([&gone]).is_empty());
     }
 
@@ -728,13 +1015,13 @@ mod tests {
         if !have_default_font() {
             return;
         }
-        let layer = Layer::render([&Widget { x: 10.0, y: 10.0, ..text("I") }]);
+        let layer = Layer::render([&Text { x: 10.0, y: 10.0, ..text("I") }]);
         let mut frame = RgbImage::from_pixel(WIDTH, HEIGHT, Rgb([0, 0, 255]));
         layer.draw_onto(&mut frame);
         let b = layer.bounds().unwrap();
         for (x, y, p) in frame.enumerate_pixels() {
             let inside = (b.left..b.right).contains(&x) && (b.top..b.bottom).contains(&y);
-            match layer.image.get_pixel(x, y)[3] {
+            match layer.at(x, y)[3] {
                 0 => assert_eq!(p.0, [0, 0, 255]),
                 255 => assert_eq!(p.0, [255, 255, 255]),
                 _ => assert!(inside && p[0] > 0 && p[0] < 255),
@@ -751,8 +1038,8 @@ mod tests {
         let font = font(Path::new(DEFAULT_FONT)).unwrap();
         for (width, size) in [(0.5, 30.0), (1.0, 40.0), (2.5, 40.0), (7.0, 60.0), (20.0, 80.0)] {
             let pad = (width as f32).ceil() as i32 + 1;
-            let w = Widget { x: 20.0, y: 20.0, ..text("Ag/o") };
-            let mask = coverage(&font.glyphs, size, &layout(&font, &w, size), pad).unwrap();
+            let w = Text { x: 20.0, y: 20.0, ..text("Ag/o") };
+            let mask = coverage(&font.glyphs, size, &layout(&font, &w, size), pad, None).unwrap();
             let fast = dilate(&mask, width);
             let (mw, mh, reach) = (mask.width as i64, mask.height as i64, pad as i64);
             let mut worst = 0f32;

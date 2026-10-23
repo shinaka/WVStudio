@@ -1,0 +1,20 @@
+{
+  "scenes": [
+    {
+      "id": "s1",
+      "placement": {"on_top": false, "cut": null},
+      "leaves": [
+        {"id": "before", "type": "shape", "x": 0, "y": 0, "w": 4, "h": 4, "opacity": 1, "clip": null, "groups": [], "shape": "rect", "radius": 0, "color": "#ffffff", "stroke_width": null, "stroke_color": null, "crisp": true},
+        {"id": "ok/a", "type": "shape", "x": 20, "y": 0, "w": 5, "h": 5, "opacity": 1, "clip": [20, 0, 30, 10], "groups": [], "shape": "rect", "radius": 0, "color": "#00ff00", "stroke_width": null, "stroke_color": null, "crisp": true},
+        {"id": "ok/b", "type": "shape", "x": 25, "y": 0, "w": 5, "h": 5, "opacity": 1, "clip": [20, 0, 30, 10], "groups": [], "shape": "rect", "radius": 0, "color": "#0000ff", "stroke_width": null, "stroke_color": null, "crisp": true},
+        {"id": "after", "type": "shape", "x": 40, "y": 0, "w": 4, "h": 4, "opacity": 1, "clip": null, "groups": [], "shape": "rect", "radius": 0, "color": "#ffffff", "stroke_width": null, "stroke_color": null, "crisp": true}
+      ]
+    }
+  ],
+  "global": {
+    "leaves": [
+      {"id": "g2/a", "type": "shape", "x": 0, "y": 100, "w": 5, "h": 5, "opacity": 1, "clip": [0, 100, 10, 110], "groups": [], "shape": "rect", "radius": 0, "color": "#00ff00", "stroke_width": null, "stroke_color": null, "crisp": true},
+      {"id": "g2/b", "type": "shape", "x": 5, "y": 100, "w": 5, "h": 5, "opacity": 1, "clip": [0, 100, 10, 110], "groups": [], "shape": "rect", "radius": 0, "color": "#0000ff", "stroke_width": null, "stroke_color": null, "crisp": true}
+    ]
+  }
+}

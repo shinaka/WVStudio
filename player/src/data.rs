@@ -1,4 +1,4 @@
-//! Live data in text (docs/data.md): `{key}` placeholders in widget text, the values they're filled
+//! Live data in text (docs/data.md): `{key}` placeholders in text objects, the values they're filled
 //! from, and the sources in data.json (beside the playlist) that keep those values fresh, each polled on
 //! a thread of its own.
 
@@ -138,7 +138,7 @@ fn until(left: TimeDelta) -> String {
     }
 }
 
-/// A piece of widget text: as written, or a placeholder.
+/// A piece of text: as written, or a placeholder.
 enum Part<'a> {
     Text(&'a str),
     Hole { key: &'a str, fmt: &'a str, fallback: Option<&'a str> },
@@ -178,7 +178,7 @@ fn scan<'a>(text: &'a str, mut part: impl FnMut(Part<'a>)) {
     part(Part::Text(rest));
 }
 
-/// Whether text has a placeholder, which makes its widget live.
+/// Whether text has a placeholder, which makes it live.
 pub fn is_live(text: &str) -> bool {
     let mut live = false;
     scan(text, |p| live |= matches!(p, Part::Hole { .. }));
@@ -204,6 +204,19 @@ pub fn fill(text: &str, lookup: impl Fn(&str) -> Option<Value>, now: DateTime<Ut
 pub fn resolve(text: &str) -> String {
     let now = Utc::now();
     fill(text, |key| store().get(key, now), now)
+}
+
+/// `resolve`, plus which of the text's placeholders, in order, had no value (and so showed their fallback or
+/// the missing-value text): the player draws a value at once when one of these gets one (docs/data.md).
+pub fn resolve_gaps(text: &str) -> (String, Vec<bool>) {
+    let now = Utc::now();
+    let gaps = std::cell::RefCell::new(Vec::new());
+    let filled = fill(text, |key| {
+        let value = store().get(key, now);
+        gaps.borrow_mut().push(value.is_none());
+        value
+    }, now);
+    (filled, gaps.into_inner())
 }
 
 struct Entry {
@@ -928,7 +941,7 @@ mod tests {
         assert_eq!(f("a } b {} {:d} { }"), "a } b {} {:d} { }");
         assert_eq!(f("{n.whole\n}"), "{n.whole\n}");
         assert_eq!(f("{ n.whole }"), "30");
-        // which widgets are live
+        // which text is live
         assert!(is_live("x {time}"));
         assert!(!is_live("x {{time}}"));
         assert!(!is_live("plain {"));

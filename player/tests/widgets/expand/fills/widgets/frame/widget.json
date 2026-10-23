@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "name": "Frame",
+  "description": "",
+  "w": 30,
+  "h": 20,
+  "background": "#202020",
+  "fonts": {},
+  "inputs": [],
+  "layers": [
+    {
+      "id": "l1",
+      "name": "l1",
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "objects": [
+        {
+          "id": "in",
+          "type": "widget",
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "x": 25,
+          "y": 15,
+          "w": 20,
+          "h": 10,
+          "scale": 1,
+          "widget": "tiles"
+        }
+      ]
+    }
+  ]
+}

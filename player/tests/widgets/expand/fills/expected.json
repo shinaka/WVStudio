@@ -1,0 +1,35 @@
+{
+  "scenes": [
+    {
+      "id": "s1",
+      "placement": {"on_top": false, "cut": null},
+      "leaves": [
+        {"id": "a/t", "type": "image", "x": 2, "y": 2, "w": 4, "h": 4, "opacity": 1, "clip": [0, 0, 20, 10], "groups": [], "src": "widgets/tiles/media/tile-9866f247.png", "keep_aspect": false, "tint": null},
+        {"id": "a/m", "type": "image", "x": 8, "y": 2, "w": 4, "h": 3, "opacity": 1, "clip": [0, 0, 20, 10], "groups": [], "src": "widgets/tiles/media/tile-9866f247.png", "keep_aspect": false, "tint": null},
+        {"id": "a/e", "type": "image", "x": 14, "y": 2, "w": 4, "h": 4, "opacity": 1, "clip": [0, 0, 20, 10], "groups": [], "src": "widgets/tiles/media/tile-9866f247.png", "keep_aspect": false, "tint": null},
+        {"id": "a/o", "type": "image", "x": -10, "y": -10, "w": 4, "h": 4, "opacity": 1, "clip": [0, 0, 20, 10], "groups": [], "src": "widgets/tiles/media/tile-9866f247.png", "keep_aspect": false, "tint": null},
+        {"id": "a/n", "type": "image", "x": 18, "y": 8, "w": 4, "h": 4, "opacity": 1, "clip": [0, 0, 20, 10], "groups": [], "src": "widgets/tiles/media/tile-9866f247.png", "keep_aspect": false, "tint": null},
+        {"id": "b/t", "type": "image", "x": 33, "y": 3, "w": 6, "h": 6, "opacity": 1, "clip": [30, 0, 60, 15], "groups": [], "src": "widgets/tiles/media/tile-9866f247.png", "keep_aspect": false, "tint": null},
+        {"id": "b/m", "type": "image", "x": 42, "y": 3, "w": 6, "h": 5, "opacity": 1, "clip": [30, 0, 60, 15], "groups": [], "src": "widgets/tiles/media/tile-9866f247.png", "keep_aspect": false, "tint": null},
+        {"id": "b/e", "type": "image", "x": 51, "y": 3, "w": 6, "h": 6, "opacity": 1, "clip": [30, 0, 60, 15], "groups": [], "src": "widgets/tiles/media/tile-9866f247.png", "keep_aspect": false, "tint": null},
+        {"id": "b/o", "type": "image", "x": 15, "y": -15, "w": 6, "h": 6, "opacity": 1, "clip": [30, 0, 60, 15], "groups": [], "src": "widgets/tiles/media/tile-9866f247.png", "keep_aspect": false, "tint": null},
+        {"id": "b/n", "type": "image", "x": 57, "y": 12, "w": 6, "h": 6, "opacity": 1, "clip": [30, 0, 60, 15], "groups": [], "src": "widgets/tiles/media/tile-9866f247.png", "keep_aspect": false, "tint": null},
+        {"id": "c/t", "type": "image", "x": -3, "y": -1, "w": 4, "h": 4, "opacity": 1, "clip": [-5, -3, 15, 7], "groups": [["c", 0.5, [0, 0, 15, 7]]], "src": "widgets/tiles/media/tile-9866f247.png", "keep_aspect": false, "tint": null},
+        {"id": "c/m", "type": "image", "x": 3, "y": -1, "w": 4, "h": 3, "opacity": 1, "clip": [-5, -3, 15, 7], "groups": [["c", 0.5, [0, 0, 15, 7]]], "src": "widgets/tiles/media/tile-9866f247.png", "keep_aspect": false, "tint": null},
+        {"id": "c/e", "type": "image", "x": 9, "y": -1, "w": 4, "h": 4, "opacity": 1, "clip": [-5, -3, 15, 7], "groups": [["c", 0.5, [0, 0, 15, 7]]], "src": "widgets/tiles/media/tile-9866f247.png", "keep_aspect": false, "tint": null},
+        {"id": "c/o", "type": "image", "x": -15, "y": -13, "w": 4, "h": 4, "opacity": 1, "clip": [-5, -3, 15, 7], "groups": [["c", 0.5, [0, 0, 15, 7]]], "src": "widgets/tiles/media/tile-9866f247.png", "keep_aspect": false, "tint": null},
+        {"id": "c/n", "type": "image", "x": 13, "y": 5, "w": 4, "h": 4, "opacity": 1, "clip": [-5, -3, 15, 7], "groups": [["c", 0.5, [0, 0, 15, 7]]], "src": "widgets/tiles/media/tile-9866f247.png", "keep_aspect": false, "tint": null},
+        {"id": "d/background", "type": "shape", "x": 100, "y": 0, "w": 60, "h": 40, "opacity": 1, "clip": [100, 0, 160, 40], "groups": [], "shape": "rect", "radius": 0, "color": "#202020", "stroke_width": null, "stroke_color": null, "crisp": true},
+        {"id": "d/in/t", "type": "image", "x": 154, "y": 34, "w": 8, "h": 8, "opacity": 1, "clip": [150, 30, 160, 40], "groups": [], "src": "widgets/tiles/media/tile-9866f247.png", "keep_aspect": false, "tint": null},
+        {"id": "d/in/m", "type": "image", "x": 166, "y": 34, "w": 8, "h": 6, "opacity": 1, "clip": [150, 30, 160, 40], "groups": [], "src": "widgets/tiles/media/tile-9866f247.png", "keep_aspect": false, "tint": null},
+        {"id": "d/in/e", "type": "image", "x": 178, "y": 34, "w": 8, "h": 8, "opacity": 1, "clip": [150, 30, 160, 40], "groups": [], "src": "widgets/tiles/media/tile-9866f247.png", "keep_aspect": false, "tint": null},
+        {"id": "d/in/o", "type": "image", "x": 130, "y": 10, "w": 8, "h": 8, "opacity": 1, "clip": [150, 30, 160, 40], "groups": [], "src": "widgets/tiles/media/tile-9866f247.png", "keep_aspect": false, "tint": null},
+        {"id": "d/in/n", "type": "image", "x": 186, "y": 46, "w": 8, "h": 8, "opacity": 1, "clip": [150, 30, 160, 40], "groups": [], "src": "widgets/tiles/media/tile-9866f247.png", "keep_aspect": false, "tint": null}
+      ]
+    }
+  ],
+  "global": {
+    "leaves": [
+    ]
+  }
+}

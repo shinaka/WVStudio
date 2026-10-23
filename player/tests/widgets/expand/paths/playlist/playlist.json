@@ -1,0 +1,387 @@
+{
+  "version": 2,
+  "seconds": 30,
+  "global": {
+    "layers": [
+      {
+        "id": "g",
+        "name": "g",
+        "visible": true,
+        "locked": false,
+        "opacity": 1.0,
+        "objects": [
+          {
+            "id": "g0",
+            "type": "widget",
+            "visible": true,
+            "locked": false,
+            "opacity": 1.0,
+            "x": 0,
+            "y": 100,
+            "w": 4,
+            "h": 4,
+            "scale": 1,
+            "widget": "one",
+            "inputs": {
+              "pic": "x/fe20a98c93d7.png"
+            }
+          },
+          {
+            "id": "g1",
+            "type": "widget",
+            "visible": true,
+            "locked": false,
+            "opacity": 1.0,
+            "x": 5,
+            "y": 100,
+            "w": 4,
+            "h": 4,
+            "scale": 1,
+            "widget": "one",
+            "inputs": {
+              "pic": "Sources/fe20a98c93d7.png"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "scenes": [
+    {
+      "id": "s1",
+      "name": "s1",
+      "seconds": 30,
+      "background": "#000000",
+      "layers": [
+        {
+          "id": "l1",
+          "name": "l1",
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "objects": [
+            {
+              "id": "p",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 0,
+              "y": 0,
+              "w": 40,
+              "h": 20,
+              "scale": 1,
+              "widget": "pics"
+            },
+            {
+              "id": "q",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 0,
+              "y": 30,
+              "w": 40,
+              "h": 20,
+              "scale": 1,
+              "inputs": {
+                "pic": "../x.png",
+                "bad": "inputs/fe20a98c93d7.png"
+              },
+              "widget": "pics"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s2",
+      "name": "s2",
+      "seconds": 30,
+      "background": "#000000",
+      "layers": [
+        {
+          "id": "l1",
+          "name": "l1",
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "objects": [
+            {
+              "id": "k",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 0,
+              "y": 0,
+              "w": 40,
+              "h": 10,
+              "scale": 1,
+              "widget": "kinds"
+            },
+            {
+              "id": "m",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 0,
+              "y": 20,
+              "w": 40,
+              "h": 10,
+              "scale": 1,
+              "widget": "kinds",
+              "inputs": {
+                "pic": "inputs/x.jfif",
+                "ok": "inputs/clip.avi"
+              }
+            },
+            {
+              "id": "n",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 0,
+              "y": 40,
+              "w": 40,
+              "h": 10,
+              "scale": 1,
+              "widget": "kinds",
+              "inputs": {
+                "pic": "inputs/fe20a98c93d7.png",
+                "ok": "inputs/fe20a98c93d7.PNG"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s3",
+      "name": "s3",
+      "seconds": 30,
+      "background": "#000000",
+      "layers": [
+        {
+          "id": "l1",
+          "name": "l1",
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "objects": [
+            {
+              "id": "c0",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 0,
+              "y": 0,
+              "w": 4,
+              "h": 4,
+              "scale": 1,
+              "widget": "one",
+              "inputs": {
+                "pic": "inputs/fe20a98c93d7.png"
+              }
+            },
+            {
+              "id": "c1",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 5,
+              "y": 0,
+              "w": 4,
+              "h": 4,
+              "scale": 1,
+              "widget": "one",
+              "inputs": {
+                "pic": "Inputs/fe20a98c93d7.png"
+              }
+            },
+            {
+              "id": "c2",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 10,
+              "y": 0,
+              "w": 4,
+              "h": 4,
+              "scale": 1,
+              "widget": "one",
+              "inputs": {
+                "pic": "SOURCES/fe20a98c93d7.png"
+              }
+            },
+            {
+              "id": "c3",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 15,
+              "y": 0,
+              "w": 4,
+              "h": 4,
+              "scale": 1,
+              "widget": "one",
+              "inputs": {
+                "pic": " sources/fe20a98c93d7.png "
+              }
+            },
+            {
+              "id": "c4",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 20,
+              "y": 0,
+              "w": 4,
+              "h": 4,
+              "scale": 1,
+              "widget": "one",
+              "inputs": {
+                "pic": "fe20a98c93d7.png"
+              }
+            },
+            {
+              "id": "c5",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 25,
+              "y": 0,
+              "w": 4,
+              "h": 4,
+              "scale": 1,
+              "widget": "one",
+              "inputs": {
+                "pic": "sub/fe20a98c93d7.png"
+              }
+            },
+            {
+              "id": "c6",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 30,
+              "y": 0,
+              "w": 4,
+              "h": 4,
+              "scale": 1,
+              "widget": "one",
+              "inputs": {
+                "pic": "inputs/sub/fe20a98c93d7.png"
+              }
+            },
+            {
+              "id": "c7",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 35,
+              "y": 0,
+              "w": 4,
+              "h": 4,
+              "scale": 1,
+              "widget": "one",
+              "inputs": {
+                "pic": "sources/deep/fe20a98c93d7.png"
+              }
+            },
+            {
+              "id": "c8",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 40,
+              "y": 0,
+              "w": 4,
+              "h": 4,
+              "scale": 1,
+              "widget": "one",
+              "inputs": {
+                "pic": "widgets/one/media/ok-4b0edc2b.png"
+              }
+            },
+            {
+              "id": "c9",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 45,
+              "y": 0,
+              "w": 4,
+              "h": 4,
+              "scale": 1,
+              "widget": "one",
+              "inputs": {
+                "pic": "media/ok-4b0edc2b.png"
+              }
+            },
+            {
+              "id": "c10",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 50,
+              "y": 0,
+              "w": 4,
+              "h": 4,
+              "scale": 1,
+              "widget": "one",
+              "inputs": {
+                "pic": "inputs/fe20a98c93d7.jfif"
+              }
+            },
+            {
+              "id": "c11",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 55,
+              "y": 0,
+              "w": 4,
+              "h": 4,
+              "scale": 1,
+              "widget": "one",
+              "inputs": {
+                "pic": "{$pic}"
+              }
+            },
+            {
+              "id": "c12",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 60,
+              "y": 0,
+              "w": 4,
+              "h": 4,
+              "scale": 1,
+              "widget": "one",
+              "inputs": {
+                "pic": ""
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

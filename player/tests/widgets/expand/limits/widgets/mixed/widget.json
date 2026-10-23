@@ -1,0 +1,131 @@
+{
+  "version": 1,
+  "name": "Mixed",
+  "description": "",
+  "w": 10,
+  "h": 10,
+  "background": "#101010",
+  "fonts": {},
+  "inputs": [],
+  "layers": [
+    {
+      "id": "m1",
+      "name": "m1",
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "objects": [
+        {
+          "id": "a",
+          "type": "shape",
+          "shape": "rect",
+          "x": 0,
+          "y": 0,
+          "w": 2,
+          "h": 2,
+          "fill": {
+            "type": "solid",
+            "color": "#ff0000"
+          }
+        },
+        {
+          "id": "hid1",
+          "type": "shape",
+          "shape": "rect",
+          "x": 6,
+          "y": 6,
+          "w": 2,
+          "h": 2,
+          "fill": {
+            "type": "solid",
+            "color": "#ff00ff"
+          },
+          "visible": false
+        },
+        {
+          "id": "hc",
+          "type": "widget",
+          "visible": false,
+          "locked": false,
+          "opacity": 1.0,
+          "x": 8,
+          "y": 0,
+          "w": 1,
+          "h": 1,
+          "scale": 1,
+          "widget": "dot1"
+        },
+        {
+          "id": "b",
+          "type": "shape",
+          "shape": "rect",
+          "x": 3,
+          "y": 0,
+          "w": 2,
+          "h": 2,
+          "fill": {
+            "type": "solid",
+            "color": "#0000ff"
+          }
+        }
+      ]
+    },
+    {
+      "id": "m0",
+      "name": "m0",
+      "visible": true,
+      "locked": false,
+      "opacity": 0.0,
+      "objects": [
+        {
+          "id": "z",
+          "type": "shape",
+          "shape": "rect",
+          "x": 0,
+          "y": 5,
+          "w": 2,
+          "h": 2,
+          "fill": {
+            "type": "solid",
+            "color": "#ffff00"
+          }
+        },
+        {
+          "id": "zc",
+          "type": "widget",
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "x": 5,
+          "y": 5,
+          "w": 1,
+          "h": 1,
+          "scale": 1,
+          "widget": "dot1"
+        }
+      ]
+    },
+    {
+      "id": "mh",
+      "name": "mh",
+      "visible": false,
+      "locked": false,
+      "opacity": 1.0,
+      "objects": [
+        {
+          "id": "y",
+          "type": "shape",
+          "shape": "rect",
+          "x": 5,
+          "y": 0,
+          "w": 2,
+          "h": 2,
+          "fill": {
+            "type": "solid",
+            "color": "#00ffff"
+          }
+        }
+      ]
+    }
+  ]
+}

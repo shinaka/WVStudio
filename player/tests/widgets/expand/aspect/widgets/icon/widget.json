@@ -1,0 +1,120 @@
+{
+  "version": 1,
+  "name": "Icon",
+  "description": "",
+  "w": 40,
+  "h": 40,
+  "background": null,
+  "fonts": {},
+  "inputs": [
+    {
+      "id": "accent",
+      "name": "Accent",
+      "type": "color",
+      "default": "#FF7A1A"
+    },
+    {
+      "id": "pic",
+      "name": "Picture",
+      "type": "image",
+      "default": "media/wide-cae7d6d1.png"
+    }
+  ],
+  "layers": [
+    {
+      "id": "l1",
+      "name": "l1",
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "objects": [
+        {
+          "id": "k1",
+          "type": "image",
+          "src": "media/wide-cae7d6d1.png",
+          "x": 0,
+          "y": 0,
+          "w": 40,
+          "h": 40,
+          "keep_aspect": true
+        },
+        {
+          "id": "k2",
+          "type": "image",
+          "src": "{$pic}",
+          "x": 0,
+          "y": 0,
+          "w": 20,
+          "h": 20,
+          "keep_aspect": true,
+          "tint": "{$accent}"
+        },
+        {
+          "id": "k3",
+          "type": "image",
+          "src": "media/tall-4f456182.png",
+          "x": 0,
+          "y": 20,
+          "w": 20,
+          "h": 20,
+          "rotate": 90,
+          "keep_aspect": true,
+          "tint": "#ABC"
+        },
+        {
+          "id": "k4",
+          "type": "image",
+          "src": "media/wide-cae7d6d1.png",
+          "x": 20,
+          "y": 20,
+          "w": 20,
+          "h": 20,
+          "tint": "blue"
+        },
+        {
+          "id": "k5",
+          "type": "image",
+          "src": "media/wide-cae7d6d1.png",
+          "x": 20,
+          "y": 0,
+          "w": 20,
+          "h": 20,
+          "keep_aspect": "yes",
+          "tint": 5
+        },
+        {
+          "id": "k6",
+          "type": "image",
+          "src": "media/wide-cae7d6d1.png",
+          "x": 10,
+          "y": 10,
+          "w": 10,
+          "h": 10,
+          "tint": "  #00FF00  "
+        },
+        {
+          "id": "k7",
+          "type": "image",
+          "src": "media/tall-4f456182.png",
+          "x": 30,
+          "y": 30,
+          "w": 10,
+          "h": 10,
+          "fill": "tile",
+          "keep_aspect": true,
+          "tint": "{$nope}"
+        },
+        {
+          "id": "k8",
+          "type": "image",
+          "src": "{$pic}",
+          "x": 0,
+          "y": 30,
+          "w": 10,
+          "h": 10,
+          "tint": "{$pic}"
+        }
+      ]
+    }
+  ]
+}

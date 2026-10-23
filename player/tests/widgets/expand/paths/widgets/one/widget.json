@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "name": "One picture",
+  "description": "",
+  "w": 4,
+  "h": 4,
+  "background": null,
+  "fonts": {},
+  "inputs": [
+    {
+      "id": "pic",
+      "name": "Picture",
+      "type": "image",
+      "default": "media/ok-4b0edc2b.png"
+    }
+  ],
+  "layers": [
+    {
+      "id": "l1",
+      "name": "l1",
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "objects": [
+        {
+          "id": "i",
+          "type": "image",
+          "src": "{$pic}",
+          "x": 0,
+          "y": 0,
+          "w": 4,
+          "h": 4
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "scenes": [
+    {
+      "id": "s1",
+      "placement": {"on_top": false, "cut": "a/t1"},
+      "leaves": [
+        {"id": "a/background", "type": "shape", "x": 0, "y": 0, "w": 100, "h": 40, "opacity": 1, "clip": [0, 0, 100, 40], "groups": [], "shape": "rect", "radius": 0, "color": "#00ff00", "stroke_width": null, "stroke_color": null, "crisp": true},
+        {"id": "a/p", "type": "shape", "x": 0, "y": 0, "w": 100, "h": 40, "opacity": 1, "clip": [0, 0, 100, 40], "groups": [], "shape": "rect", "radius": 4, "color": "#aabbcc", "stroke_width": 2, "stroke_color": "#00ff00", "crisp": false},
+        {"id": "a/q", "type": "shape", "x": 0, "y": 0, "w": 10, "h": 10, "opacity": 1, "clip": [0, 0, 100, 40], "groups": [], "shape": "rect", "radius": 0, "color": "#ffffff", "stroke_width": 1, "stroke_color": "#ffffff", "crisp": false},
+        {"id": "a/t1", "type": "text", "x": 4, "y": 4, "opacity": 1, "clip": [0, 0, 100, 40], "groups": [], "text": "GPU: {pc.gpu.temp:d}°C", "live": true, "size": 12, "outline_width": 1, "color": "#aabbcc", "outline_color": "#000000", "font": "bahnschrift.ttf"},
+        {"id": "a/t2", "type": "text", "x": 4, "y": 20, "opacity": 1, "clip": [0, 0, 100, 40], "groups": [], "text": "{$label} {$nope} {$accent}", "live": false, "size": 10, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "segoeui.ttf"},
+        {"id": "a/t3", "type": "text", "x": 50, "y": 4, "opacity": 1, "clip": [0, 0, 100, 40], "groups": [], "text": "{pc.gpu.temp:d}", "live": true, "size": 10, "outline_width": 1, "color": "#ffffff", "outline_color": "#ffffff", "font": "segoeui.ttf"},
+        {"id": "a/t4", "type": "text", "x": 50, "y": 20, "opacity": 1, "clip": [0, 0, 100, 40], "groups": [], "text": "x{{{pc.cpu.temp}", "live": true, "size": 10, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "segoeui.ttf"},
+        {"id": "a/i1", "type": "image", "x": 80, "y": 0, "w": 20, "h": 20, "opacity": 1, "clip": [0, 0, 100, 40], "groups": [], "src": "playlist/inputs/d0d128929be3.png", "keep_aspect": true, "tint": "#aabbcc"},
+        {"id": "b/background", "type": "shape", "x": 0, "y": 50, "w": 100, "h": 40, "opacity": 1, "clip": [0, 50, 100, 90], "groups": [], "shape": "rect", "radius": 0, "color": "#00ff00", "stroke_width": null, "stroke_color": null, "crisp": true},
+        {"id": "b/p", "type": "shape", "x": 0, "y": 50, "w": 100, "h": 40, "opacity": 1, "clip": [0, 50, 100, 90], "groups": [], "shape": "rect", "radius": 4, "color": "#ff7a1a", "stroke_width": 2, "stroke_color": "#00ff00", "crisp": false},
+        {"id": "b/q", "type": "shape", "x": 0, "y": 50, "w": 10, "h": 10, "opacity": 1, "clip": [0, 50, 100, 90], "groups": [], "shape": "rect", "radius": 0, "color": "#ffffff", "stroke_width": 1, "stroke_color": "#ffffff", "crisp": false},
+        {"id": "b/t1", "type": "text", "x": 4, "y": 54, "opacity": 1, "clip": [0, 50, 100, 90], "groups": [], "text": "CPU: {pc.cpu.temp:d}°C", "live": true, "size": 12, "outline_width": 1, "color": "#ff7a1a", "outline_color": "#000000", "font": "bahnschrift.ttf"},
+        {"id": "b/t2", "type": "text", "x": 4, "y": 70, "opacity": 1, "clip": [0, 50, 100, 90], "groups": [], "text": "{$label} {$nope} {$accent}", "live": false, "size": 10, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "segoeui.ttf"},
+        {"id": "b/t3", "type": "text", "x": 50, "y": 54, "opacity": 1, "clip": [0, 50, 100, 90], "groups": [], "text": "{pc.cpu.temp:d}", "live": true, "size": 10, "outline_width": 1, "color": "#ffffff", "outline_color": "#ffffff", "font": "segoeui.ttf"},
+        {"id": "b/t4", "type": "text", "x": 50, "y": 70, "opacity": 1, "clip": [0, 50, 100, 90], "groups": [], "text": "{pc.cpu.temp}", "live": true, "size": 10, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "segoeui.ttf"},
+        {"id": "b/i1", "type": "image", "x": 80, "y": 50, "w": 20, "h": 20, "opacity": 1, "clip": [0, 50, 100, 90], "groups": [], "src": "widgets/gauge/media/icon-33faa789.png", "keep_aspect": true, "tint": "#ff7a1a"},
+        {"id": "b/i2", "type": "image", "x": 80, "y": 70, "w": 20, "h": 20, "opacity": 1, "clip": [0, 50, 100, 90], "groups": [], "src": "widgets/gauge/media/photo-01f61b9c.png", "keep_aspect": false, "tint": null},
+        {"id": "v/background", "type": "shape", "x": 0, "y": 100, "w": 100, "h": 40, "opacity": 1, "clip": [0, 100, 100, 140], "groups": [], "shape": "rect", "radius": 0, "color": "#00ff00", "stroke_width": null, "stroke_color": null, "crisp": true},
+        {"id": "v/p", "type": "shape", "x": 0, "y": 100, "w": 100, "h": 40, "opacity": 1, "clip": [0, 100, 100, 140], "groups": [], "shape": "rect", "radius": 4, "color": "#ff7a1a", "stroke_width": 2, "stroke_color": "#00ff00", "crisp": false},
+        {"id": "v/q", "type": "shape", "x": 0, "y": 100, "w": 10, "h": 10, "opacity": 1, "clip": [0, 100, 100, 140], "groups": [], "shape": "rect", "radius": 0, "color": "#ffffff", "stroke_width": 1, "stroke_color": "#ffffff", "crisp": false},
+        {"id": "v/t1", "type": "text", "x": 4, "y": 104, "opacity": 1, "clip": [0, 100, 100, 140], "groups": [], "text": "{{$x}}: {pc.cpu.temp:d}°C", "live": true, "size": 12, "outline_width": 1, "color": "#ff7a1a", "outline_color": "#000000", "font": "bahnschrift.ttf"},
+        {"id": "v/t2", "type": "text", "x": 4, "y": 120, "opacity": 1, "clip": [0, 100, 100, 140], "groups": [], "text": "{$label} {$nope} {$accent}", "live": false, "size": 10, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "segoeui.ttf"},
+        {"id": "v/t3", "type": "text", "x": 50, "y": 104, "opacity": 1, "clip": [0, 100, 100, 140], "groups": [], "text": "{pc.cpu.temp:d}", "live": true, "size": 10, "outline_width": 1, "color": "#ffffff", "outline_color": "#ffffff", "font": "segoeui.ttf"},
+        {"id": "v/t4", "type": "text", "x": 50, "y": 120, "opacity": 1, "clip": [0, 100, 100, 140], "groups": [], "text": "{pc.cpu.temp}", "live": true, "size": 10, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "segoeui.ttf"},
+        {"id": "v/i1", "type": "image", "x": 80, "y": 100, "w": 20, "h": 20, "opacity": 1, "clip": [0, 100, 100, 140], "groups": [], "src": "widgets/gauge/media/icon-33faa789.png", "keep_aspect": true, "tint": "#ff7a1a"},
+        {"id": "v/i2", "type": "image", "x": 80, "y": 120, "w": 20, "h": 20, "opacity": 1, "clip": [0, 100, 100, 140], "groups": [], "src": "widgets/gauge/media/photo-01f61b9c.png", "keep_aspect": false, "tint": null}
+      ]
+    }
+  ],
+  "global": {
+    "leaves": []
+  }
+}

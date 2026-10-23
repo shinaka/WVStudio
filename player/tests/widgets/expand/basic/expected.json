@@ -1,0 +1,25 @@
+{
+  "scenes": [
+    {
+      "id": "s1",
+      "placement": {"on_top": false, "cut": null},
+      "leaves": [
+        {"id": "c/background", "type": "shape", "x": 10, "y": 20, "w": 15, "h": 15, "opacity": 1, "clip": [10, 20, 25, 35], "groups": [["c", 0.5, [10, 20, 25, 35]]], "shape": "rect", "radius": 0, "color": "#102030", "stroke_width": null, "stroke_color": null, "crisp": true},
+        {"id": "c/r", "type": "shape", "x": 12, "y": 22, "w": 4, "h": 4, "opacity": 0.8, "clip": [10, 20, 25, 35], "groups": [["c", 0.5, [10, 20, 25, 35]], ["c/l1", 0.5, [10, 20, 25, 35]]], "shape": "rect", "radius": 3, "color": "#ffffff", "stroke_width": 3, "stroke_color": "#000000", "crisp": false},
+        {"id": "c/i", "type": "image", "x": 15, "y": 20, "w": 7, "h": 8, "opacity": 1, "clip": [10, 20, 25, 35], "groups": [["c", 0.5, [10, 20, 25, 35]], ["c/l1", 0.5, [10, 20, 25, 35]]], "src": "widgets/badge/media/a-61fc9721.png", "keep_aspect": false, "tint": null},
+        {"id": "c/t", "type": "text", "x": 13, "y": 25, "opacity": 1, "clip": [10, 20, 25, 35], "groups": [["c", 0.5, [10, 20, 25, 35]], ["c/l1", 0.5, [10, 20, 25, 35]]], "text": "Hi {$x}", "live": false, "size": 15, "outline_width": 1.5, "color": "#ffffff", "outline_color": "#000000", "font": "segoeui.ttf"},
+        {"id": "c/n", "type": "shape", "x": 9, "y": 20, "w": 3, "h": 3, "opacity": 1, "clip": [10, 20, 25, 35], "groups": [["c", 0.5, [10, 20, 25, 35]], ["c/l1", 0.5, [10, 20, 25, 35]]], "shape": "rect", "radius": 0, "color": "#00ff00", "stroke_width": null, "stroke_color": null, "crisp": true},
+        {"id": "d/background", "type": "shape", "x": -3, "y": 0, "w": 15, "h": 15, "opacity": 1, "clip": [-3, 0, 12, 15], "groups": [], "shape": "rect", "radius": 0, "color": "#102030", "stroke_width": null, "stroke_color": null, "crisp": true},
+        {"id": "d/r", "type": "shape", "x": -1, "y": 2, "w": 4, "h": 4, "opacity": 0.8, "clip": [-3, 0, 12, 15], "groups": [["d/l1", 0.5, [0, 0, 12, 15]]], "shape": "rect", "radius": 3, "color": "#ffffff", "stroke_width": 3, "stroke_color": "#000000", "crisp": false},
+        {"id": "d/i", "type": "image", "x": 2, "y": 0, "w": 7, "h": 8, "opacity": 1, "clip": [-3, 0, 12, 15], "groups": [["d/l1", 0.5, [0, 0, 12, 15]]], "src": "widgets/badge/media/a-61fc9721.png", "keep_aspect": false, "tint": null},
+        {"id": "d/t", "type": "text", "x": 0, "y": 5, "opacity": 1, "clip": [-3, 0, 12, 15], "groups": [["d/l1", 0.5, [0, 0, 12, 15]]], "text": "Hi {$x}", "live": false, "size": 15, "outline_width": 1.5, "color": "#ffffff", "outline_color": "#000000", "font": "segoeui.ttf"},
+        {"id": "d/n", "type": "shape", "x": -4, "y": 0, "w": 3, "h": 3, "opacity": 1, "clip": [-3, 0, 12, 15], "groups": [["d/l1", 0.5, [0, 0, 12, 15]]], "shape": "rect", "radius": 0, "color": "#00ff00", "stroke_width": null, "stroke_color": null, "crisp": true},
+        {"id": "e/u", "type": "text", "x": 4, "y": 60, "opacity": 1, "clip": [3, 60, 5, 62], "groups": [], "text": ".", "live": false, "size": 2, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "segoeui.ttf"},
+        {"id": "f/u", "type": "text", "x": 4, "y": 40, "opacity": 1, "clip": [0, 40, 10, 50], "groups": [], "text": ".", "live": false, "size": 10, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "segoeui.ttf"}
+      ]
+    }
+  ],
+  "global": {
+    "leaves": []
+  }
+}

@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "name": "Fine",
+  "description": "",
+  "w": 10,
+  "h": 10,
+  "background": null,
+  "fonts": {},
+  "inputs": [],
+  "layers": [
+    {
+      "id": "l1",
+      "name": "l1",
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "objects": [
+        {
+          "id": "a",
+          "type": "shape",
+          "shape": "rect",
+          "x": 0,
+          "y": 0,
+          "w": 5,
+          "h": 5,
+          "fill": {
+            "type": "solid",
+            "color": "#00ff00"
+          },
+          "crisp": true
+        },
+        {
+          "id": "inner",
+          "type": "widget",
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "x": 5,
+          "y": 5,
+          "w": 5,
+          "h": 5,
+          "scale": 1,
+          "widget": "gone"
+        },
+        {
+          "id": "inner2",
+          "type": "widget",
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "x": 5,
+          "y": 5,
+          "w": 5,
+          "h": 5,
+          "scale": 1,
+          "widget": "newer"
+        },
+        {
+          "id": "b",
+          "type": "shape",
+          "shape": "rect",
+          "x": 5,
+          "y": 0,
+          "w": 5,
+          "h": 5,
+          "fill": {
+            "type": "solid",
+            "color": "#0000ff"
+          },
+          "crisp": true
+        }
+      ]
+    }
+  ]
+}

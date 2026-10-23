@@ -1,0 +1,201 @@
+[
+  {
+    "text": "{ }",
+    "live": false,
+    "plain": "{ }"
+  },
+  {
+    "text": "{:d}",
+    "live": false,
+    "plain": "{:d}"
+  },
+  {
+    "text": "{|x}",
+    "live": false,
+    "plain": "{|x}"
+  },
+  {
+    "text": "{a\nb}",
+    "live": false,
+    "plain": "{a\nb}"
+  },
+  {
+    "text": "{x}}",
+    "live": true,
+    "plain": "--}"
+  },
+  {
+    "text": "{{$x}}",
+    "live": false,
+    "plain": "{$x}"
+  },
+  {
+    "text": "{$label}",
+    "live": true,
+    "plain": "--"
+  },
+  {
+    "text": "",
+    "live": false,
+    "plain": ""
+  },
+  {
+    "text": "CPU",
+    "live": false,
+    "plain": "CPU"
+  },
+  {
+    "text": "{pc.cpu.temp:d}°C",
+    "live": true,
+    "plain": "--°C"
+  },
+  {
+    "text": "{pc.cpu.temp:d|?}°C",
+    "live": true,
+    "plain": "?°C"
+  },
+  {
+    "text": "{a|b|c}",
+    "live": true,
+    "plain": "b|c"
+  },
+  {
+    "text": "{{pc.cpu.temp}}",
+    "live": false,
+    "plain": "{pc.cpu.temp}"
+  },
+  {
+    "text": "{{{pc.cpu.temp}}}",
+    "live": true,
+    "plain": "{--}"
+  },
+  {
+    "text": "}}{{",
+    "live": false,
+    "plain": "}{"
+  },
+  {
+    "text": "{ pc.cpu.temp }",
+    "live": true,
+    "plain": "--"
+  },
+  {
+    "text": "{a{b}",
+    "live": true,
+    "plain": "{a--"
+  },
+  {
+    "text": "{$a\rb}",
+    "live": true,
+    "plain": "--"
+  },
+  {
+    "text": "{\r}",
+    "live": false,
+    "plain": "{\r}"
+  },
+  {
+    "text": "{\ufeff}",
+    "live": true,
+    "plain": "--",
+    "note": "Rust's str::trim keeps U+FEFF (JS's trim would remove it)"
+  },
+  {
+    "text": "{\u00a0}",
+    "live": false,
+    "plain": "{\u00a0}"
+  },
+  {
+    "text": "{\u0085}",
+    "live": false,
+    "plain": "{\u0085}",
+    "note": "Rust's str::trim removes U+0085 (JS's trim keeps it)"
+  },
+  {
+    "text": "{x| y }",
+    "live": true,
+    "plain": " y ",
+    "note": "the fallback isn't trimmed"
+  },
+  {
+    "text": "a{x|}b",
+    "live": true,
+    "plain": "ab"
+  },
+  {
+    "text": "{:}",
+    "live": false,
+    "plain": "{:}"
+  },
+  {
+    "text": "{x:}",
+    "live": true,
+    "plain": "--"
+  },
+  {
+    "text": "{{",
+    "live": false,
+    "plain": "{"
+  },
+  {
+    "text": "}",
+    "live": false,
+    "plain": "}"
+  },
+  {
+    "text": "{",
+    "live": false,
+    "plain": "{"
+  },
+  {
+    "text": "{x}{y}",
+    "live": true,
+    "plain": "----"
+  },
+  {
+    "text": "{x\n}",
+    "live": false,
+    "plain": "{x\n}"
+  },
+  {
+    "text": "x{{{pc.cpu.temp}",
+    "live": true,
+    "plain": "x{--"
+  },
+  {
+    "text": "5}}}",
+    "live": false,
+    "plain": "5}}"
+  },
+  {
+    "text": "{{ }}",
+    "live": false,
+    "plain": "{ }"
+  },
+  {
+    "text": "{ :d}",
+    "live": false,
+    "plain": "{ :d}"
+  },
+  {
+    "text": "{x:d|}",
+    "live": true,
+    "plain": ""
+  },
+  {
+    "text": "{|}",
+    "live": false,
+    "plain": "{|}"
+  },
+  {
+    "text": "{ x : d | f }",
+    "live": true,
+    "plain": " f "
+  },
+  {
+    "text": "x{pc.cpu.te",
+    "live": false,
+    "plain": "x{pc.cpu.te",
+    "note": "a placeholder cut part way by a text limit (docs/widgets.md, Limits) shows as written"
+  }
+]

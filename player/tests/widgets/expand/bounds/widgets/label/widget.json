@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "name": "Label",
+  "description": "",
+  "w": 100,
+  "h": 20,
+  "background": null,
+  "fonts": {},
+  "inputs": [
+    {
+      "id": "v",
+      "name": "v",
+      "type": "text",
+      "default": "v"
+    }
+  ],
+  "layers": [
+    {
+      "id": "l1",
+      "name": "l1",
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "objects": [
+        {
+          "id": "t",
+          "type": "text",
+          "text": "{$v}",
+          "x": 0,
+          "y": 0,
+          "size": 10
+        }
+      ]
+    }
+  ]
+}

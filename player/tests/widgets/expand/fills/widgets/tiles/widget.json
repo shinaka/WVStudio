@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "name": "Tiles",
+  "description": "",
+  "w": 20,
+  "h": 10,
+  "background": null,
+  "fonts": {},
+  "inputs": [],
+  "layers": [
+    {
+      "id": "l1",
+      "name": "l1",
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "objects": [
+        {
+          "id": "t",
+          "type": "image",
+          "src": "media/tile-9866f247.png",
+          "x": 2,
+          "y": 2,
+          "w": 4,
+          "h": 4,
+          "smooth": false,
+          "fill": "tile"
+        },
+        {
+          "id": "m",
+          "type": "image",
+          "src": "media/tile-9866f247.png",
+          "x": 8,
+          "y": 2,
+          "w": 4,
+          "h": 3,
+          "smooth": false,
+          "fill": "mirror"
+        },
+        {
+          "id": "e",
+          "type": "image",
+          "src": "media/tile-9866f247.png",
+          "x": 14,
+          "y": 2,
+          "w": 4,
+          "h": 4,
+          "smooth": false,
+          "fill": "extend"
+        },
+        {
+          "id": "o",
+          "type": "image",
+          "src": "media/tile-9866f247.png",
+          "x": -10,
+          "y": -10,
+          "w": 4,
+          "h": 4,
+          "smooth": false,
+          "fill": "extend"
+        },
+        {
+          "id": "n",
+          "type": "image",
+          "src": "media/tile-9866f247.png",
+          "x": 18,
+          "y": 8,
+          "w": 4,
+          "h": 4,
+          "smooth": false,
+          "fill": "none"
+        }
+      ]
+    }
+  ]
+}

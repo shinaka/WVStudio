@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "name": "Note",
+  "description": "",
+  "w": 100,
+  "h": 30,
+  "background": null,
+  "fonts": {},
+  "inputs": [],
+  "layers": [
+    {
+      "id": "l1",
+      "name": "l1",
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "objects": [
+        {
+          "id": "t",
+          "type": "text",
+          "text": "Fixed {{text}}",
+          "size": 12,
+          "color": "#ffffff",
+          "x": 50,
+          "y": 15,
+          "align": "center",
+          "valign": "middle",
+          "outline": {
+            "color": "#000000",
+            "width": 1
+          }
+        }
+      ]
+    }
+  ]
+}

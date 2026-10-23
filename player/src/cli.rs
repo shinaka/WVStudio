@@ -9,7 +9,7 @@ use image::ImageFormat;
 
 use crate::panel::Panel;
 use crate::player::{log_to, play};
-use crate::playlist::Widget;
+use crate::playlist::Text;
 use crate::{art, data, playlist, scene};
 
 const USAGE: &str = "\
@@ -32,10 +32,17 @@ wvplay: drives the Thermalright Wonder Vision 360 screen directly, without TRCC.
   wvplay data <playlist.json> [--serve]
                               poll each source in the data.json beside the playlist once, and print the
                               values. --serve: carry on polling, and serve the local API, as `play` does
+  wvplay features             print what this build can do (`widgets 1`: it draws widgets)
   wvplay info                 handshake and print what the panel reports
   wvplay send <file.jpg> <width> <height> [--repeat N] [--seconds S] [--fps F]
                               send a ready-made JPEG (for testing the panel)
 ";
+
+/// What `wvplay features` prints: one `<feature> <version>` per line. The studio reads it to tell a
+/// player built before widgets (docs/widgets.md, Compatibility).
+pub fn features() -> String {
+    "widgets 1\n".to_string()
+}
 
 fn option(args: &[String], name: &str) -> Result<Option<f64>, Box<dyn Error>> {
     match args.iter().position(|a| a == name) {
@@ -85,7 +92,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
             let time = Duration::from_millis(option(args, "--time")?.unwrap_or(0.0).max(0.0) as u64);
             let start = Instant::now();
             // live text with the values the player has now; without a player, only the time
-            let live: Vec<Widget> = scene.layers.iter().chain(&playlist.global).flat_map(|l| l.live().collect::<Vec<_>>()).collect();
+            let live: Vec<Text> = playlist::live_texts(scene, &playlist.global);
             let texts: Vec<String> = live.iter().map(|w| w.text.clone()).collect();
             let filled = match texts.is_empty() {
                 true => Vec::new(),
@@ -94,7 +101,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
                     texts.iter().map(|t| data::resolve(t)).collect()
                 }),
             };
-            let live: Vec<Widget> = live.into_iter().zip(filled).map(|(w, text)| Widget { text, ..w }).collect();
+            let live: Vec<Text> = live.into_iter().zip(filled).map(|(w, text)| Text { text, ..w }).collect();
             for w in &live {
                 println!("live: {:?}", w.text);
             }
@@ -113,6 +120,10 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
             while serve {
                 sleep(Duration::from_secs(3600));
             }
+            Ok(())
+        }
+        Some("features") => {
+            print!("{}", features());
             Ok(())
         }
         Some("info") => {
@@ -147,5 +158,17 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
             print!("{USAGE}");
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The studio looks for exactly this line (docs/widgets.md, Compatibility).
+    #[test]
+    fn features_says_widgets() {
+        assert!(features().lines().any(|l| l == "widgets 1"));
+        assert!(USAGE.contains("wvplay features"));
     }
 }

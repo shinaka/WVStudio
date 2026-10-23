@@ -3,7 +3,7 @@
 A plugin is a folder in `plugins/` (next to `playlist/`) holding `plugin.json` and the program it runs.
 This one shows the current weather from [Open-Meteo](https://open-meteo.com/), which needs no account.
 Turn it on in the studio's **Data sources…** window, set your latitude and longitude, and use
-`{weather.temp}°`, `{weather.desc}` and so on in a text widget.
+`{weather.temp}°`, `{weather.desc}` and so on in a text.
 
 ## plugin.json
 

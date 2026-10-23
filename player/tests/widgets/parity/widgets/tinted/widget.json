@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "name": "Tinted",
+  "description": "",
+  "w": 8,
+  "h": 4,
+  "background": null,
+  "fonts": {},
+  "inputs": [
+    {
+      "id": "accent",
+      "name": "Accent",
+      "type": "color",
+      "default": "#ff0000"
+    }
+  ],
+  "layers": [
+    {
+      "id": "l",
+      "name": "l",
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "objects": [
+        {
+          "id": "ic",
+          "type": "image",
+          "src": "media/icon-33faa789.png",
+          "x": 0,
+          "y": 0,
+          "w": 4,
+          "h": 4,
+          "smooth": false,
+          "fill": "none",
+          "tint": "{$accent}"
+        },
+        {
+          "id": "hf",
+          "type": "image",
+          "src": "media/half-a54fae54.png",
+          "x": 4,
+          "y": 0,
+          "w": 4,
+          "h": 4,
+          "smooth": false,
+          "fill": "none",
+          "tint": "{$accent}"
+        }
+      ]
+    }
+  ]
+}

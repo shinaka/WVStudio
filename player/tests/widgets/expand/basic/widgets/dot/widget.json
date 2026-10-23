@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "name": "Dot",
+  "description": "",
+  "w": 2,
+  "h": 2,
+  "background": null,
+  "fonts": {},
+  "inputs": [],
+  "layers": [
+    {
+      "id": "l1",
+      "name": "l1",
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "objects": [
+        {
+          "id": "u",
+          "type": "text",
+          "text": ".",
+          "x": 0.7,
+          "y": 0,
+          "size": 2
+        }
+      ]
+    }
+  ]
+}

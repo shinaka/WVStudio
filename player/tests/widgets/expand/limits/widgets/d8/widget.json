@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "name": "Depth 8",
+  "description": "",
+  "w": 20,
+  "h": 20,
+  "background": null,
+  "fonts": {},
+  "inputs": [],
+  "layers": [
+    {
+      "id": "l",
+      "name": "l",
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "objects": [
+        {
+          "id": "r",
+          "type": "shape",
+          "shape": "rect",
+          "x": 0,
+          "y": 0,
+          "w": 1,
+          "h": 1,
+          "fill": {
+            "type": "solid",
+            "color": "#ffffff"
+          }
+        },
+        {
+          "id": "n",
+          "type": "widget",
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "x": 1,
+          "y": 1,
+          "w": 20,
+          "h": 20,
+          "scale": 1,
+          "widget": "d9"
+        }
+      ]
+    }
+  ]
+}

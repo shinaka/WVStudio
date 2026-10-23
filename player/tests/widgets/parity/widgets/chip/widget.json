@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "name": "Chip",
+  "description": "",
+  "w": 4,
+  "h": 4,
+  "background": null,
+  "fonts": {},
+  "inputs": [],
+  "layers": [
+    {
+      "id": "l",
+      "name": "l",
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "objects": [
+        {
+          "id": "bm",
+          "type": "image",
+          "src": "media/chip-2f03d674.bmp",
+          "x": 0,
+          "y": 0,
+          "w": 4,
+          "h": 4,
+          "smooth": false,
+          "fill": "none"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,245 @@
+{
+  "version": 2,
+  "seconds": 30,
+  "global": {
+    "layers": [
+      {
+        "id": "g",
+        "name": "g",
+        "visible": true,
+        "locked": false,
+        "opacity": 1.0,
+        "objects": [
+          {
+            "id": "g1",
+            "type": "widget",
+            "visible": true,
+            "locked": false,
+            "opacity": 1.0,
+            "x": 0,
+            "y": 0,
+            "w": 10,
+            "h": 10,
+            "scale": 1,
+            "widget": "newer"
+          },
+          {
+            "id": "g2",
+            "type": "widget",
+            "visible": true,
+            "locked": false,
+            "opacity": 1.0,
+            "x": 0,
+            "y": 100,
+            "w": 10,
+            "h": 10,
+            "scale": 1,
+            "widget": "fine"
+          }
+        ]
+      }
+    ]
+  },
+  "scenes": [
+    {
+      "id": "s1",
+      "name": "s1",
+      "seconds": 30,
+      "background": "#000000",
+      "layers": [
+        {
+          "id": "l1",
+          "name": "l1",
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "objects": [
+            {
+              "id": "before",
+              "type": "shape",
+              "shape": "rect",
+              "x": 0,
+              "y": 0,
+              "w": 4,
+              "h": 4,
+              "fill": {
+                "type": "solid",
+                "color": "#ffffff"
+              },
+              "crisp": true
+            },
+            {
+              "id": "m1",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 10,
+              "y": 10,
+              "w": 10,
+              "h": 10,
+              "scale": 1,
+              "widget": "gone"
+            },
+            {
+              "id": "m2",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 10,
+              "y": 10,
+              "w": 10,
+              "h": 10,
+              "scale": 1,
+              "widget": "cpu-badge"
+            },
+            {
+              "id": "m3",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 10,
+              "y": 10,
+              "w": 10,
+              "h": 10,
+              "scale": 1,
+              "widget": "../x"
+            },
+            {
+              "id": "m4",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 10,
+              "y": 10,
+              "w": 10,
+              "h": 10,
+              "scale": 1,
+              "widget": "Gauge"
+            },
+            {
+              "id": "m5",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 10,
+              "y": 10,
+              "w": 10,
+              "h": 10,
+              "scale": 1,
+              "widget": "con"
+            },
+            {
+              "id": "m6",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 10,
+              "y": 10,
+              "w": 10,
+              "h": 10,
+              "scale": 1,
+              "widget": "broken"
+            },
+            {
+              "id": "m7",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 10,
+              "y": 10,
+              "w": 10,
+              "h": 10,
+              "scale": 1,
+              "widget": "newer"
+            },
+            {
+              "id": "m8",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 10,
+              "y": 10,
+              "w": 10,
+              "h": 10,
+              "scale": 1
+            },
+            {
+              "id": "m9",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 10,
+              "y": 10,
+              "w": 10,
+              "h": 10,
+              "scale": 1,
+              "widget": "listed"
+            },
+            {
+              "id": "m10",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 10,
+              "y": 10,
+              "w": 10,
+              "h": 10,
+              "scale": 1,
+              "widget": "hollow"
+            },
+            {
+              "id": "m11",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 10,
+              "y": 10,
+              "w": 10,
+              "h": 10,
+              "scale": 1,
+              "widget": "heavy"
+            },
+            {
+              "id": "ok",
+              "type": "widget",
+              "visible": true,
+              "locked": false,
+              "opacity": 1.0,
+              "x": 20,
+              "y": 0,
+              "w": 10,
+              "h": 10,
+              "scale": 1,
+              "widget": "fine"
+            },
+            {
+              "id": "after",
+              "type": "shape",
+              "shape": "rect",
+              "x": 40,
+              "y": 0,
+              "w": 4,
+              "h": 4,
+              "fill": {
+                "type": "solid",
+                "color": "#ffffff"
+              },
+              "crisp": true
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

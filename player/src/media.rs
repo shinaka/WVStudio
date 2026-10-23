@@ -26,6 +26,11 @@ const VIDEO_MAX_SECONDS: f64 = 60.0;
 const SOURCE_BYTES: usize = 512 << 20;
 /// Scaled frames kept in memory.
 const SCALED_BYTES: usize = 384 << 20;
+/// An image whose header says it's wider or taller than this isn't decoded: media from a shared widget is
+/// untrusted, and nothing made for a 1600x720 panel comes near it.
+const MAX_SIDE: u32 = 16384;
+/// An animation is refused once its decoded frames take more than this.
+const MAX_FRAMES_BYTES: usize = 2 << 30;
 
 type Stamp = Option<(SystemTime, u64)>;
 
@@ -82,7 +87,8 @@ pub fn is_video(path: &Path) -> bool {
     path.extension().is_some_and(|e| VIDEO_TYPES.iter().any(|t| e.eq_ignore_ascii_case(t)))
 }
 
-/// How an object shows its file: turned, flipped, then scaled to `w`x`h`.
+/// How an object shows its file: turned, flipped, scaled to `w`x`h`, then tinted. It keys the scaled
+/// frames and the video streams, so a tinted and an untinted view of one file are kept apart.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct View {
     pub rotate: u16,
@@ -90,6 +96,8 @@ pub struct View {
     pub w: u32,
     pub h: u32,
     pub smooth: bool,
+    /// Every pixel then takes this colour, keeping its own alpha (docs/widgets.md, Images in a box).
+    pub tint: Option<[u8; 3]>,
 }
 
 /// Decoded files by path and stamp, with the scaled versions of each view. `used` orders evictions.
@@ -178,18 +186,33 @@ fn decode(path: &Path, ffmpeg: &Path) -> Result<Source, String> {
     Ok(Source { width, height, kind: Kind::Frames(frames) })
 }
 
-fn decode_image(bytes: &[u8]) -> Result<Vec<(Arc<RgbaImage>, Duration)>, Box<dyn std::error::Error>> {
-    let animation = |frames: image::Frames| -> Result<Vec<(Arc<RgbaImage>, Duration)>, Box<dyn std::error::Error>> {
-        let mut out = Vec::new();
-        for f in frames {
-            let f = f?;
-            let (num, den) = f.delay().numer_denom_ms();
-            let ms = num / den.max(1);
-            // like browsers: a GIF delay of 0 or 10 ms means 100 ms
-            out.push((Arc::new(f.into_buffer()), Duration::from_millis(if ms <= 10 { 100 } else { ms.into() })));
+type Frames = Vec<(Arc<RgbaImage>, Duration)>;
+
+/// An animation's frames, refused once they take more than `cap` bytes.
+fn decode_frames(frames: image::Frames, cap: usize) -> Result<Frames, Box<dyn std::error::Error>> {
+    let mut out = Vec::new();
+    let mut size = 0;
+    for f in frames {
+        let f = f?;
+        let (num, den) = f.delay().numer_denom_ms();
+        let ms = num / den.max(1);
+        let im = f.into_buffer();
+        size += im.len();
+        if size > cap {
+            return Err(format!("its frames take more than {} MiB", cap >> 20).into());
         }
-        Ok(out)
-    };
+        // like browsers: a GIF delay of 0 or 10 ms means 100 ms
+        out.push((Arc::new(im), Duration::from_millis(if ms <= 10 { 100 } else { ms.into() })));
+    }
+    Ok(out)
+}
+
+fn decode_image(bytes: &[u8]) -> Result<Frames, Box<dyn std::error::Error>> {
+    let (w, h) = image::ImageReader::new(IoCursor::new(bytes)).with_guessed_format()?.into_dimensions()?;
+    if w > MAX_SIDE || h > MAX_SIDE {
+        return Err(format!("it says it's {w}x{h}, bigger than {MAX_SIDE}x{MAX_SIDE}").into());
+    }
+    let animation = |frames| decode_frames(frames, MAX_FRAMES_BYTES);
     match image::guess_format(bytes)? {
         ImageFormat::Gif => animation(GifDecoder::new(IoCursor::new(bytes))?.into_frames()),
         ImageFormat::Png if PngDecoder::new(IoCursor::new(bytes))?.is_apng()? => {
@@ -198,13 +221,81 @@ fn decode_image(bytes: &[u8]) -> Result<Vec<(Arc<RgbaImage>, Duration)>, Box<dyn
         ImageFormat::WebP if WebPDecoder::new(IoCursor::new(bytes))?.has_animation() => {
             animation(WebPDecoder::new(IoCursor::new(bytes))?.into_frames())
         }
-        _ => Ok(vec![(Arc::new(image::load_from_memory(bytes)?.into_rgba8()), Duration::from_secs(1))]),
+        _ => {
+            let mut im = image::load_from_memory(bytes)?.into_rgba8();
+            if let Some(bits) = bmp16(bytes) {
+                as_the_studio_reads(&mut im, bits);
+            }
+            Ok(vec![(Arc::new(im), Duration::from_secs(1))])
+        }
     }
+}
+
+/// The bits of each channel (red, green, blue) of a 16-bit BMP in one of the two layouts the studio reads
+/// (5-6-5 and 5-5-5, which an uncompressed 16-bit BMP is), or None for any other file.
+fn bmp16(bytes: &[u8]) -> Option<[u32; 3]> {
+    let u16_at = |i: usize| Some(u16::from_le_bytes(bytes.get(i..i + 2)?.try_into().ok()?));
+    let u32_at = |i: usize| Some(u32::from_le_bytes(bytes.get(i..i + 4)?.try_into().ok()?));
+    if bytes.get(..2)? != b"BM" || u32_at(14)? < 40 || u16_at(28)? != 16 {
+        return None;
+    }
+    match u32_at(30)? {
+        0 => Some([5, 5, 5]),
+        // BI_BITFIELDS: the masks follow a 40-byte header, and sit at the same place inside a longer one
+        3 => match (u32_at(54)?, u32_at(58)?, u32_at(62)?) {
+            (0xF800, 0x07E0, 0x001F) => Some([5, 6, 5]),
+            (0x7C00, 0x03E0, 0x001F) => Some([5, 5, 5]),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// A 16-bit BMP's pixels as the studio's preview reads them (Pillow, docs/widgets.md, The studio's preview):
+/// each channel widened to 8 bits as `v × 255 ÷ max` rounded down (the image crate rounds to nearest, one
+/// level higher in places), and opaque (Pillow ignores a 16-bit BMP's alpha mask). So the cooler shows the same
+/// pixels as the studio.
+fn as_the_studio_reads(im: &mut RgbaImage, bits: [u32; 3]) {
+    let tables = bits.map(|n| {
+        let max = (1u32 << n) - 1;
+        let mut table = [0u8; 256];
+        for (wide, out) in table.iter_mut().enumerate() {
+            // the channel's own value back from the image crate's widening (exact: its steps are over 4 apart)
+            let v = (wide as u32 * max + 127) / 255;
+            *out = (v * 255 / max) as u8;
+        }
+        table
+    });
+    for p in im.pixels_mut() {
+        for c in 0..3 {
+            p[c] = tables[c][p[c] as usize];
+        }
+        p[3] = 255;
+    }
+}
+
+/// The container a video's extension names. ffmpeg reads the file as that and nothing else, so a file
+/// named `.mp4` that's really a playlist of other files or addresses can't make it open them.
+fn container(path: &Path) -> Option<&'static str> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    match ext.as_str() {
+        "mp4" | "m4v" | "mov" => Some("mov"),
+        "mkv" | "webm" => Some("matroska"),
+        "avi" => Some("avi"),
+        _ => None,
+    }
+}
+
+/// What every ffmpeg run on a media file starts with: local files only, read as its extension's container.
+fn input(path: &Path) -> Result<[&'static str; 4], String> {
+    let format = container(path).ok_or("ffmpeg only reads .mp4, .m4v, .mov, .webm, .mkv and .avi files")?;
+    Ok(["-protocol_whitelist", "file", "-f", format])
 }
 
 /// A video's size and length in seconds, from what ffmpeg prints about it.
 fn probe(path: &Path, ffmpeg: &Path) -> Result<(u32, u32, f64), String> {
     let out = Command::new(ffmpeg)
+        .args(input(path)?)
         .arg("-i")
         .arg(path)
         .stdin(Stdio::null())
@@ -212,21 +303,42 @@ fn probe(path: &Path, ffmpeg: &Path) -> Result<(u32, u32, f64), String> {
         .stderr(Stdio::piped())
         .output()
         .map_err(|e| format!("couldn't run ffmpeg ({}): {e}", ffmpeg.display()))?;
-    let text = String::from_utf8_lossy(&out.stderr);
-    let dims = text.lines().find(|l| l.contains("Video:")).and_then(|line| {
-        line.split(|c: char| c == ',' || c == ' ').find_map(|tok| {
+    probed(&String::from_utf8_lossy(&out.stderr))
+}
+
+/// The size of the first video stream, as ffmpeg decodes it (turned, when the file says it's turned a
+/// quarter, as a phone's video is), and the length in seconds, from what `ffmpeg -i` prints.
+fn probed(text: &str) -> Result<(u32, u32, f64), String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let video = lines.iter().position(|l| l.contains("Video:"));
+    let dims = video.and_then(|at| {
+        lines[at].split(|c: char| c == ',' || c == ' ').find_map(|tok| {
             let (w, h) = tok.split_once('x')?;
             Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?))
         })
     });
-    let seconds = text.lines().find_map(|l| l.trim().strip_prefix("Duration: ")).and_then(|rest| {
+    // its metadata and side data follow it, up to the next stream: `rotate : 90` from older ffmpegs,
+    // `displaymatrix: rotation of -90.00 degrees` (`Display Matrix: …` from 7.1 on)
+    let turned = video.is_some_and(|at| {
+        lines[at + 1..].iter().take_while(|l| !l.trim_start().starts_with("Stream #")).any(|l| {
+            let Some((key, value)) = l.split_once(':') else { return false };
+            let key: String = key.chars().filter(|c| !c.is_whitespace()).collect::<String>().to_ascii_lowercase();
+            let angle = match key.as_str() {
+                "displaymatrix" => value.trim().strip_prefix("rotation of ").and_then(|rest| rest.split_whitespace().next()),
+                "rotate" => Some(value.trim()),
+                _ => None,
+            };
+            angle.and_then(|a| a.parse::<f64>().ok()).is_some_and(|a| (a.round() as i64).rem_euclid(180) == 90)
+        })
+    });
+    let seconds = lines.iter().find_map(|l| l.trim().strip_prefix("Duration: ")).and_then(|rest| {
         let t = rest.split(',').next()?.trim();
         let mut parts = t.split(':');
         let (h, m, s) = (parts.next()?.parse::<f64>().ok()?, parts.next()?.parse::<f64>().ok()?, parts.next()?.parse::<f64>().ok()?);
         Some(h * 3600.0 + m * 60.0 + s)
     });
     match (dims, seconds) {
-        (Some((w, h)), Some(s)) if w > 0 && h > 0 => Ok((w, h, s)),
+        (Some((w, h)), Some(s)) if w > 0 && h > 0 => Ok(if turned { (h, w, s) } else { (w, h, s) }),
         _ => Err(format!("ffmpeg can't read it: {}", text.lines().last().unwrap_or("").trim())),
     }
 }
@@ -258,8 +370,11 @@ impl Stream {
             filters.push(format!("scale={width}:{height}:flags=lanczos"));
         }
         filters.push("format=rgba".into());
+        // the size probe gave is the turned one, as ffmpeg turns the frames it decodes
         let mut child = Command::new(ffmpeg)
-            .args(["-v", "error", "-t", &VIDEO_MAX_SECONDS.to_string(), "-i"])
+            .args(["-v", "error", "-t", &VIDEO_MAX_SECONDS.to_string()])
+            .args(input(path)?)
+            .arg("-i")
             .arg(path)
             .args(["-an", "-vf", &filters.join(","), "-f", "rawvideo", "-pix_fmt", "rgba", "-"])
             .stdin(Stdio::null())
@@ -318,8 +433,8 @@ impl Cursor {
         Cursor { source: source.clone(), view, scaled, video, last: None }
     }
 
-    /// Frame `index` as the object shows it. Past the end of a video (which may be a frame shorter than
-    /// its length says), the last frame stays.
+    /// Frame `index` as the object shows it: exactly `view.w` x `view.h`, with the tint applied last.
+    /// Past the end of a video (which may be a frame shorter than its length says), the last frame stays.
     pub fn frame(&mut self, index: usize) -> Arc<RgbaImage> {
         if let Some((at, im)) = &self.last
             && *at == index
@@ -381,7 +496,7 @@ impl Cursor {
     }
 }
 
-/// The file's pixels turned, flipped and scaled as the object shows them.
+/// The file's pixels turned, flipped, scaled and tinted as the object shows them.
 pub fn transform(im: &RgbaImage, view: View) -> RgbaImage {
     let turned = match view.rotate {
         90 => imageops::rotate90(im),
@@ -391,12 +506,24 @@ pub fn transform(im: &RgbaImage, view: View) -> RgbaImage {
     };
     let turned = if view.flip { imageops::flip_horizontal(&turned) } else { turned };
     let (w, h) = (view.w.max(1), view.h.max(1));
-    if turned.dimensions() == (w, h) {
+    let mut out = if turned.dimensions() == (w, h) {
         turned
     } else if view.smooth {
         imageops::resize(&turned, w, h, FilterType::Lanczos3)
     } else {
         scale_nearest(&turned, w, h)
+    };
+    if let Some(colour) = view.tint {
+        tint(&mut out, colour);
+    }
+    out
+}
+
+/// Every pixel takes `colour` and keeps its own alpha, so a white or black icon on a transparent
+/// background becomes an icon in that colour. Applied to the final pixels, after the one resample.
+fn tint(im: &mut RgbaImage, colour: [u8; 3]) {
+    for p in im.pixels_mut() {
+        p.0 = [colour[0], colour[1], colour[2], p[3]];
     }
 }
 
@@ -422,6 +549,66 @@ mod tests {
     use super::*;
     use image::Rgba;
 
+    /// A 4 x 2 16-bit BMP of `values` (top row first): uncompressed (5-5-5), or BI_BITFIELDS with `masks` after
+    /// a 40-byte header, or inside a 124-byte one when they include alpha.
+    fn bmp16_file(values: &[u16; 8], masks: Option<[u32; 4]>) -> Vec<u8> {
+        let mut pixels = Vec::new();
+        for y in (0..2).rev() {
+            for x in 0..4 {
+                pixels.extend_from_slice(&values[y * 4 + x].to_le_bytes());
+            }
+        }
+        let header: u32 = if masks.is_some_and(|m| m[3] != 0) { 124 } else { 40 };
+        let mut info = Vec::new();
+        info.extend_from_slice(&header.to_le_bytes());
+        info.extend_from_slice(&4i32.to_le_bytes());
+        info.extend_from_slice(&2i32.to_le_bytes());
+        info.extend_from_slice(&1u16.to_le_bytes());
+        info.extend_from_slice(&16u16.to_le_bytes());
+        info.extend_from_slice(&(if masks.is_some() { 3u32 } else { 0 }).to_le_bytes());
+        info.extend_from_slice(&(pixels.len() as u32).to_le_bytes());
+        info.extend_from_slice(&[0; 16]);
+        if let Some(m) = masks {
+            let n = if header == 40 { 3 } else { 4 };
+            m[..n].iter().for_each(|v| info.extend_from_slice(&v.to_le_bytes()));
+        }
+        info.resize(14 + info.len().max(header as usize) - 14, 0);
+        let off = 14 + info.len() as u32;
+        let mut file = b"BM".to_vec();
+        file.extend_from_slice(&(off + pixels.len() as u32).to_le_bytes());
+        file.extend_from_slice(&[0; 4]);
+        file.extend_from_slice(&off.to_le_bytes());
+        file.extend(info);
+        file.extend(pixels);
+        file
+    }
+
+    /// A 16-bit BMP gives the pixels the studio's preview draws (Pillow 12 read the same files to these values):
+    /// channels widened rounding down, and opaque. The image crate alone rounds to nearest: (66, 162, 33) where
+    /// the studio shows (65, 161, 32), the parity review found. Another 16-bit layout is left as the crate reads it.
+    #[test]
+    fn bmp16_as_the_studio_reads_it() {
+        let values = [0x0000, 0x8421, 0x7FFF, 0xFFFF, 0x1234, 0x8000, 0x4210, 0x3C0F];
+        let rgb = |file: Vec<u8>| -> Vec<[u8; 4]> { decode_image(&file).unwrap()[0].0.pixels().map(|p| p.0).collect() };
+        let opaque = |l: [[u8; 3]; 8]| -> Vec<[u8; 4]> { l.iter().map(|[r, g, b]| [*r, *g, *b, 255]).collect() };
+        let five = opaque([[0, 0, 0], [8, 8, 8], [255, 255, 255], [255, 255, 255], [32, 139, 164], [0, 0, 0], [131, 131, 131], [123, 0, 123]]);
+        assert_eq!(rgb(bmp16_file(&values, None)), five, "uncompressed 5-5-5");
+        assert_eq!(rgb(bmp16_file(&values, Some([0x7C00, 0x03E0, 0x001F, 0]))), five, "5-5-5 bitfields");
+        // a 1-5-5-5 alpha mask in a V5 header: ignored, as the studio ignores it
+        assert_eq!(rgb(bmp16_file(&values, Some([0x7C00, 0x03E0, 0x001F, 0x8000]))), five, "1-5-5-5");
+        let six = opaque([[0, 0, 0], [131, 133, 8], [123, 255, 255], [255, 255, 255], [16, 68, 164], [131, 0, 0], [65, 64, 131], [57, 129, 123]]);
+        assert_eq!(rgb(bmp16_file(&values, Some([0xF800, 0x07E0, 0x001F, 0]))), six, "5-6-5");
+        assert_eq!(bmp16(&bmp16_file(&values, Some([0x0F00, 0x00F0, 0x000F, 0]))), None, "4-4-4 isn't one the studio reads");
+        // every 5- and 6-bit value, against Pillow's rule
+        for (bits, max) in [(5, 31u32), (6, 63)] {
+            for v in 0..=max {
+                let file = bmp16_file(&[(v << if bits == 6 { 5 } else { 11 }) as u16; 8], Some([0xF800, 0x07E0, 0x001F, 0]));
+                let p = rgb(file)[0];
+                assert_eq!(p[if bits == 6 { 1 } else { 0 }] as u32, v * 255 / max, "{bits}-bit {v}");
+            }
+        }
+    }
+
     /// Each pixel picks its source by the exact rule, checked against a plain float version.
     #[test]
     fn nearest_matches_the_rule() {
@@ -438,13 +625,166 @@ mod tests {
         }
     }
 
+    /// A scratch folder of its own for one test.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("wvplay-media-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// The ffmpeg tests may run (`WV_TEST_FFMPEG`), or None, said out loud, when there isn't one.
+    fn test_ffmpeg(test: &str) -> Option<PathBuf> {
+        let ffmpeg = std::env::var_os("WV_TEST_FFMPEG").map(PathBuf::from).filter(|p| p.is_file());
+        if ffmpeg.is_none() {
+            eprintln!("{test}: SKIPPED, set WV_TEST_FFMPEG to an ffmpeg to run it");
+        }
+        ffmpeg
+    }
+
+    fn gif(frames: &[RgbaImage]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = image::codecs::gif::GifEncoder::new(&mut bytes);
+            for im in frames {
+                encoder.encode_frame(image::Frame::new(im.clone())).unwrap();
+            }
+        }
+        bytes
+    }
+
+    #[test]
+    fn refuses_huge_headers() {
+        let mut bytes = gif(&[RgbaImage::from_pixel(1, 1, Rgba([1, 2, 3, 255]))]);
+        assert_eq!(decode_image(&bytes).unwrap().len(), 1);
+        // the logical screen's width, as a hostile file could claim it
+        bytes[6..8].copy_from_slice(&20000u16.to_le_bytes());
+        let e = decode_image(&bytes).unwrap_err().to_string();
+        assert!(e.contains("20000x1"), "{e}");
+        let dir = scratch("huge");
+        std::fs::write(dir.join("big.gif"), &bytes).unwrap();
+        let e = open(&dir.join("big.gif"), Path::new("ffmpeg")).err().unwrap();
+        assert!(e.contains("bigger than 16384x16384"), "{e}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn animations_are_capped() {
+        let frames = [RgbaImage::from_pixel(4, 4, Rgba([9, 0, 0, 255])), RgbaImage::from_pixel(4, 4, Rgba([0, 9, 0, 255]))];
+        let bytes = gif(&frames);
+        let read = |cap| decode_frames(GifDecoder::new(IoCursor::new(&bytes)).unwrap().into_frames(), cap);
+        // 64 bytes a frame
+        assert_eq!(read(128).unwrap().len(), 2);
+        assert!(read(127).is_err());
+    }
+
+    #[test]
+    fn bmp_decodes() {
+        let src = RgbaImage::from_fn(2, 1, |x, _| Rgba([x as u8 * 200, 10, 20, 255]));
+        let mut bmp = Vec::new();
+        src.write_to(&mut IoCursor::new(&mut bmp), ImageFormat::Bmp).unwrap();
+        let frames = decode_image(&bmp).unwrap();
+        assert_eq!((frames.len(), frames[0].0.get_pixel(1, 0)), (1, &Rgba([200, 10, 20, 255])));
+        // and the parity fixture's, through open()
+        let chip = Path::new(env!("CARGO_MANIFEST_DIR")).join(r"tests\widgets\parity\widgets\chip\media\chip-2f03d674.bmp");
+        let source = open(&chip, Path::new("ffmpeg")).unwrap();
+        assert!(source.width > 0 && source.height > 0 && !source.animated());
+    }
+
+    #[test]
+    fn probe_reads_turned_videos() {
+        // ffmpeg 8.1, for a 16x8 file whose display matrix says it's turned a quarter
+        let now = "Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'turned.mp4':
+  Metadata:
+    major_brand     : isom
+    encoder         : Lavf62.12.102
+  Duration: 00:00:00.52, start: 0.000000, bitrate: 16 kb/s
+  Stream #0:0[0x1](und): Video: mpeg4 (Simple Profile) (mp4v / 0x7634706D), yuv420p, 16x8 [SAR 1:1 DAR 2:1], 1 kb/s, 25 fps, 25 tbr, 12800 tbn (default)
+    Metadata:
+      handler_name    : VideoHandler
+      encoder         : Lavc62.28.102 mpeg4
+    Side data:
+      Display Matrix: rotation of 90.00 degrees
+At least one output file must be specified";
+        assert_eq!(probed(now), Ok((8, 16, 0.52)));
+        // older ffmpegs: a phone's video, with the rotate tag and a lowercase side data line
+        let older = "  Duration: 00:00:02.00, start: 0.000000, bitrate: 9000 kb/s
+    Stream #0:0(und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(tv, bt709), 1920x1080, 9000 kb/s, 30 fps (default)
+    Metadata:
+      rotate          : 90
+      handler_name    : VideoHandle
+    Side data:
+      displaymatrix: rotation of -90.00 degrees
+    Stream #0:1(und): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo";
+        assert_eq!(probed(older), Ok((1080, 1920, 2.0)));
+        let tag_only = older.replace("      displaymatrix: rotation of -90.00 degrees\n", "");
+        assert_eq!(probed(&tag_only), Ok((1080, 1920, 2.0)));
+        let matrix_only = older.replace("      rotate          : 90\n", "");
+        assert_eq!(probed(&matrix_only), Ok((1080, 1920, 2.0)));
+        // half a turn keeps the shape; so does a turn that belongs to another stream
+        assert_eq!(probed(&older.replace("90", "180")), Ok((1920, 1080, 2.0)));
+        let later = "  Duration: 00:00:02.00, start: 0.000000
+    Stream #0:0: Video: h264, yuv420p, 640x480, 30 fps
+    Stream #0:1: Video: mjpeg, 100x100 (attached pic)
+    Side data:
+      displaymatrix: rotation of -90.00 degrees";
+        assert_eq!(probed(later), Ok((640, 480, 2.0)));
+        assert!(probed("Error opening input file x.mp4.").is_err());
+    }
+
+    #[test]
+    fn formats_by_extension() {
+        for (name, format) in [("a.mp4", Some("mov")), ("a.M4V", Some("mov")), ("a.mov", Some("mov")), ("a.mkv", Some("matroska")),
+                               ("a.WebM", Some("matroska")), ("a.avi", Some("avi")), ("a.gif", None), ("mp4", None), ("a.mp4.m3u8", None)] {
+            assert_eq!(container(Path::new(name)), format, "{name}");
+        }
+        assert_eq!(input(Path::new("a.webm")), Ok(["-protocol_whitelist", "file", "-f", "matroska"]));
+        assert!(input(Path::new("a.m3u8")).is_err());
+    }
+
+    /// Videos are read as the container their extension names, at the size ffmpeg decodes them.
+    #[test]
+    fn videos_are_read_as_their_extension_says() {
+        let Some(ffmpeg) = test_ffmpeg("videos_are_read_as_their_extension_says") else { return };
+        let dir = scratch("videos");
+        let make = |args: &[&str]| {
+            let ok = Command::new(&ffmpeg).args(["-v", "error", "-y"]).args(args).current_dir(&dir).status().unwrap().success();
+            assert!(ok, "ffmpeg {args:?}");
+        };
+        make(&["-f", "lavfi", "-i", "color=c=red:s=16x8:d=0.5", "-c:v", "mpeg4", "plain.mp4"]);
+        make(&["-display_rotation", "90", "-i", "plain.mp4", "-c", "copy", "turned.mp4"]);
+        make(&["-f", "lavfi", "-i", "color=c=blue:s=16x8:d=0.5", "-c:v", "ffv1", "m.mkv"]);
+        std::fs::copy(dir.join("m.mkv"), dir.join("mkv.mp4")).unwrap();
+        std::fs::write(dir.join("list.mp4"), "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\nplain.mp4\n#EXT-X-ENDLIST\n").unwrap();
+
+        let (w, h, seconds) = probe(&dir.join("plain.mp4"), &ffmpeg).unwrap();
+        assert_eq!((w, h), (16, 8));
+        assert!(seconds > 0.4 && seconds < 0.6, "{seconds}");
+        assert!(probe(&dir.join("m.mkv"), &ffmpeg).is_ok());
+        // turned: read at the turned size, and its frames come out that shape
+        assert_eq!(dimensions(&dir.join("turned.mp4"), &ffmpeg), Some((8, 16)));
+        let source = open(&dir.join("turned.mp4"), &ffmpeg).unwrap();
+        let view = View { rotate: 0, flip: false, w: 8, h: 16, smooth: false, tint: None };
+        let mut stream = Stream::start(&dir.join("turned.mp4"), &ffmpeg, &source, view).unwrap();
+        let frame = stream.next().unwrap();
+        assert_eq!(frame.dimensions(), (8, 16));
+        assert!(frame.get_pixel(4, 8)[0] > 200, "red");
+        drop(stream);
+        // a Matroska file named .mp4, and a playlist of other files named .mp4, don't open
+        for name in ["mkv.mp4", "list.mp4"] {
+            assert!(probe(&dir.join(name), &ffmpeg).is_err(), "{name}");
+            assert!(open(&dir.join(name), &ffmpeg).is_err(), "{name}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn turns_then_flips() {
         let src = RgbaImage::from_fn(2, 1, |x, _| Rgba([x as u8 * 100, 0, 0, 255]));
-        let view = View { rotate: 90, flip: false, w: 1, h: 2, smooth: false };
+        let view = View { rotate: 90, flip: false, w: 1, h: 2, smooth: false, tint: None };
         let t = transform(&src, view);
         assert_eq!((t.get_pixel(0, 0)[0], t.get_pixel(0, 1)[0]), (0, 100)); // clockwise: left end goes to the top
-        let view = View { rotate: 0, flip: true, w: 4, h: 1, smooth: false };
+        let view = View { rotate: 0, flip: true, w: 4, h: 1, smooth: false, tint: None };
         let t = transform(&src, view);
         assert_eq!(t.as_raw().iter().step_by(4).copied().collect::<Vec<_>>(), [100, 100, 0, 0]);
     }

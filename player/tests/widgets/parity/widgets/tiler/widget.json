@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "name": "Tiler",
+  "description": "",
+  "w": 12,
+  "h": 9,
+  "background": null,
+  "fonts": {},
+  "inputs": [],
+  "layers": [
+    {
+      "id": "l",
+      "name": "l",
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "objects": [
+        {
+          "id": "im",
+          "type": "image",
+          "src": "media/tile3-465a89ff.png",
+          "x": 4,
+          "y": 3,
+          "w": 3,
+          "h": 3,
+          "smooth": false,
+          "fill": "tile"
+        }
+      ]
+    }
+  ]
+}

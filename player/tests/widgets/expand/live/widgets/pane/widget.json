@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "name": "Pane",
+  "description": "A full-panel live value.",
+  "w": 1600,
+  "h": 720,
+  "background": "#102030",
+  "fonts": {},
+  "inputs": [],
+  "layers": [
+    {
+      "id": "l1",
+      "name": "Pane",
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "objects": [
+        {
+          "id": "v",
+          "type": "text",
+          "name": "Value",
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "text": "{pc.cpu.temp:d}°",
+          "font": "",
+          "size": 20,
+          "color": "#ffffff",
+          "x": 700,
+          "y": 300
+        },
+        {
+          "id": "u",
+          "type": "shape",
+          "name": "Bar",
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "x": 4,
+          "y": 700,
+          "w": 92,
+          "h": 6,
+          "shape": "rect",
+          "radius": 0,
+          "fill": {
+            "type": "solid",
+            "color": "#3ddc84"
+          },
+          "crisp": true
+        }
+      ]
+    }
+  ]
+}
