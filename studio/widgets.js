@@ -225,12 +225,13 @@ window.WV = WV;
              inputs, layers: Array.isArray(json.layers) ? json.layers : [] };
   }
 
-  /** A picture value written in the playlist (docs/widgets.md, A copy's values): a file in its inputs\ or sources\
-   *  folder, `inputs/<file>` or `sources/<file>` (the folder in any letter case, as Windows opens it), as the page's
-   *  ref for it. Null for anything else, which counts as not set: the studio keeps, copies and tidies only those. */
+  /** A picture value written in the playlist (docs/widgets.md, A copy's values): a media file in its inputs\ or
+   *  sources\ folder, `inputs/<file>` or `sources/<file>` (the folder in any letter case, as Windows opens it), as the
+   *  page's ref for it. Null for anything else, which counts as not set: the studio keeps, copies and tidies only
+   *  those, and the player leaves out a file that isn't one of the media types, as inside a widget. */
   function playlistFile(v) {
     const parts = typeof v === "string" ? v.split("/") : [];
-    const kept = parts.length === 2 && pathOk(v) ? parts[0].toLowerCase() : "";
+    const kept = parts.length === 2 && mediaPathOk(v) ? parts[0].toLowerCase() : "";
     return kept === "inputs" || kept === "sources" ? `${kept}/${parts[1]}` : null;
   }
 
