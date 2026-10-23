@@ -216,6 +216,15 @@ window.WV = WV;
              inputs, layers: Array.isArray(json.layers) ? json.layers : [] };
   }
 
+  /** A picture value written in the playlist (docs/widgets.md, A copy's values): a file in its inputs\ or sources\
+   *  folder, `inputs/<file>` or `sources/<file>` (the folder in any letter case, as Windows opens it), as the page's
+   *  ref for it. Null for anything else, which counts as not set: the studio keeps, copies and tidies only those. */
+  function playlistFile(v) {
+    const parts = typeof v === "string" ? v.split("/") : [];
+    const kept = parts.length === 2 && pathOk(v) ? parts[0].toLowerCase() : "";
+    return kept === "inputs" || kept === "sources" ? `${kept}/${parts[1]}` : null;
+  }
+
   const EMPTY = Object.freeze({ text: new Map(), color: new Map(), image: new Map() });
   /** The values one copy of `def` draws with (docs/widgets.md, A copy's values; Passing inputs down): {text, color,
    *  image} maps of input id to text (substituted in its holder's terms), "#rrggbb" and a media ref ("" for no
@@ -240,6 +249,7 @@ window.WV = WV;
           const t = spaces(v), ref = refOf(t);
           if (ref !== null) src = outer.image.has(ref) ? outer.image.get(ref) : null;
           else if (t === "") src = "";
+          else if (!folder) src = playlistFile(t);  // a copy in a scene or Global: a file in inputs\ or sources\
           else if (pathOk(t)) src = folder + t;
         }
         const d = spaces(input.default);
@@ -543,7 +553,7 @@ window.WV = WV;
 
   Object.assign(WV, {
     MAX_DEPTH, BUDGET, MAX_INPUTS, MAX_PLACED, ID_RE, INPUT_ID_RE,
-    rnd, idOk, pathOk, fontNameOk, color, refOf, scan, isLive, plain, substitute, makeSafe, replaceRefs, fitAspect,
+    rnd, idOk, pathOk, playlistFile, fontNameOk, color, refOf, scan, isLive, plain, substitute, makeSafe, replaceRefs, fitAspect,
     readDef, scopeOf, expandLayers, isLeaf, placement, closure, contains, uses,
   });
 })();
