@@ -929,21 +929,31 @@ def player_state():
 
 
 player_widgets = None  # what player_features() found: /api/config's player_widgets
+player_stamp = None  # wvplay.exe's (path, size, mtime) when player_features() last asked it
 
 
 def player_features():
     """Whether the built player (the wvplay.exe beside PLAYER, which Play and Export PNG use) draws widgets: True
     when `wvplay.exe features` prints `widgets 1`, False when it runs and doesn't (built before widgets), None when
-    it isn't built or gives no answer. Run when the studio starts; /api/config tells the page."""
-    global player_widgets
+    it isn't built or gives no answer. Run when the studio starts, and asked again by /api/config only once
+    wvplay.exe has changed (rebuilt while the studio runs); /api/config tells the page."""
+    global player_widgets, player_stamp
     exe, found = PLAYER.with_name("wvplay.exe"), None
-    if exe.is_file():
+    try:
+        st = exe.stat()
+        stamp = (str(exe), st.st_size, st.st_mtime_ns)
+    except OSError:
+        stamp = None
+    if stamp is not None and stamp == player_stamp:
+        return player_widgets
+    if stamp is not None:
         try:
             out = subprocess.run([str(exe), "features"], capture_output=True, text=True, errors="replace", timeout=5,
                                  stdin=subprocess.DEVNULL, creationflags=NO_WINDOW).stdout
             found = "widgets 1" in (line.strip() for line in out.splitlines())
         except (OSError, subprocess.SubprocessError):
             found = None
+    player_stamp = stamp
     player_widgets = found
     return found
 
@@ -3373,7 +3383,7 @@ class Handler(BaseHTTPRequestHandler):
             # "widgets": 1 tells a newer page this server has the widget routes (an older one has no such key)
             self.json({"screen": [wv.SCREEN_W, wv.SCREEN_H], "safe": wv.SAFE, "camera": wv.CAMERA_HOLE,
                        "font": str(DEFAULT_FONT), "initial": initial, "widgets": 1,
-                       "widgets_folder": str(widgets_dir().absolute()), "player_widgets": player_widgets})
+                       "widgets_folder": str(widgets_dir().absolute()), "player_widgets": player_features()})
         elif (m := re.fullmatch(r"/api/frame/(\w+)/(\d+)\.png", url.path)) and (src := source_by_id(m[1])):
             i = int(m[2])
             if i < len(src.frames):
