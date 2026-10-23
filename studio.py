@@ -273,17 +273,56 @@ TOO_DEEP = f"nests arrays and objects more than {JSON_DEPTH} deep, which the pla
 
 
 def strict_json(text):
-    """JSON as the player and the page read it: NaN and Infinity aren't numbers there, so here they're refused too,
-    and so is nesting deeper than the player reads."""
+    """JSON as the player reads it (serde_json), which refuses the whole file for any of these, so here they're
+    refused too: NaN and Infinity, which aren't JSON numbers; a number past a double's range (1e400, or an integer
+    of 400 digits), which Python would read as inf or keep exact, and which the page's JSON.parse then can't take
+    or reads as Infinity; a string or key holding half of a surrogate pair (a lone \\ud83d), which isn't text; and
+    nesting deeper than the player reads."""
     def refuse(name):
         raise ValueError(f"{name} isn't a JSON number")
+
+    def real(s):
+        v = float(s)
+        if not math.isfinite(v):
+            raise ValueError(f"the number {short_number(s)} is out of range")
+        return v
+
+    def whole(s):
+        # past 309 digits it's past a double's range: refused before int() is asked to read thousands of digits
+        if len(s.lstrip("-")) <= 309:
+            v = int(s)
+            try:
+                float(v)
+                return v
+            except OverflowError:
+                pass
+        raise ValueError(f"the number {short_number(s)} is out of range")
     try:
-        value = json.loads(text, parse_constant=refuse)
+        value = json.loads(text, parse_constant=refuse, parse_float=real, parse_int=whole)
     except RecursionError:
         raise ValueError(f"it {TOO_DEEP}") from None
     if too_deep(value):
         raise ValueError(f"it {TOO_DEEP}")
+    if (half := lone_surrogate(value)) is not None:
+        raise ValueError(f"a string in it holds \\u{ord(half):04x}, half of a surrogate pair, which isn't text")
     return value
+
+
+def short_number(s):
+    """A number's text for a message: at most 24 characters."""
+    return s if len(s) <= 24 else s[:20] + "…"
+
+
+SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def lone_surrogate(value):
+    """The first lone surrogate (U+D800 to U+DFFF: half of a pair, which JSON's \\u escapes can spell but no text
+    holds) in any string or key of a JSON value, or None. A loop, not recursion, as in too_deep."""
+    for s in strings_in(value, keys=True):
+        if m := SURROGATE.search(s):
+            return m[0]
+    return None
 
 
 def too_deep(value):
@@ -350,15 +389,16 @@ def note_used(paths):
         last_used[use_key(p)] = now
 
 
-def strings_in(value):
-    """Every string anywhere in a JSON value, in order. A loop, not recursion, as in too_deep."""
+def strings_in(value, keys=False):
+    """Every string anywhere in a JSON value, in order (with `keys`, objects' keys too). A loop, not recursion, as
+    in too_deep."""
     stack = [value]
     while stack:
         v = stack.pop()
         if isinstance(v, str):
             yield v
         elif isinstance(v, dict):
-            stack.extend(reversed(list(v.values())))
+            stack.extend(reversed([x for kv in v.items() for x in kv] if keys else list(v.values())))
         elif isinstance(v, list):
             stack.extend(reversed(v))
 
@@ -1570,6 +1610,10 @@ def check_size(w):
     the listing and the player skip a file that big."""
     try:
         size = len(json_bytes(w))
+    except UnicodeEncodeError as e:  # a lone surrogate, which UTF-8 (and the player) can't hold
+        half = e.object[e.start:e.end][:1]
+        raise ValueError(f"This widget holds text that isn't text: \\u{ord(half):04x} is half of a surrogate pair."
+                         if half else "This widget holds text that isn't text.") from None
     except ValueError:  # NaN or Infinity, which JSON hasn't got
         raise ValueError("This widget holds a number that isn't one (NaN or Infinity).") from None
     if size > MAX_WIDGET_JSON:
@@ -3108,7 +3152,12 @@ class Handler(BaseHTTPRequestHandler):
             raise
         except BaseException as e:
             code, out = failure(e)
-        self.json(out, code)
+        try:
+            body = json.dumps(out, allow_nan=False).encode()
+        except ValueError:  # NaN or Infinity, which the page's JSON.parse refuses: an error it can read instead
+            code = 500
+            body = json.dumps({"error": "The studio's answer held a number that isn't one (NaN or Infinity)."}).encode()
+        self.send(code, body, "application/json")
 
     def read_body(self, path):
         """The request's body, read only when Content-Length is a whole number within the route's limit. Otherwise
