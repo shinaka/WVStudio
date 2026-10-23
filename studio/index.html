@@ -135,7 +135,7 @@
                gap: 5px; justify-content: center; font-size: 12px; }
   #playerBox .row { margin: 0; }
   #playerState { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #rivals:empty { display: none; }
+  #rivals:empty, #playerElevated:empty { display: none; }
   /* the sources window and autocomplete, as before */
   .test-out:empty { display: none; }
   .test-out { margin: 6px 0; }
@@ -602,6 +602,7 @@
       <button id="openSources">Data sources…</button>
     </div>
     <div id="playerState" class="muted"></div>
+    <div id="playerElevated" class="warn"></div>
     <div class="row"><label title="Plays the playlist after you log in, without opening the studio">
       <input id="autostart" type="checkbox"> Start with Windows</label><span id="dataStatus" class="muted"></span></div>
     <div id="rivals" class="warn"></div>

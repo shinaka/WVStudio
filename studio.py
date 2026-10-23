@@ -917,15 +917,19 @@ def player_state():
         last = lines[-1] if lines else ""
     # whether the player running draws widgets: it says so at /info; an older one doesn't know /info (None: none
     # running, or it didn't answer, so there's nothing to tell yet)
-    widgets = None
+    widgets = pawnio = elevated = None
     if running:
         info = player_api("/info")
         if isinstance(info, dict) and info.get("widgets") == 1:
             widgets = True
         elif not (isinstance(info, dict) and info.get("player") is False):
             widgets = False
+        if isinstance(info, dict):
+            # its PawnIO state ({state, message, can_ask}) and whether it runs as administrator, as it says them: an
+            # older player has neither, and the page then says nothing about either
+            pawnio, elevated = info.get("pawnio"), info.get("elevated")
     return {"running": running, "log": last, "built": PLAYER.exists(), "autostart": autostart(), "rivals": rivals(),
-            "widgets": widgets}
+            "widgets": widgets, "pawnio": pawnio, "elevated": elevated}
 
 
 player_widgets = None  # what player_features() found: /api/config's player_widgets
@@ -976,6 +980,13 @@ def start_player():
 
 def stop_player():
     subprocess.run(["taskkill", "/IM", "wvplay*", "/F"], capture_output=True, creationflags=NO_WINDOW)
+    # taskkill can't stop a player run as administrator (Access is denied): one still running a moment later is
+    # reported, rather than shown as stopped
+    deadline = time.time() + 2
+    while player_running():
+        if time.time() > deadline:
+            raise ValueError("The player runs as administrator, so the studio can't stop it: close it in Task Manager.")
+        time.sleep(0.25)
     return player_state()
 
 
@@ -2950,10 +2961,17 @@ BUILTIN_CATALOG = [
                   {"key": "claude.session_severity", "label": "Session severity", "kind": "text"},
                   {"key": "claude.week_severity", "label": "Week severity", "kind": "text"},
                   {"key": "claude.week.*", "label": "Per-model weekly use", "unit": "%", "kind": "number", "pattern": True}]},
-    {"id": "pc", "name": "PC sensors", "description": "CPU, memory and NVIDIA GPU. CPU temperature needs HWiNFO "
-     "running with Shared Memory Support on, or Libre Hardware Monitor with its Remote Web Server on.",
+    {"id": "pc", "name": "PC sensors", "description": "CPU load and memory from Windows, the GPU from NVIDIA's driver, "
+     "and, with HWiNFO, Libre Hardware Monitor or PawnIO, CPU, fan, pump and motherboard sensors (HWiNFO needs Shared "
+     "Memory Support on; Libre Hardware Monitor needs its Remote Web Server on; PawnIO asks for administrator rights).",
      "interval": {"default": 60, "min": 5},
      "settings": [{"key": "hwinfo", "label": "Read HWiNFO too", "type": "bool", "default": False},
+                  {"key": "pawnio", "label": "Read sensors through PawnIO (asks for administrator rights)", "type": "bool",
+                   "default": False,
+                   "help": "CPU temperatures and power, fan and pump speeds and motherboard temperatures, read straight "
+                           "from the hardware through the free PawnIO driver (pawnio.eu). PawnIO needs administrator "
+                           "rights, so Windows asks for them when you turn this on and each time the player starts "
+                           "(docs/data.md, Setting up PawnIO). For live fan readings set the interval to 5 s."},
                   {"key": "lhm", "label": "Read Libre Hardware Monitor sensors", "type": "bool", "default": False},
                   {"key": "lhm_url", "label": "Libre Hardware Monitor address", "type": "text",
                    "default": "http://127.0.0.1:8085"},
@@ -2963,7 +2981,8 @@ BUILTIN_CATALOG = [
                    "help": "The password set in its Options > Remote Web Server > Authentication. Changing the address "
                            "or user name clears it, so type it last."}],
      "provides": [{"key": "pc.cpu.load", "label": "CPU load", "unit": "%", "kind": "number"},
-                  {"key": "pc.cpu.temp", "label": "CPU temperature", "unit": "°C", "kind": "number"},
+                  {"key": "pc.cpu.temp", "label": "CPU temperature (needs PawnIO, HWiNFO or Libre Hardware Monitor)",
+                   "unit": "°C", "kind": "number"},
                   {"key": "pc.ram.used_gb", "label": "RAM used", "unit": "GB", "kind": "number"},
                   {"key": "pc.ram.total_gb", "label": "RAM total", "unit": "GB", "kind": "number"},
                   {"key": "pc.ram.used_pct", "label": "RAM used", "unit": "%", "kind": "number"},
@@ -2973,7 +2992,9 @@ BUILTIN_CATALOG = [
                   {"key": "pc.gpu.vram_used_gb", "label": "VRAM used", "unit": "GB", "kind": "number"},
                   {"key": "pc.gpu.vram_total_gb", "label": "VRAM total", "unit": "GB", "kind": "number"},
                   {"key": "hwinfo.*", "label": "HWiNFO readings", "pattern": True},
-                  {"key": "lhm.*", "label": "Libre Hardware Monitor sensors", "pattern": True}]},
+                  {"key": "lhm.*", "label": "Libre Hardware Monitor sensors", "pattern": True},
+                  {"key": "pawnio.*", "label": "PawnIO sensors, as pawnio.cpu.<type>.<sensor> and "
+                   "pawnio.<chip>.<type>.<sensor>", "kind": "number", "pattern": True}]},
     {"id": "homeassistant", "name": "Home Assistant", "description": "The state and attributes of the entities listed.",
      "interval": {"default": 60, "min": 5},
      "settings": [{"key": "url", "label": "Address", "type": "text", "default": "", "placeholder": "http://homeassistant.local:8123"},
@@ -3208,10 +3229,12 @@ def data_port(data=None):
 
 def player_api(path, body=None, timeout=DATA_TIMEOUT, slow_ok=False):
     """Asks the player's local API: its answer, or {"player": False} when it isn't running. `slow_ok`: the
-    request may take a while (a test), so no answer in time is an error, not a player that isn't there."""
+    request may take a while (a test), so no answer in time is an error, not a player that isn't there. Every
+    request carries X-WV: 1, which the player requires on a POST: a page in a browser can't send it to another
+    site without a CORS preflight, which the player never grants."""
     req = urllib.request.Request(f"http://127.0.0.1:{data_port()}{path}",
                                  data=None if body is None else json.dumps(body).encode(),
-                                 headers={"Content-Type": "application/json"})
+                                 headers={"Content-Type": "application/json", "X-WV": "1"})
     try:
         with no_proxy.open(req, timeout=timeout) as r:
             return json.loads(r.read())
@@ -3508,7 +3531,7 @@ class Handler(BaseHTTPRequestHandler):
             elif url.path == "/api/player/start":
                 self.json(start_player())
             elif url.path == "/api/player/stop":
-                self.json(stop_player())
+                self.answer(stop_player)  # a player it can't stop: 400 and the sentence, as it is
             elif url.path == "/api/autostart":
                 self.json(set_autostart(bool(json.loads(body)["on"])))
             elif url.path == "/api/data/config":

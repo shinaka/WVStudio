@@ -2972,6 +2972,10 @@ function showPlayer(state) {
     : state.running ? "Playing on the cooler. Changes show up within a second."
     : "Not playing.";
   el.title = el.textContent;
+  // one run as administrator (by hand, or with UAC off) refuses the studio's Stop: said only when the player says so
+  // at /info, beside its PawnIO state, so one from before PawnIO shows nothing
+  $("playerElevated").textContent = state.running && state.pawnio && state.elevated === true
+    ? "The player runs as administrator: the studio can't stop it. Close it in Task Manager, or start it normally." : "";
   $("playerStart").disabled = state.running || !state.built;
   $("playerStop").disabled = !state.running;
   $("autostart").checked = !!state.autostart;
@@ -3254,7 +3258,9 @@ function showSources() {
 function showSource() {
   const m = manifestOf(live.selected), panel = $("srcPanel");
   if (!m) { panel.replaceChildren(); live.formKey = ""; return; }
-  const key = JSON.stringify([m.id, m.settings, m.interval, m.provides]);
+  // without the live rows (a key the source has published, with its label: PawnIO's), which come and grow as it
+  // reads: they're only listed in Provides, and rebuilding the form for them would wipe the Test output
+  const key = JSON.stringify([m.id, m.settings, m.interval, providesOf(m).filter((p) => !p.live)]);
   if (key !== live.formKey) {
     live.formKey = key;
     buildSource(m);
@@ -3353,6 +3359,9 @@ function fillForm(m) {
 const globRe = (pattern) => new RegExp("^" + pattern.split("*").map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*") + "$");
 function showProvides(m) {
   const table = $("srcProvides"), provides = providesOf(m), explicit = new Set(provides.filter((p) => !p.pattern).map((p) => p.key));
+  // a live row a pattern covers is listed under that pattern's header, with its label, before the other keys it matches
+  const patterns = provides.filter((p) => p.pattern).map((p) => globRe(p.key));
+  const grouped = provides.filter((p) => p.live && !p.pattern && patterns.some((re) => re.test(p.key)));
   const header = make("tr");
   for (const h of ["Key", "Label", "Unit", "Value"]) header.append(make("th", "", h));
   const rows = [header], covered = new Set();
@@ -3366,13 +3375,16 @@ function showProvides(m) {
     return tr;
   };
   for (const p of provides) {
+    if (grouped.includes(p)) continue;  // under its pattern
     if (!p.pattern) { covered.add(p.key); rows.push(row(p.key, p.label, p.unit, live.values[p.key])); continue; }
-    const re = globRe(p.key), keys = Object.keys(live.values).filter((k) => re.test(k) && !explicit.has(k) && !covered.has(k)).sort();
+    const re = globRe(p.key), mine = grouped.filter((g) => re.test(g.key) && !covered.has(g.key));
+    const keys = Object.keys(live.values).filter((k) => re.test(k) && !explicit.has(k) && !covered.has(k)).sort();
     const tr = make("tr", "group"), td = make("td");
     td.colSpan = 4;
-    td.append(make("code", "", p.key), ` ${p.label || ""}` + (keys.length ? "" : ": none yet"));
+    td.append(make("code", "", p.key), ` ${p.label || ""}` + (mine.length || keys.length ? "" : ": none yet"));
     rows.push(tr);
     tr.append(td);
+    for (const g of mine) { covered.add(g.key); rows.push(row(g.key, g.label, g.unit ?? p.unit, live.values[g.key])); }
     for (const k of keys) { covered.add(k); rows.push(row(k, "", p.unit, live.values[k])); }
   }
   const others = Object.keys(live.values).filter((k) => live.values[k]?.source === m.id && !covered.has(k)).sort();
