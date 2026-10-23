@@ -26,6 +26,23 @@
         {"id": "q/f5", "type": "text", "x": 24, "y": 40, "opacity": 1, "clip": [0, 30, 40, 50], "groups": [], "text": "e", "live": false, "size": 8, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "segoeui.ttf"},
         {"id": "q/f6", "type": "text", "x": 30, "y": 40, "opacity": 1, "clip": [0, 30, 40, 50], "groups": [], "text": "f", "live": false, "size": 8, "outline_width": 0, "color": "#ffffff", "outline_color": "#000000", "font": "segoeui.ttf"}
       ]
+    },
+    {
+      "id": "s2",
+      "note": "media types (docs/widgets.md, Media types): a src, an image value or an image default with another extension (.jfif, .dib, .dat, none, .avi) is left out, as a bad path is; .PNG and .webm are kept",
+      "placement": {"on_top": false, "cut": null},
+      "leaves": [
+        {"id": "k/upper", "type": "image", "x": 20, "y": 0, "w": 4, "h": 4, "opacity": 1, "clip": [0, 0, 40, 10], "groups": [], "src": "widgets/kinds/media/ok-4b0edc2b.PNG", "keep_aspect": false, "tint": null},
+        {"id": "k/webm", "type": "image", "x": 24, "y": 0, "w": 4, "h": 4, "opacity": 1, "clip": [0, 0, 40, 10], "groups": [], "src": "widgets/kinds/media/clip.webm", "keep_aspect": false, "tint": null},
+        {"id": "k/in2", "type": "image", "x": 32, "y": 0, "w": 4, "h": 4, "opacity": 1, "clip": [0, 0, 40, 10], "groups": [], "src": "widgets/kinds/media/ok-4b0edc2b.PNG", "keep_aspect": false, "tint": null},
+        {"id": "m/upper", "type": "image", "x": 20, "y": 20, "w": 4, "h": 4, "opacity": 1, "clip": [0, 20, 40, 30], "groups": [], "src": "widgets/kinds/media/ok-4b0edc2b.PNG", "keep_aspect": false, "tint": null},
+        {"id": "m/webm", "type": "image", "x": 24, "y": 20, "w": 4, "h": 4, "opacity": 1, "clip": [0, 20, 40, 30], "groups": [], "src": "widgets/kinds/media/clip.webm", "keep_aspect": false, "tint": null},
+        {"id": "m/in2", "type": "image", "x": 32, "y": 20, "w": 4, "h": 4, "opacity": 1, "clip": [0, 20, 40, 30], "groups": [], "src": "widgets/kinds/media/ok-4b0edc2b.PNG", "keep_aspect": false, "tint": null},
+        {"id": "n/upper", "type": "image", "x": 20, "y": 40, "w": 4, "h": 4, "opacity": 1, "clip": [0, 40, 40, 50], "groups": [], "src": "widgets/kinds/media/ok-4b0edc2b.PNG", "keep_aspect": false, "tint": null},
+        {"id": "n/webm", "type": "image", "x": 24, "y": 40, "w": 4, "h": 4, "opacity": 1, "clip": [0, 40, 40, 50], "groups": [], "src": "widgets/kinds/media/clip.webm", "keep_aspect": false, "tint": null},
+        {"id": "n/in1", "type": "image", "x": 28, "y": 40, "w": 4, "h": 4, "opacity": 1, "clip": [0, 40, 40, 50], "groups": [], "src": "playlist/inputs/fe20a98c93d7.png", "keep_aspect": false, "tint": null},
+        {"id": "n/in2", "type": "image", "x": 32, "y": 40, "w": 4, "h": 4, "opacity": 1, "clip": [0, 40, 40, 50], "groups": [], "src": "playlist/inputs/fe20a98c93d7.PNG", "keep_aspect": false, "tint": null}
+      ]
     }
   ],
   "global": {

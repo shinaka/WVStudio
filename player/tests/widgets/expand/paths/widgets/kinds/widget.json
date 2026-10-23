@@ -1,0 +1,115 @@
+{
+  "version": 1,
+  "name": "Kinds",
+  "description": "",
+  "w": 40,
+  "h": 10,
+  "background": null,
+  "fonts": {},
+  "inputs": [
+    {
+      "id": "pic",
+      "name": "Picture",
+      "type": "image",
+      "default": "media/a.jfif"
+    },
+    {
+      "id": "ok",
+      "name": "OK",
+      "type": "image",
+      "default": "media/ok-4b0edc2b.PNG"
+    }
+  ],
+  "layers": [
+    {
+      "id": "l1",
+      "name": "l1",
+      "visible": true,
+      "locked": false,
+      "opacity": 1.0,
+      "objects": [
+        {
+          "id": "jfif",
+          "type": "image",
+          "src": "media/a.jfif",
+          "x": 0,
+          "y": 0,
+          "w": 4,
+          "h": 4
+        },
+        {
+          "id": "dib",
+          "type": "image",
+          "src": "media/b.dib",
+          "x": 4,
+          "y": 0,
+          "w": 4,
+          "h": 4
+        },
+        {
+          "id": "dat",
+          "type": "image",
+          "src": "media/c.dat",
+          "x": 8,
+          "y": 0,
+          "w": 4,
+          "h": 4
+        },
+        {
+          "id": "none",
+          "type": "image",
+          "src": "media/noext",
+          "x": 12,
+          "y": 0,
+          "w": 4,
+          "h": 4
+        },
+        {
+          "id": "avi",
+          "type": "video",
+          "src": "media/v.avi",
+          "x": 16,
+          "y": 0,
+          "w": 4,
+          "h": 4
+        },
+        {
+          "id": "upper",
+          "type": "image",
+          "src": "media/ok-4b0edc2b.PNG",
+          "x": 20,
+          "y": 0,
+          "w": 4,
+          "h": 4
+        },
+        {
+          "id": "webm",
+          "type": "image",
+          "src": "media/clip.webm",
+          "x": 24,
+          "y": 0,
+          "w": 4,
+          "h": 4
+        },
+        {
+          "id": "in1",
+          "type": "image",
+          "src": "{$pic}",
+          "x": 28,
+          "y": 0,
+          "w": 4,
+          "h": 4
+        },
+        {
+          "id": "in2",
+          "type": "image",
+          "src": "{$ok}",
+          "x": 32,
+          "y": 0,
+          "w": 4,
+          "h": 4
+        }
+      ]
+    }
+  ]
+}

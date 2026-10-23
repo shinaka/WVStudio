@@ -52,6 +52,15 @@ window.WV = WV;
     const parts = p.split("/");
     return parts.length <= 4 && parts.every((part) => PART_RE.test(part) && !RESERVED.has(stem(part)));
   }
+  // The media a widget holds (docs/widgets.md, Media types), by extension in any letter case: what the studio serves
+  // for a widget. A `src` or an image value with another (an .avi, a JPEG named .jfif) is left out, as a bad path is.
+  const MEDIA_TYPES = new Set(["png", "apng", "gif", "webp", "jpg", "jpeg", "bmp", "mp4", "m4v", "mov", "webm", "mkv"]);
+  function mediaOk(p) {
+    const name = p.slice(p.lastIndexOf("/") + 1), dot = name.lastIndexOf(".");
+    return dot > 0 && MEDIA_TYPES.has(name.slice(dot + 1).toLowerCase());
+  }
+  /** A path in a widget's folder that names one of its media (a `src`, an image input's value or default). */
+  const mediaPathOk = (p) => pathOk(p) && mediaOk(p);
   /** A font file name (docs/widgets.md, A font name). */
   function fontNameOk(n) {
     return typeof n === "string" && FONT_RE.test(n) && !/^[ .]|[ .]$/.test(n) && !RESERVED.has(stem(n));
@@ -232,10 +241,10 @@ window.WV = WV;
           const t = spaces(v), ref = refOf(t);
           if (ref !== null) src = outer.image.has(ref) ? outer.image.get(ref) : null;
           else if (t === "") src = "";
-          else if (pathOk(t)) src = folder + t;
+          else if (mediaPathOk(t)) src = folder + t;
         }
         const d = spaces(input.default);
-        if (src === null) src = pathOk(d) ? def.folder + d : "";
+        if (src === null) src = mediaPathOk(d) ? def.folder + d : "";
         scope.image.set(input.id, src);
       }
     }
@@ -379,8 +388,8 @@ window.WV = WV;
                      part: f.part ?? (f.depth === this.markDepth + 1 ? o.id ?? "" : undefined) };
       if (type === "image" || type === "video") {
         if (typeof o.src !== "string") return null;
-        const raw = spaces(o.src), ref = refOf(raw), src = ref !== null ? f.scope.image.get(ref) ?? "" : pathOk(raw) ? f.folder + raw : "";
-        if (!src) return null;  // "", a path outside the folder, or a reference that isn't an image input
+        const raw = spaces(o.src), ref = refOf(raw), src = ref !== null ? f.scope.image.get(ref) ?? "" : mediaPathOk(raw) ? f.folder + raw : "";
+        if (!src) return null;  // "", a path outside the folder or not to media, or a reference that isn't an image input
         const [x0, y0, dw, dh] = edges();
         Object.assign(leaf, { x: x0, y: y0, w: Math.max(1, dw), h: Math.max(1, dh), src, smooth: o.smooth === true,
                               fill: ["none", "extend", "mirror", "tile"].includes(o.fill) ? o.fill : "none",

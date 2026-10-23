@@ -157,7 +157,10 @@ follow the rule.
 
 **Media types** are the ones the player draws: `.png .apng .gif .webp .jpg .jpeg .bmp` and `.mp4 .m4v .mov .webm
 .mkv`. (The player draws BMP from this version on. Before, the studio took BMP files that the cooler couldn't
-show.)
+show.) Inside a widget these are the only ones drawn, by the extension in any letter case: an image or video
+whose `src` names another (an `.avi`, a JPEG renamed `.jfif`, a file with no extension) is left out, and logged,
+as a path that breaks the rule is, on the cooler and in the studio alike. An image input's value or default that
+names one counts as not set.
 
 - An **Aseprite** file (`.aseprite`, `.ase`) added to a widget, by upload, From selection or paste, is turned
   into a PNG (one frame) or an animated PNG with your Aseprite, and the widget keeps only that. The player
