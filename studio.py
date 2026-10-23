@@ -7,6 +7,7 @@ playlist document, which saves here as it changes; the player draws the same doc
 (docs/widgets.md) are files of their own in widgets/, beside the playlist's folder, saved one by one.
 """
 import base64
+import contextlib
 import copy
 import csv
 import errno
@@ -58,11 +59,26 @@ NO_WINDOW = subprocess.CREATE_NO_WINDOW
 
 # Opened media, one Source per file (normcased absolute path), least recently used first. The oldest go while
 # their decoded frames pass MEDIA_BYTES in all, or there are more than MEDIA_COUNT (docs/widgets.md: thumbnails of
-# a library load a lot of media, and mustn't push out what a scene is still loading).
+# a library load a lot of media, and mustn't push out what a scene is still loading). One used in the last
+# MEDIA_GRACE seconds is still having its frames fetched by the page, so it stays until they pass MEDIA_HARD; and
+# one that went is opened again when its frames are asked for (`opened`), so the page never gets a 404 for a file
+# it was just told about.
 sources = OrderedDict()
 sources_lock = threading.Lock()
 MEDIA_BYTES = 512 << 20
+MEDIA_HARD = 1 << 30
+MEDIA_GRACE = 30  # seconds
 MEDIA_COUNT = 64
+opened = OrderedDict()  # content id -> Seen: the files opened lately, to open again or serve a video's preview
+OPENED_COUNT = 4096
+opening = {}  # normcased path -> Lock, held while that file is opened: one decode, however many ask at once
+# At most DECODE_BYTES of frames are decoded at once, across every request: the page opens a whole library's
+# pictures together, and a shared widget's picture may take up to 1 GB as frames. A file waits for room; one
+# bigger than that waits until it's alone.
+DECODE_BYTES = 1 << 30
+VIDEO_COST = 256 << 20  # about the most a video's kept JPEGs take (VIDEO_FPS x VIDEO_SECONDS frames)
+decoding = threading.Condition()
+decoding_bytes = 0
 initial = None  # info for the image named on the command line
 
 
@@ -157,7 +173,8 @@ class Source:
         self.name, self.path = name, path
         self.stamp = file_stamp(path)  # what the file was when it was opened: a change opens it again
         self.id = hashlib.sha1(path.read_bytes()).hexdigest()[:12]
-        self.video = self.native = None
+        self.video = self.native = self.preview = None
+        self.used = time.monotonic()  # when the page last asked for it (trim_sources spares it for a moment)
         if path.suffix.lower() in VIDEO_TYPES:
             UPLOADS.mkdir(parents=True, exist_ok=True)
             self.preview = UPLOADS / f"{self.id}.preview.mp4"
@@ -273,17 +290,56 @@ TOO_DEEP = f"nests arrays and objects more than {JSON_DEPTH} deep, which the pla
 
 
 def strict_json(text):
-    """JSON as the player and the page read it: NaN and Infinity aren't numbers there, so here they're refused too,
-    and so is nesting deeper than the player reads."""
+    """JSON as the player reads it (serde_json), which refuses the whole file for any of these, so here they're
+    refused too: NaN and Infinity, which aren't JSON numbers; a number past a double's range (1e400, or an integer
+    of 400 digits), which Python would read as inf or keep exact, and which the page's JSON.parse then can't take
+    or reads as Infinity; a string or key holding half of a surrogate pair (a lone \\ud83d), which isn't text; and
+    nesting deeper than the player reads."""
     def refuse(name):
         raise ValueError(f"{name} isn't a JSON number")
+
+    def real(s):
+        v = float(s)
+        if not math.isfinite(v):
+            raise ValueError(f"the number {short_number(s)} is out of range")
+        return v
+
+    def whole(s):
+        # past 309 digits it's past a double's range: refused before int() is asked to read thousands of digits
+        if len(s.lstrip("-")) <= 309:
+            v = int(s)
+            try:
+                float(v)
+                return v
+            except OverflowError:
+                pass
+        raise ValueError(f"the number {short_number(s)} is out of range")
     try:
-        value = json.loads(text, parse_constant=refuse)
+        value = json.loads(text, parse_constant=refuse, parse_float=real, parse_int=whole)
     except RecursionError:
         raise ValueError(f"it {TOO_DEEP}") from None
     if too_deep(value):
         raise ValueError(f"it {TOO_DEEP}")
+    if (half := lone_surrogate(value)) is not None:
+        raise ValueError(f"a string in it holds \\u{ord(half):04x}, half of a surrogate pair, which isn't text")
     return value
+
+
+def short_number(s):
+    """A number's text for a message: at most 24 characters."""
+    return s if len(s) <= 24 else s[:20] + "…"
+
+
+SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def lone_surrogate(value):
+    """The first lone surrogate (U+D800 to U+DFFF: half of a pair, which JSON's \\u escapes can spell but no text
+    holds) in any string or key of a JSON value, or None. A loop, not recursion, as in too_deep."""
+    for s in strings_in(value, keys=True):
+        if m := SURROGATE.search(s):
+            return m[0]
+    return None
 
 
 def too_deep(value):
@@ -350,15 +406,16 @@ def note_used(paths):
         last_used[use_key(p)] = now
 
 
-def strings_in(value):
-    """Every string anywhere in a JSON value, in order. A loop, not recursion, as in too_deep."""
+def strings_in(value, keys=False):
+    """Every string anywhere in a JSON value, in order (with `keys`, objects' keys too). A loop, not recursion, as
+    in too_deep."""
     stack = [value]
     while stack:
         v = stack.pop()
         if isinstance(v, str):
             yield v
         elif isinstance(v, dict):
-            stack.extend(reversed(list(v.values())))
+            stack.extend(reversed([x for kv in v.items() for x in kv] if keys else list(v.values())))
         elif isinstance(v, list):
             stack.extend(reversed(v))
 
@@ -648,31 +705,131 @@ def open_kept(src_name, name=None):
 
 def open_media(path, ref, name=None):
     """Opens a media file (cached, one Source per file) and describes it for the page, with `src` its ref."""
+    return {**media_info(open_source(path, ref, name)), "src": ref}
+
+
+class Seen:
+    """A file opened lately, by its content id: enough to open it again (`opened`)."""
+
+    def __init__(self, src, ref):
+        self.path, self.ref, self.name, self.preview = src.path, ref, src.name, src.preview
+
+
+def open_source(path, ref, name=None):
+    """The Source of a media file: the cached one while the file is unchanged, else opened now. Requests for one
+    file wait for a single decode, and every decode waits for room (decode_room)."""
     key = use_key(path)
-    with sources_lock:
-        src = sources.get(key)
-        if src and src.stamp == file_stamp(path):
+    while True:
+        with sources_lock:
+            src = sources.get(key)
+            if src and src.stamp == file_stamp(path):
+                src.used = time.monotonic()
+                sources.move_to_end(key)
+                return src
+            lock = opening.get(key)
+            if lock is None:
+                lock = opening[key] = threading.Lock()
+                lock.acquire()
+                break
+        with lock:  # another request is opening it: then look again
+            pass
+    try:
+        if not ref.startswith("sources/"):  # widget media and input pictures may come from anywhere: headers first
+            check_media_file(path, PLAYER_SIDE, PLAYER_DECODED)
+        with decode_room(decode_cost(path)):
+            src = Source(path, name or path.name, ref)
+        with sources_lock:
+            sources[key] = src
             sources.move_to_end(key)
-            return {**media_info(src), "src": ref}
-    if not ref.startswith("sources/"):  # widget media and input pictures may come from anywhere: headers first
-        check_media_file(path, PLAYER_SIDE, PLAYER_DECODED)
-    src = Source(path, name or path.name, ref)
-    with sources_lock:
-        sources[key] = src
-        sources.move_to_end(key)
-        while len(sources) > 1 and (len(sources) > MEDIA_COUNT or sum(s.bytes for s in sources.values()) > MEDIA_BYTES):
-            sources.popitem(last=False)
-    return {**media_info(src), "src": ref}
+            opened[src.id] = Seen(src, ref)
+            opened.move_to_end(src.id)
+            while len(opened) > OPENED_COUNT:
+                opened.popitem(last=False)
+            trim_sources()
+    finally:
+        with sources_lock:
+            del opening[key]
+        lock.release()
+    return src
+
+
+def trim_sources():
+    """Lets the least recently used sources go (under sources_lock) while there are more than MEDIA_COUNT or their
+    frames pass MEDIA_BYTES, except that one used in the last MEDIA_GRACE seconds, whose frames the page may still be
+    fetching, goes only while they pass MEDIA_HARD. The newest always stays."""
+    total, now = sum(s.bytes for s in sources.values()), time.monotonic()
+    while len(sources) > 1:
+        oldest = next(iter(sources.values()))  # least recently used: if it's recent, they all are
+        if not (len(sources) > MEDIA_COUNT or total > MEDIA_HARD
+                or (total > MEDIA_BYTES and now - oldest.used > MEDIA_GRACE)):
+            break
+        sources.popitem(last=False)
+        total -= oldest.bytes
+
+
+def decode_cost(path):
+    """About how many bytes opening a media file takes while it's decoded: an image's frames as RGBA, from its
+    headers; a video's kept JPEGs. 0 when its headers can't be read (opening it fails anyway)."""
+    if path.suffix.lower() in VIDEO_TYPES:
+        return VIDEO_COST
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            with Image.open(path) as im:
+                return getattr(im, "n_frames", 1) * im.width * im.height * 4
+    except Exception:
+        return 0
+
+
+@contextlib.contextmanager
+def decode_room(cost):
+    """Waits until `cost` bytes of decoding fit in DECODE_BYTES with what's being decoded now, and holds them."""
+    global decoding_bytes
+    cost = min(cost, DECODE_BYTES)
+    with decoding:
+        decoding.wait_for(lambda: decoding_bytes + cost <= DECODE_BYTES)
+        decoding_bytes += cost
+    try:
+        yield
+    finally:
+        with decoding:
+            decoding_bytes -= cost
+            decoding.notify_all()
 
 
 def source_by_id(sid):
-    """The open Source with this content id, for /api/frame and /api/video, or None."""
+    """The Source with this content id, for /api/frame, or None. One that was let go (trim_sources) is opened again
+    while its file still holds the same content: the page may still be fetching the frames of a file it was told
+    about a moment ago."""
     with sources_lock:
         for key, src in sources.items():
             if src.id == sid:
+                src.used = time.monotonic()
                 sources.move_to_end(key)
                 return src
-    return None
+        seen = opened.get(sid)
+    if seen is None or not inside(seen.path, seen.path.parent):  # gone, or not a plain file any more
+        return None
+    try:
+        src = open_source(seen.path, seen.ref, seen.name)
+    except KeyboardInterrupt:
+        raise
+    except BaseException:  # unreadable now (SystemExit too: wv.aseprite exits when Aseprite is missing)
+        return None
+    return src if src.id == sid else None  # changed since: the page's frames are of what it was
+
+
+def video_preview(sid):
+    """The browser's copy of the video with this content id, for /api/video, or None. It's a file of its own, so
+    it's served from there even after its Source was let go."""
+    with sources_lock:
+        for key, src in sources.items():
+            if src.id == sid:
+                src.used = time.monotonic()
+                sources.move_to_end(key)
+                return src.preview
+        seen = opened.get(sid)
+    return seen.preview if seen and seen.preview and seen.preview.is_file() else None
 
 
 def export_scene(req):
@@ -843,13 +1000,28 @@ def font_list():
 
 
 def font_file(path):
-    """The font at `path` if font_list lists it, or if it's one a widget carries in its fonts\\ (a text pasted out
-    of a widget names it there): no other file is served."""
+    """The font at `path` if font_list lists it, or if it's one the playlist keeps in its fonts\\ (a text pasted out
+    of a widget names it there) or a widget carries in its fonts\\ (a text pasted by an earlier studio): no other
+    file is served."""
     font_list()
     found = fonts_seen[2].get(os.path.normcase(path))
-    if found is None and carried_font(path):
+    if found is None and (kept_font(path) or carried_font(path)):
         found = Path(path)
     return found
+
+
+def playlist_fonts():
+    """The fonts the playlist keeps for its scenes: ones a pasted text brought out of a widget (copy_media)."""
+    return PLAYLIST_DIR / "fonts"
+
+
+def kept_font(path):
+    """Whether `path` is a font the playlist keeps: playlist/fonts/<name>, a file of its own there."""
+    if not isinstance(path, str) or not os.path.isabs(path):
+        return False
+    p = Path(path)
+    return (font_name_ok(p.name) and same_file(p.parent, playlist_fonts()) and real_dir(playlist_fonts())
+            and inside(p, playlist_fonts()))
 
 
 def carried_font(path):
@@ -1570,6 +1742,10 @@ def check_size(w):
     the listing and the player skip a file that big."""
     try:
         size = len(json_bytes(w))
+    except UnicodeEncodeError as e:  # a lone surrogate, which UTF-8 (and the player) can't hold
+        half = e.object[e.start:e.end][:1]
+        raise ValueError(f"This widget holds text that isn't text: \\u{ord(half):04x} is half of a surrogate pair."
+                         if half else "This widget holds text that isn't text.") from None
     except ValueError:  # NaN or Infinity, which JSON hasn't got
         raise ValueError("This widget holds a number that isn't one (NaN or Infinity).") from None
     if size > MAX_WIDGET_JSON:
@@ -1979,15 +2155,47 @@ def holder_file(wid, folder, ref):
 
 def font_file_for(font, wid, folder):
     """The file a text's `font` means in its holder, or None when it isn't on this PC. In a scene it's an absolute
-    path, taken only in one of the font folders the studio lists or a widget's fonts/; in a widget, a file name
-    found by the lookup."""
+    path, taken only in one of the font folders the studio lists, the playlist's fonts/ or a widget's fonts/; in a
+    widget, a file name found by the lookup."""
     if wid is not None:
         return find_font(folder, font)
     if not isinstance(font, str) or not os.path.isabs(font):
         return None
     p = Path(font)
     listed = os.path.normcase(str(p.parent)) in {os.path.normcase(str(d)) for d in FONT_DIRS}
-    return p if (listed and font_name_ok(p.name) and p.is_file()) or carried_font(font) else None
+    return p if (listed and font_name_ok(p.name) and p.is_file()) or kept_font(font) or carried_font(font) else None
+
+
+def scene_font(path):
+    """The file a scene's text names for the font at `path` (font_file_for). A font a widget carries in its fonts/
+    stays that widget's, and the widget may get another folder name, be deleted or be replaced: so the scene gets
+    its own, as it gets its own copy of a picture. That's an installed font of the same name with the same bytes
+    when there is one, else a copy in the playlist's fonts/ (named with its hash when another font there has its
+    name). Any other font is installed already: `path` itself."""
+    if not carried_font(str(path)):
+        return path
+    data = path.read_bytes()
+    check_font_bytes(data)
+    for d in FONT_DIRS:  # the folders the studio lists, so the page loads it too
+        p = d / path.name
+        try:
+            if p.is_file() and p.stat().st_size == len(data) and p.read_bytes() == data:
+                return p
+        except OSError:
+            pass
+    folder = playlist_fonts()
+    with playlist_lock:
+        if os.path.lexists(folder) and not real_dir(folder):
+            raise ValueError("playlist\\fonts isn't a plain folder.")
+        dest = folder / path.name
+        if os.path.lexists(dest) and not (inside(dest, folder) and dest.read_bytes() == data):
+            stem, ext = os.path.splitext(path.name)
+            dest = folder / f"{stem[:91].rstrip(' .')}-{hashlib.sha1(data).hexdigest()[:8]}{ext}"
+            if os.path.lexists(dest) and not (inside(dest, folder) and dest.read_bytes() == data):
+                raise ValueError(f"playlist\\fonts already has another {dest.name}.")
+        if not os.path.lexists(dest):
+            write_file(dest, data)
+    return dest
 
 
 def font_for_widget(font, wid, folder):
@@ -2047,11 +2255,11 @@ def copy_media(req):
                         write_file(dest, data)
                 if name:
                     out["fonts"][font] = name
-            else:  # into a scene, a text names its font by its absolute path
+            else:  # into a scene, a text names its font by its absolute path: one of its own (scene_font)
                 path = font_file_for(font, from_id, from_folder)
                 found = path is not None
                 if found:
-                    out["fonts"][font] = str(path)
+                    out["fonts"][font] = str(scene_font(path))
             if not found:
                 out["missing"].append({"file": font, "why": "That font isn't on this PC."})
         except ValueError as e:
@@ -3108,7 +3316,12 @@ class Handler(BaseHTTPRequestHandler):
             raise
         except BaseException as e:
             code, out = failure(e)
-        self.json(out, code)
+        try:
+            body = json.dumps(out, allow_nan=False).encode()
+        except ValueError:  # NaN or Infinity, which the page's JSON.parse refuses: an error it can read instead
+            code = 500
+            body = json.dumps({"error": "The studio's answer held a number that isn't one (NaN or Infinity)."}).encode()
+        self.send(code, body, "application/json")
 
     def read_body(self, path):
         """The request's body, read only when Content-Length is a whole number within the route's limit. Otherwise
@@ -3166,8 +3379,8 @@ class Handler(BaseHTTPRequestHandler):
             if i < len(src.frames):
                 return self.send(200, src.png(i), "image/png")
             self.send(404, b"no such frame", "text/plain")
-        elif (m := re.fullmatch(r"/api/video/(\w+)\.mp4", url.path)) and getattr(src := source_by_id(m[1]), "video", None):
-            self.send_file(src.preview, "video/mp4")
+        elif (m := re.fullmatch(r"/api/video/(\w+)\.mp4", url.path)) and (preview := video_preview(m[1])):
+            self.send_file(preview, "video/mp4")
         elif url.path == "/api/widgets":
             self.answer(list_widgets)
         elif url.path.startswith(("/api/media/inputs/", "/api/media/widgets/")):
