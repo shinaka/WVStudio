@@ -7,6 +7,7 @@ playlist document, which saves here as it changes; the player draws the same doc
 (docs/widgets.md) are files of their own in widgets/, beside the playlist's folder, saved one by one.
 """
 import base64
+import contextlib
 import copy
 import csv
 import errno
@@ -58,11 +59,26 @@ NO_WINDOW = subprocess.CREATE_NO_WINDOW
 
 # Opened media, one Source per file (normcased absolute path), least recently used first. The oldest go while
 # their decoded frames pass MEDIA_BYTES in all, or there are more than MEDIA_COUNT (docs/widgets.md: thumbnails of
-# a library load a lot of media, and mustn't push out what a scene is still loading).
+# a library load a lot of media, and mustn't push out what a scene is still loading). One used in the last
+# MEDIA_GRACE seconds is still having its frames fetched by the page, so it stays until they pass MEDIA_HARD; and
+# one that went is opened again when its frames are asked for (`opened`), so the page never gets a 404 for a file
+# it was just told about.
 sources = OrderedDict()
 sources_lock = threading.Lock()
 MEDIA_BYTES = 512 << 20
+MEDIA_HARD = 1 << 30
+MEDIA_GRACE = 30  # seconds
 MEDIA_COUNT = 64
+opened = OrderedDict()  # content id -> Seen: the files opened lately, to open again or serve a video's preview
+OPENED_COUNT = 4096
+opening = {}  # normcased path -> Lock, held while that file is opened: one decode, however many ask at once
+# At most DECODE_BYTES of frames are decoded at once, across every request: the page opens a whole library's
+# pictures together, and a shared widget's picture may take up to 1 GB as frames. A file waits for room; one
+# bigger than that waits until it's alone.
+DECODE_BYTES = 1 << 30
+VIDEO_COST = 256 << 20  # about the most a video's kept JPEGs take (VIDEO_FPS x VIDEO_SECONDS frames)
+decoding = threading.Condition()
+decoding_bytes = 0
 initial = None  # info for the image named on the command line
 
 
@@ -157,7 +173,8 @@ class Source:
         self.name, self.path = name, path
         self.stamp = file_stamp(path)  # what the file was when it was opened: a change opens it again
         self.id = hashlib.sha1(path.read_bytes()).hexdigest()[:12]
-        self.video = self.native = None
+        self.video = self.native = self.preview = None
+        self.used = time.monotonic()  # when the page last asked for it (trim_sources spares it for a moment)
         if path.suffix.lower() in VIDEO_TYPES:
             UPLOADS.mkdir(parents=True, exist_ok=True)
             self.preview = UPLOADS / f"{self.id}.preview.mp4"
@@ -688,31 +705,131 @@ def open_kept(src_name, name=None):
 
 def open_media(path, ref, name=None):
     """Opens a media file (cached, one Source per file) and describes it for the page, with `src` its ref."""
+    return {**media_info(open_source(path, ref, name)), "src": ref}
+
+
+class Seen:
+    """A file opened lately, by its content id: enough to open it again (`opened`)."""
+
+    def __init__(self, src, ref):
+        self.path, self.ref, self.name, self.preview = src.path, ref, src.name, src.preview
+
+
+def open_source(path, ref, name=None):
+    """The Source of a media file: the cached one while the file is unchanged, else opened now. Requests for one
+    file wait for a single decode, and every decode waits for room (decode_room)."""
     key = use_key(path)
-    with sources_lock:
-        src = sources.get(key)
-        if src and src.stamp == file_stamp(path):
+    while True:
+        with sources_lock:
+            src = sources.get(key)
+            if src and src.stamp == file_stamp(path):
+                src.used = time.monotonic()
+                sources.move_to_end(key)
+                return src
+            lock = opening.get(key)
+            if lock is None:
+                lock = opening[key] = threading.Lock()
+                lock.acquire()
+                break
+        with lock:  # another request is opening it: then look again
+            pass
+    try:
+        if not ref.startswith("sources/"):  # widget media and input pictures may come from anywhere: headers first
+            check_media_file(path, PLAYER_SIDE, PLAYER_DECODED)
+        with decode_room(decode_cost(path)):
+            src = Source(path, name or path.name, ref)
+        with sources_lock:
+            sources[key] = src
             sources.move_to_end(key)
-            return {**media_info(src), "src": ref}
-    if not ref.startswith("sources/"):  # widget media and input pictures may come from anywhere: headers first
-        check_media_file(path, PLAYER_SIDE, PLAYER_DECODED)
-    src = Source(path, name or path.name, ref)
-    with sources_lock:
-        sources[key] = src
-        sources.move_to_end(key)
-        while len(sources) > 1 and (len(sources) > MEDIA_COUNT or sum(s.bytes for s in sources.values()) > MEDIA_BYTES):
-            sources.popitem(last=False)
-    return {**media_info(src), "src": ref}
+            opened[src.id] = Seen(src, ref)
+            opened.move_to_end(src.id)
+            while len(opened) > OPENED_COUNT:
+                opened.popitem(last=False)
+            trim_sources()
+    finally:
+        with sources_lock:
+            del opening[key]
+        lock.release()
+    return src
+
+
+def trim_sources():
+    """Lets the least recently used sources go (under sources_lock) while there are more than MEDIA_COUNT or their
+    frames pass MEDIA_BYTES, except that one used in the last MEDIA_GRACE seconds, whose frames the page may still be
+    fetching, goes only while they pass MEDIA_HARD. The newest always stays."""
+    total, now = sum(s.bytes for s in sources.values()), time.monotonic()
+    while len(sources) > 1:
+        oldest = next(iter(sources.values()))  # least recently used: if it's recent, they all are
+        if not (len(sources) > MEDIA_COUNT or total > MEDIA_HARD
+                or (total > MEDIA_BYTES and now - oldest.used > MEDIA_GRACE)):
+            break
+        sources.popitem(last=False)
+        total -= oldest.bytes
+
+
+def decode_cost(path):
+    """About how many bytes opening a media file takes while it's decoded: an image's frames as RGBA, from its
+    headers; a video's kept JPEGs. 0 when its headers can't be read (opening it fails anyway)."""
+    if path.suffix.lower() in VIDEO_TYPES:
+        return VIDEO_COST
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            with Image.open(path) as im:
+                return getattr(im, "n_frames", 1) * im.width * im.height * 4
+    except Exception:
+        return 0
+
+
+@contextlib.contextmanager
+def decode_room(cost):
+    """Waits until `cost` bytes of decoding fit in DECODE_BYTES with what's being decoded now, and holds them."""
+    global decoding_bytes
+    cost = min(cost, DECODE_BYTES)
+    with decoding:
+        decoding.wait_for(lambda: decoding_bytes + cost <= DECODE_BYTES)
+        decoding_bytes += cost
+    try:
+        yield
+    finally:
+        with decoding:
+            decoding_bytes -= cost
+            decoding.notify_all()
 
 
 def source_by_id(sid):
-    """The open Source with this content id, for /api/frame and /api/video, or None."""
+    """The Source with this content id, for /api/frame, or None. One that was let go (trim_sources) is opened again
+    while its file still holds the same content: the page may still be fetching the frames of a file it was told
+    about a moment ago."""
     with sources_lock:
         for key, src in sources.items():
             if src.id == sid:
+                src.used = time.monotonic()
                 sources.move_to_end(key)
                 return src
-    return None
+        seen = opened.get(sid)
+    if seen is None or not inside(seen.path, seen.path.parent):  # gone, or not a plain file any more
+        return None
+    try:
+        src = open_source(seen.path, seen.ref, seen.name)
+    except KeyboardInterrupt:
+        raise
+    except BaseException:  # unreadable now (SystemExit too: wv.aseprite exits when Aseprite is missing)
+        return None
+    return src if src.id == sid else None  # changed since: the page's frames are of what it was
+
+
+def video_preview(sid):
+    """The browser's copy of the video with this content id, for /api/video, or None. It's a file of its own, so
+    it's served from there even after its Source was let go."""
+    with sources_lock:
+        for key, src in sources.items():
+            if src.id == sid:
+                src.used = time.monotonic()
+                sources.move_to_end(key)
+                return src.preview
+        seen = opened.get(sid)
+    return seen.preview if seen and seen.preview and seen.preview.is_file() else None
 
 
 def export_scene(req):
@@ -3215,8 +3332,8 @@ class Handler(BaseHTTPRequestHandler):
             if i < len(src.frames):
                 return self.send(200, src.png(i), "image/png")
             self.send(404, b"no such frame", "text/plain")
-        elif (m := re.fullmatch(r"/api/video/(\w+)\.mp4", url.path)) and getattr(src := source_by_id(m[1]), "video", None):
-            self.send_file(src.preview, "video/mp4")
+        elif (m := re.fullmatch(r"/api/video/(\w+)\.mp4", url.path)) and (preview := video_preview(m[1])):
+            self.send_file(preview, "video/mp4")
         elif url.path == "/api/widgets":
             self.answer(list_widgets)
         elif url.path.startswith(("/api/media/inputs/", "/api/media/widgets/")):
