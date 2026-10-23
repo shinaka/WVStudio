@@ -1,4 +1,4 @@
-# Widgets: reusable pieces (spec)
+# Widgets: reusable pieces
 
 A **widget** is a small canvas of its own, made in the studio's editor like a scene: images, videos, text,
 shapes, live values and other widgets, on layers. It has a name, a fixed size (its **container**) and, if it
@@ -374,7 +374,7 @@ So a "Dashboard" widget can have one Accent input, and pass it to the Accent of 
 
 ### 4.6 Examples
 
-Both renderers must give exactly these results. "Shows" is what the live text then draws. They're also the
+Both renderers give exactly these results. "Shows" is what the live text then draws. They're also the
 test vectors in `player/tests/widgets/inputs.json`.
 
 | text | text inputs | result |
