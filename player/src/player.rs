@@ -62,6 +62,8 @@ impl Loaded {
 struct Live {
     /// The live text with its placeholders filled in, as drawn.
     texts: Vec<Text>,
+    /// Which of each text's placeholders had no value then (`data::resolve_gaps`).
+    gaps: Vec<Vec<bool>>,
     frames: Arc<Vec<art::Frame>>,
     /// When drawing them started, and the work it took: the next redraw waits on it (`redraw_wait`).
     started: Instant,
@@ -72,20 +74,21 @@ struct Live {
 struct Composing {
     base: Arc<art::Prepared>,
     texts: Vec<Text>,
+    gaps: Vec<Vec<bool>>,
     started: Instant,
     /// The frames, and the work they took.
     job: JoinHandle<(Arc<Vec<art::Frame>>, Duration)>,
 }
 
 /// The share of one processor core that redrawing live text over an animation takes, at most, on
-/// average (docs/widgets.md, Live text).
-const LIVE_SHARE: f64 = 0.02;
+/// average (docs/widgets.md, Live text). A redraw that fills in a value that was missing isn't held back.
+const LIVE_SHARE: f64 = 0.10;
 /// Live text is redrawn at most this often: as often as it's looked at.
 const LIVE_EVERY: Duration = Duration::from_millis(500);
 
 /// How long after a redraw of live text started the next may start, when it took `cost` of work: over a
 /// still scene (one frame) every 0.5 s, as values are looked at; over an animation no sooner than
-/// max(0.5 s, cost ÷ LIVE_SHARE), so the redraws take about LIVE_SHARE of one core.
+/// max(0.5 s, cost ÷ LIVE_SHARE) = max(0.5 s, 10 × cost), so the redraws take about LIVE_SHARE of one core.
 fn redraw_wait(frames: usize, cost: Duration) -> Duration {
     if frames <= 1 { LIVE_EVERY } else { LIVE_EVERY.max(cost.div_f64(LIVE_SHARE)) }
 }
@@ -170,16 +173,18 @@ impl Player {
 
     /// Keeps the live text current: takes in finished redraws, and with `look`, starts one if the text
     /// (filled in from the values as they are now) has changed and the redraw budget allows it (going by
-    /// `now`); else the change waits, and the redraw that starts later draws the values as they are then.
-    /// Cheap, and free for scenes without live text. Returns whether the frames showing changed.
+    /// `now`), or the change fills in a value that was missing; else the change waits, and the redraw that
+    /// starts later draws the values as they are then. One redraw over the scene's frames at a time: a
+    /// change made while one is on its way waits for it to land. Cheap, and free for scenes without live
+    /// text. Returns whether the frames showing changed.
     fn update_live(&mut self, look: bool, now: Instant) -> bool {
         let mut changed = false;
         if self.composing.as_ref().is_some_and(|c| c.job.is_finished()) {
-            let Composing { base, texts, started, job } = self.composing.take().unwrap();
+            let Composing { base, texts, gaps, started, job } = self.composing.take().unwrap();
             // dropped if the scene has moved on meanwhile
             if let Ok((frames, cost)) = job.join() {
                 if Arc::ptr_eq(&base, &self.current.frames) {
-                    self.current.live = Some(Live { texts, frames, started, cost });
+                    self.current.live = Some(Live { texts, gaps, frames, started, cost });
                     changed = true;
                 }
             }
@@ -188,42 +193,51 @@ impl Player {
             return changed;
         }
         // the showing scene's own read: its texts and its over list are numbered alike
-        let texts = filled(&self.current.playlist, self.current.index);
+        let (texts, gaps) = filled_gaps(&self.current.playlist, self.current.index);
         if texts.is_empty() {
             self.composing = None;
             return self.current.live.take().is_some() || changed;
         }
-        let base = &self.current.frames;
+        // a redraw over these frames is on its way: it lands first (one started now would drop it, and a
+        // redraw slower than the changes would then never show)
+        if self.composing.as_ref().is_some_and(|c| Arc::ptr_eq(&c.base, &self.current.frames)) {
+            return changed;
+        }
         let showing = self.current.live.as_ref().is_some_and(|l| l.texts == texts);
-        let coming = self.composing.as_ref().is_some_and(|c| c.texts == texts && Arc::ptr_eq(&c.base, base));
-        if !showing && !coming && self.may_redraw(now) {
+        if !showing && (self.fills_in(&gaps) || self.may_redraw(now)) {
             let (playlist, index, base, opts, drawn) =
                 (self.current.playlist.clone(), self.current.index, self.current.frames.clone(), self.opts.clone(), texts.clone());
             let job = std::thread::spawn(move || {
                 let (frames, _, cost) = timed_overlay(&playlist, index, &base, &drawn, &opts);
                 (frames, cost)
             });
-            self.composing = Some(Composing { base: self.current.frames.clone(), texts, started: now, job });
+            self.composing = Some(Composing { base: self.current.frames.clone(), texts, gaps, started: now, job });
         }
         changed
     }
 
-    /// Whether a redraw of the live text may start at `now`: the last one started at least `redraw_wait`
-    /// ago (docs/widgets.md, Live text). A wait past 5 s is logged once per version of a scene.
+    /// Whether the values as they are now (`gaps`: which placeholders have none) fill in one that the live
+    /// text showing had none for. Such a redraw isn't held back: a value shows as soon as its source first
+    /// reports (docs/widgets.md, Live text).
+    fn fills_in(&self, gaps: &[Vec<bool>]) -> bool {
+        self.current.live.as_ref().is_some_and(|live| {
+            live.gaps.iter().zip(gaps).any(|(was, now)| was.iter().zip(now).any(|(was, now)| *was && !*now))
+        })
+    }
+
+    /// Whether a redraw of the live text may start at `now`, with none on its way: the one showing started
+    /// at least `redraw_wait` ago (docs/widgets.md, Live text). A wait past 5 s is logged once per version
+    /// of a scene.
     fn may_redraw(&mut self, now: Instant) -> bool {
-        // when a redraw over these frames that's still on its way started
-        let coming = self.composing.as_ref().filter(|c| Arc::ptr_eq(&c.base, &self.current.frames)).map(|c| c.started);
-        // no live frames yet (a version taken from the memory cache): its cost isn't known, so one at a time
-        let Some(live) = &self.current.live else { return coming.is_none() };
-        // the last start: a redraw still on its way, else the one showing; the cost is the last known
-        let started = coming.unwrap_or(live.started);
+        // no live frames yet (a version taken from the memory cache): its cost isn't known, so it starts now
+        let Some(live) = &self.current.live else { return true };
         let frames = self.current.frames.frames.len();
         let wait = redraw_wait(frames, live.cost);
         if wait > Duration::from_secs(5) && self.slow.insert(self.current.key) {
-            log(format_args!("live text on {}: {frames} frames, {:.1} s of work: values update at most every {}",
-                             self.scene().name, live.cost.as_secs_f64(), span(wait)));
+            log(format_args!("live text on {}: {frames} frames, {:.1} s of work: values update at most every {}, \
+                              a missing value as soon as it comes", self.scene().name, live.cost.as_secs_f64(), span(wait)));
         }
-        now.saturating_duration_since(started) >= wait
+        now.saturating_duration_since(live.started) >= wait
     }
 
     fn editing(&self) -> bool {
@@ -412,12 +426,16 @@ fn cached(cache: &Cache, playlist: &Arc<Playlist>, index: usize, opts: &art::Opt
 }
 
 /// A scene's live text (its own, then the global layers', in drawing order: the order its over list
-/// numbers them in), filled in from the values as they are now.
-fn filled(playlist: &Playlist, index: usize) -> Vec<Text> {
+/// numbers them in), filled in from the values as they are now; with which of each text's placeholders
+/// have no value (`data::resolve_gaps`).
+fn filled_gaps(playlist: &Playlist, index: usize) -> (Vec<Text>, Vec<Vec<bool>>) {
     playlist::live_texts(&playlist.scenes[index], &playlist.global)
         .into_iter()
-        .map(|w| Text { text: data::resolve(&w.text), ..w })
-        .collect()
+        .map(|w| {
+            let (text, gaps) = data::resolve_gaps(&w.text);
+            (Text { text, ..w }, gaps)
+        })
+        .unzip()
 }
 
 /// The frames with `texts` drawn in their over list and laid over them; the same frames when that draws
@@ -441,10 +459,10 @@ fn load_from(playlist: &Arc<Playlist>, from: usize, opts: &art::Options, cache: 
     let n = playlist.scenes.len();
     (0..n).map(|k| (from + k) % n).find_map(|index| {
         let mut loaded = cached(cache, playlist, index, opts).or_else(|| prepare(playlist, index, opts, cache, save))?;
-        let texts = filled(playlist, index);
+        let (texts, gaps) = filled_gaps(playlist, index);
         if !texts.is_empty() {
             let (frames, started, cost) = timed_overlay(playlist, index, &loaded.frames, &texts, opts);
-            loaded.live = Some(Live { texts, frames, started, cost });
+            loaded.live = Some(Live { texts, gaps, frames, started, cost });
         }
         Some(loaded)
     })
@@ -771,6 +789,11 @@ mod tests {
         assert!(took >= p.settle && took < p.settle + 3 * CHECK_EVERY, "the edit took {took:?} to show");
     }
 
+    /// A scene's live text filled in, as the player draws it.
+    fn filled(playlist: &Playlist, index: usize) -> Vec<Text> {
+        filled_gaps(playlist, index).0
+    }
+
     /// Sets a value live text can show, as a source would.
     fn set(key: &str, n: f64) {
         data::store().put("wvtest", Duration::from_secs(180), vec![(key.into(), data::Value::Number(n))]);
@@ -926,18 +949,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// Over an animation, a redraw that took `c` of work holds the next back until max(0.5 s, 50 × c)
-    /// after it started, and the one that starts then shows the latest value; over a still scene,
-    /// values show every 0.5 s.
+    /// Over an animation, a redraw that took `c` of work holds the next back until max(0.5 s, 10 × c)
+    /// after it started (about 10% of one core), and the one that starts then shows the latest value; over
+    /// a still scene, values show every 0.5 s.
     #[test]
     fn redraw_budget() {
         if !Path::new(text::DEFAULT_FONT).exists() {
             return;
         }
         let ms = Duration::from_millis;
-        assert_eq!(redraw_wait(3, ms(1000)), Duration::from_secs(50));
+        assert_eq!(redraw_wait(3, ms(1000)), Duration::from_secs(10));
         assert_eq!(redraw_wait(3, ms(1)), ms(500));
-        assert_eq!(span(redraw_wait(1800, Duration::from_secs_f64(5.1))), "4m 15s");
+        assert_eq!(redraw_wait(1, Duration::from_secs(3)), ms(500));
+        assert_eq!(span(redraw_wait(1800, Duration::from_secs_f64(5.1))), "51s");
+        assert_eq!(span(redraw_wait(1800, Duration::from_secs_f64(25.5))), "4m 15s");
         let s = Scratch::new("budget");
         set("wvtest.budget", 0.0);
         std::fs::write(&s.list, Scratch::json("n={wvtest.budget}")).unwrap();
@@ -950,26 +975,26 @@ mod tests {
             (live.started, live.cost) = (started, cost);
         };
         fake(&mut p, t0, ms(1000));
-        // changes 0.1 s apart start nothing until 50 s after the last start
+        // changes 0.1 s apart start nothing until 10 s after the last start
         for k in 1..=10u32 {
             set("wvtest.budget", k as f64);
             assert!(!p.update_live(true, t0 + ms(100) * k));
             assert!(p.composing.is_none());
         }
         set("wvtest.budget", 99.0);
-        p.update_live(true, t0 + ms(49_900));
+        p.update_live(true, t0 + ms(9_900));
         assert!(p.composing.is_none());
-        p.update_live(true, t0 + ms(50_000));
-        assert_eq!(p.composing.as_ref().expect("no redraw after 50 s").texts[0].text, "n=99");
-        assert!(eventually(|| p.update_live(false, t0 + ms(50_000))));
+        p.update_live(true, t0 + ms(10_000));
+        assert_eq!(p.composing.as_ref().expect("no redraw after 10 s").texts[0].text, "n=99");
+        assert!(eventually(|| p.update_live(false, t0 + ms(10_000))));
         assert_eq!(p.current.live.as_ref().unwrap().texts[0].text, "n=99");
         assert!(p.slow.contains(&p.current.key), "a wait past 5 s is logged");
-        // that redraw's own cost (1 s, faked) holds the next back 50 s from when it started
-        fake(&mut p, t0 + ms(50_000), ms(1000));
+        // that redraw's own cost (1 s, faked) holds the next back 10 s from when it started
+        fake(&mut p, t0 + ms(10_000), ms(1000));
         set("wvtest.budget", 100.0);
-        p.update_live(true, t0 + ms(99_900));
+        p.update_live(true, t0 + ms(19_900));
         assert!(p.composing.is_none());
-        p.update_live(true, t0 + ms(100_000));
+        p.update_live(true, t0 + ms(20_000));
         assert!(p.composing.is_some());
 
         // a still scene: every 0.5 s, whatever its redraw costs
@@ -977,6 +1002,7 @@ mod tests {
         let still = r#"{ "seconds": 1, "overlay": [ { "id": "clock", "type": "text", "text": "n={wvtest.still}", "size": 100 } ],
                          "items": [ { "file": "still.png", "widgets": [] } ] }"#;
         std::fs::write(&s.list, still).unwrap();
+        set("wvtest.still", 0.0); // there from the start: a first value wouldn't wait at all
         let mut p = s.player();
         assert_eq!(p.current.frames.frames.len(), 1);
         for (k, cost) in [(1u32, ms(10)), (2, ms(50))] {
@@ -1038,11 +1064,96 @@ mod tests {
         }
         go.send(()).unwrap();
         assert!(eventually(|| p.update_live(false, t0 + ms(3000))));
-        // then its cost holds the next back until 50 s after it started, and that one shows the last value
-        p.update_live(true, t0 + ms(49_900));
+        // then its cost holds the next back until 10 s after it started, and that one shows the last value
+        p.update_live(true, t0 + ms(9_900));
         assert!(p.composing.is_none());
-        p.update_live(true, t0 + ms(50_000));
-        assert_eq!(p.composing.as_ref().expect("no redraw after 50 s").texts[0].text, "n=6");
+        p.update_live(true, t0 + ms(10_000));
+        assert_eq!(p.composing.as_ref().expect("no redraw after 10 s").texts[0].text, "n=6");
+    }
+
+    /// Over an animation, a redraw that fills in a value that was missing (its source's first report) isn't
+    /// held back by the budget, so values show as soon as they come; a change of a value that's there still
+    /// waits, and the next first value brings it along.
+    #[test]
+    fn first_values_arent_held_back() {
+        if !Path::new(text::DEFAULT_FONT).exists() {
+            return;
+        }
+        let ms = Duration::from_millis;
+        let s = Scratch::new("first");
+        std::fs::write(&s.list, Scratch::json("n={wvtest.first_n} m={wvtest.first_m}")).unwrap();
+        let mut p = s.player();
+        assert_eq!(p.current.frames.frames.len(), 3);
+        assert_eq!(p.current.live.as_ref().unwrap().texts[0].text, "n=-- m=--", "neither value has come yet");
+        // a fake clock, and a fake cost of 1 s for each drawing: 10 s between redraws
+        let t0 = whenever();
+        let fake = |p: &mut Player, started: Instant| {
+            let live = p.current.live.as_mut().unwrap();
+            (live.started, live.cost) = (started, ms(1000));
+        };
+        fake(&mut p, t0);
+        // n's first value: drawn at once
+        set("wvtest.first_n", 1.0);
+        p.update_live(true, t0 + ms(500));
+        assert_eq!(p.composing.as_ref().expect("the first value was held back").texts[0].text, "n=1 m=--");
+        assert!(eventually(|| p.update_live(false, t0 + ms(500))));
+        fake(&mut p, t0 + ms(500));
+        // a change of n waits for the budget...
+        set("wvtest.first_n", 2.0);
+        p.update_live(true, t0 + ms(1000));
+        assert!(p.composing.is_none(), "a change of a value that was there wasn't held back");
+        // ...until m's first value, which is drawn at once, with it
+        set("wvtest.first_m", 5.0);
+        p.update_live(true, t0 + ms(1500));
+        assert_eq!(p.composing.as_ref().expect("the second first value was held back").texts[0].text, "n=2 m=5");
+        assert!(eventually(|| p.update_live(false, t0 + ms(1500))));
+        fake(&mut p, t0 + ms(1500));
+        // nothing missing now: 10 s again
+        set("wvtest.first_n", 3.0);
+        p.update_live(true, t0 + ms(11_400));
+        assert!(p.composing.is_none());
+        p.update_live(true, t0 + ms(11_500));
+        assert_eq!(p.composing.as_ref().expect("no redraw after 10 s").texts[0].text, "n=3 m=5");
+    }
+
+    /// Over a still scene, a redraw slower than the values change still lands: while one is on its way no
+    /// other starts (each would drop the one before, so none would ever show, and the dropped ones would
+    /// keep running), and the next look after it lands draws the latest value.
+    #[test]
+    fn slow_redraws_land_over_a_still() {
+        if !Path::new(text::DEFAULT_FONT).exists() {
+            return;
+        }
+        let ms = Duration::from_millis;
+        let s = Scratch::new("slow-still");
+        RgbaImage::from_pixel(160, 72, Rgba([0, 0, 90, 255])).save(s.dir.join("still.png")).unwrap();
+        set("wvtest.slow", 0.0);
+        std::fs::write(&s.list, r#"{ "seconds": 1, "overlay": [ { "id": "clock", "type": "text", "text": "n={wvtest.slow}", "size": 100 } ],
+                                     "items": [ { "file": "still.png", "widgets": [] } ] }"#).unwrap();
+        let mut p = s.player();
+        assert_eq!(p.current.frames.frames.len(), 1);
+        let t0 = whenever();
+        set("wvtest.slow", 1.0);
+        p.update_live(true, t0);
+        // kept on its way, as a redraw of a heavy scene that takes seconds would be
+        let coming = p.composing.as_mut().expect("no redraw");
+        let (go, wait) = std::sync::mpsc::channel::<()>();
+        let frames = Arc::new(p.current.frames.frames.clone());
+        coming.job = std::thread::spawn(move || {
+            let _ = wait.recv();
+            (frames, ms(3000))
+        });
+        let first = coming.job.thread().id();
+        for k in 1..=6u32 {
+            set("wvtest.slow", 1.0 + k as f64);
+            p.update_live(true, t0 + ms(500) * k);
+            assert_eq!(p.composing.as_ref().map(|c| c.job.thread().id()), Some(first), "another redraw started at look {k}");
+        }
+        go.send(()).unwrap();
+        assert!(eventually(|| p.update_live(false, t0 + ms(3000))));
+        assert_eq!(p.current.live.as_ref().unwrap().texts[0].text, "n=1");
+        p.update_live(true, t0 + ms(3500));
+        assert_eq!(p.composing.as_ref().expect("no redraw after the slow one landed").texts[0].text, "n=7");
     }
 
     /// The memory cache counts the stills laid over a scene's frames, not only its JPEGs, so scenes with

@@ -537,12 +537,20 @@ laid over each frame: one blend per frame.
 
 **Over an animation, values update less often.** A change of a live text means decoding, blending and encoding
 every frame of the scene's cycle again: for a 60-second video, 1800 frames. The player keeps that work to about
-2% of one processor core: after a redraw that took `c` seconds of work, the next one starts no sooner than
-`max(0.5 s, 50 × c)` after the last one started, and shows every change made meanwhile. Over a still scene
-that's twice a second at most; over a short GIF a few seconds; over a long video it can be minutes. The studio
-says so in the scene's note ("Live values here redraw M frames each time they change, so the cooler updates
-them less often"), and warns when a copy's animation stretches a scene's loop, or every scene's through Global,
-to the 60 s cap.
+10% of one processor core: after a redraw that took `c` seconds of work, the next one starts no sooner than
+`max(0.5 s, 10 × c)` after the last one started, and shows every change made meanwhile. Over a still scene
+that's twice a second at most; over a short GIF every few seconds; over a long video it can be minutes. The
+studio says so in the scene's note ("Live values here redraw M frames each time they change, so the cooler
+updates them less often"), and warns when a copy's animation stretches a scene's loop, or every scene's through
+Global, to the 60 s cap.
+
+- **A value that was missing shows at once.** When a live text shows `--` or its fallback because a value
+  hasn't come yet ([data.md](data.md)), or has gone stale, the redraw that fills it in isn't held back: the
+  value appears as soon as its source reports it, with any other change made meanwhile. Only changes to values
+  that were already showing wait.
+- **One redraw at a time.** A change made while a redraw is being drawn waits for that one to finish, and the
+  next starts from the values as they are then. So a heavy scene whose redraw takes longer than its values take
+  to change still shows each new picture as it's done.
 
 ### 5.8 Animation and the timeline
 

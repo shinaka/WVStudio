@@ -301,7 +301,8 @@ hours.
     scenes.md ("Live text").
   - **When to redraw:** the live text is redrawn only when some live text object's resolved text changes.
     That's checked every 500 ms, so `{time:%H:%M:%S}` redraws about once a second and `{time}` once a
-    minute. Over an animation, redraws are spaced out to stay cheap (scenes.md).
+    minute. Over an animation, redraws are spaced out to stay cheap (scenes.md), except the one that fills
+    in a value that was missing: that one is drawn as soon as the value comes.
   - **Building frames:** each frame is the cached JPEG decoded, the live text blended over it, then
     re-encoded, rotated as before.
   - **Caching:** only the frames of the current text are kept, so an animation is re-encoded once per
