@@ -867,11 +867,17 @@ impl Hub {
         found
     }
 
-    /// The catalog as the API gives it: each manifest, without `run`, with its status here.
+    /// The catalog as the API gives it: each manifest, without `run`, with its status here, and pc's with a
+    /// row for each key PawnIO has read (`live_rows`).
     pub fn catalog(&self) -> serde_json::Value {
+        self.catalog_with(pawnio::labels())
+    }
+
+    /// `catalog`, with these as PawnIO's labels.
+    fn catalog_with(&self, labels: Vec<pawnio::Label>) -> serde_json::Value {
         let config = self.config.lock().unwrap().clone();
         let status = self.status.lock().unwrap().clone();
-        catalog::current().json(|m| {
+        let mut catalog = catalog::current().json(|m| {
             let enabled = m.id == "time" || config.sources.iter().any(|s| s.kind == m.id && s.enabled);
             let (ok, error, notes, updated_at) = match (m.id.as_str(), status.get(&m.id)) {
                 ("time", _) => (true, None, Vec::new(), Some(iso(Utc::now()))),
@@ -883,7 +889,9 @@ impl Hub {
                 (_, None) => (false, None, Vec::new(), None),
             };
             json!({ "enabled": enabled, "ok": ok, "error": error, "notes": notes, "updated_at": updated_at })
-        })
+        });
+        live_rows(&mut catalog, labels);
+        catalog
     }
 
     /// Waits until every source has been polled once, or `timeout` passes.
@@ -921,13 +929,30 @@ impl Hub {
     }
 }
 
+/// Adds a row to pc's `provides` in the catalog for each key PawnIO has read since it was turned on, with
+/// its name for people and its unit. They're marked `live`, so the studio lists them under `pawnio.*`, and
+/// one coming in doesn't rebuild the form.
+fn live_rows(catalog: &mut serde_json::Value, labels: Vec<pawnio::Label>) {
+    let mut manifests = catalog["sources"].as_array_mut().into_iter().flatten();
+    let Some(provides) = manifests.find(|m| m["id"] == "pc").and_then(|pc| pc["provides"].as_array_mut()) else { return };
+    for pawnio::Label { key, label, unit } in labels {
+        let mut row = json!({ "key": key, "label": label, "kind": "number", "live": true });
+        if !unit.is_empty() {
+            row["unit"] = json!(unit);
+        }
+        provides.push(row);
+    }
+}
+
 /// Fills in texts through the running player's API (the values it has now), for `wvplay render`. None
 /// when no player is answering.
 pub fn ask_player(playlist: &Path, texts: &[String]) -> Option<Vec<String>> {
     let port = read_config(&file_for(playlist)).ok()?.api_port;
     let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(3))).build().into();
     let body = json!({ "texts": texts }).to_string();
-    let reply = agent.post(format!("http://127.0.0.1:{port}/resolve")).send(body).ok()?.body_mut().read_to_string().ok()?;
+    // the header the player's API wants on every POST (api.rs)
+    let request = agent.post(format!("http://127.0.0.1:{port}/resolve")).header("X-WV", "1");
+    let reply = request.send(body).ok()?.body_mut().read_to_string().ok()?;
     let reply: serde_json::Value = serde_json::from_str(&reply).ok()?;
     let filled: Option<Vec<String>> = reply["texts"].as_array()?.iter().map(|t| t.as_str().map(String::from)).collect();
     filled.filter(|f| f.len() == texts.len())
@@ -1320,6 +1345,42 @@ mod tests {
         let took = start.elapsed();
         hub.apply(Config::default());
         assert!(took < Duration::from_millis(500), "{took:?}");
+    }
+
+    /// Each key PawnIO has read is a live row in pc's provides, after its own, with its name and unit;
+    /// nothing else in the catalog changes.
+    #[test]
+    fn live_label_rows() {
+        let plain = catalog::Catalog { manifests: catalog::builtins(), problems: Vec::new() }.json(|_| json!({}));
+        let pc = |c: &mut serde_json::Value| c["sources"].as_array_mut().unwrap().iter_mut().find(|m| m["id"] == "pc").unwrap()["provides"].take();
+        let own = pc(&mut plain.clone());
+        let label = |key: &str, label: &str, unit: &str| pawnio::Label { key: key.into(), label: label.into(), unit: unit.into() };
+        let labels = vec![label("pawnio.cpu.temperature.tctl", "CPU Tctl", "°C"),
+                          label("pawnio.ite_it87952e.fan.fan_2", "System Fan #6 / Pump", "RPM"), label("pawnio.x", "X", "")];
+        let mut with = plain.clone();
+        live_rows(&mut with, labels.clone());
+        let rows = pc(&mut with);
+        let rows = rows.as_array().unwrap();
+        let n = own.as_array().unwrap().len();
+        assert_eq!(rows.len(), n + 3);
+        assert_eq!(rows[..n], own.as_array().unwrap()[..]);
+        assert_eq!(rows[n], json!({ "key": "pawnio.cpu.temperature.tctl", "label": "CPU Tctl", "unit": "°C", "kind": "number", "live": true }));
+        assert_eq!(rows[n + 1]["label"], json!("System Fan #6 / Pump"));
+        assert_eq!(rows[n + 2], json!({ "key": "pawnio.x", "label": "X", "kind": "number", "live": true }));
+        assert!(own.as_array().unwrap().iter().all(|p| p.get("live").is_none()));
+        // with pc's provides taken out of both, the rest is the same
+        let mut rest = plain.clone();
+        pc(&mut rest);
+        assert_eq!(with, rest);
+        let mut none = plain.clone();
+        live_rows(&mut none, Vec::new());
+        assert_eq!(none, plain);
+        // the hub's catalog has them, as PawnIO has them now (in a test it never reads, so none)
+        let hub = hub_with(Vec::new());
+        let mut served = hub.catalog_with(labels);
+        assert_eq!(pc(&mut served).as_array().unwrap()[n..], rows[n..]);
+        let mut served = hub.catalog();
+        assert_eq!(pc(&mut served).as_array().unwrap().len(), n + pawnio::labels().len());
     }
 
     #[test]

@@ -39,9 +39,9 @@ wvplay: drives the Thermalright Wonder Vision 360 screen directly, without TRCC.
 ";
 
 /// What `wvplay features` prints: one `<feature> <version>` per line. The studio reads it to tell a
-/// player built before widgets (docs/widgets.md, Compatibility).
+/// player built before widgets (docs/widgets.md, Compatibility), or before PawnIO's sensors.
 pub fn features() -> String {
-    "widgets 1\n".to_string()
+    "widgets 1\npawnio 1\n".to_string()
 }
 
 fn option(args: &[String], name: &str) -> Result<Option<f64>, Box<dyn Error>> {
@@ -170,5 +170,12 @@ mod tests {
     fn features_says_widgets() {
         assert!(features().lines().any(|l| l == "widgets 1"));
         assert!(USAGE.contains("wvplay features"));
+    }
+
+    /// ...and this one, to tell a player that reads PawnIO's sensors (the pc source's `pawnio`).
+    #[test]
+    fn features_says_pawnio() {
+        assert!(features().lines().any(|l| l == "pawnio 1"));
+        assert!(features().lines().all(|l| l.split(' ').count() == 2), "{:?}", features());
     }
 }
