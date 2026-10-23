@@ -13,6 +13,7 @@ use serde_json::{Value as Json, json};
 use tiny_http::{Header, Method, Request, Response, Server};
 
 use crate::data::{self, Hub, Source, iso, store};
+use crate::pawnio;
 use crate::player::log;
 use crate::sources::Polled;
 
@@ -25,6 +26,8 @@ pub fn serve(hub: Arc<Hub>) {
             Ok(server) => {
                 failed = None;
                 log(format_args!("data: API on http://127.0.0.1:{port}"));
+                // a second player, which never gets the port, never asks for administrator rights
+                pawnio::api_bound();
                 let server = Arc::new(server);
                 *hub.server.lock().unwrap() = Some(server.clone());
                 for request in server.incoming_requests() {

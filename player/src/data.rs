@@ -17,7 +17,7 @@ use serde_json::json;
 
 use crate::player::log;
 use crate::sources::{self, Polled};
-use crate::{api, catalog, playlist, plugin};
+use crate::{api, catalog, pawnio, playlist, plugin};
 
 /// What a placeholder shows for a missing or stale value, when it gives no fallback.
 const MISSING: &str = "--";
@@ -367,6 +367,8 @@ pub struct Source {
     pub interval: Option<f64>,
     /// pc: read HWiNFO's shared memory too.
     pub hwinfo: bool,
+    /// pc: read sensors through PawnIO too (src/pawnio), which asks for administrator rights.
+    pub pawnio: bool,
     /// pc: read Libre Hardware Monitor's web server too, at `lhm_url`, with the user name and password
     /// its Authentication was given, when either is set.
     pub lhm: bool,
@@ -404,6 +406,7 @@ impl Default for Common {
 #[serde(default)]
 struct Builtin {
     hwinfo: bool,
+    pawnio: bool,
     lhm: bool,
     lhm_url: String,
     lhm_user: String,
@@ -416,12 +419,12 @@ struct Builtin {
 impl Default for Builtin {
     fn default() -> Builtin {
         let s = Source::default();
-        Builtin { hwinfo: s.hwinfo, lhm: s.lhm, lhm_url: s.lhm_url, lhm_user: s.lhm_user, lhm_password: s.lhm_password,
-                  url: s.url, token: s.token, entities: s.entities }
+        Builtin { hwinfo: s.hwinfo, pawnio: s.pawnio, lhm: s.lhm, lhm_url: s.lhm_url, lhm_user: s.lhm_user,
+                  lhm_password: s.lhm_password, url: s.url, token: s.token, entities: s.entities }
     }
 }
 
-const BUILTIN_KEYS: [&str; 8] = ["hwinfo", "lhm", "lhm_url", "lhm_user", "lhm_password", "url", "token", "entities"];
+const BUILTIN_KEYS: [&str; 9] = ["hwinfo", "pawnio", "lhm", "lhm_url", "lhm_user", "lhm_password", "url", "token", "entities"];
 
 impl<'de> Deserialize<'de> for Source {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Source, D::Error> {
@@ -430,7 +433,7 @@ impl<'de> Deserialize<'de> for Source {
         if catalog::is_builtin(&source.kind) {
             let own: serde_json::Map<_, _> = BUILTIN_KEYS.iter().filter_map(|k| rest.remove_entry(*k)).collect();
             let b: Builtin = serde_json::from_value(serde_json::Value::Object(own)).map_err(serde::de::Error::custom)?;
-            (source.hwinfo, source.lhm, source.lhm_url) = (b.hwinfo, b.lhm, b.lhm_url);
+            (source.hwinfo, source.pawnio, source.lhm, source.lhm_url) = (b.hwinfo, b.pawnio, b.lhm, b.lhm_url);
             (source.lhm_user, source.lhm_password) = (b.lhm_user, b.lhm_password);
             (source.url, source.token, source.entities) = (b.url, b.token, b.entities);
         }
@@ -441,7 +444,7 @@ impl<'de> Deserialize<'de> for Source {
 
 impl Default for Source {
     fn default() -> Source {
-        Source { kind: String::new(), enabled: true, interval: None, hwinfo: false, lhm: false,
+        Source { kind: String::new(), enabled: true, interval: None, hwinfo: false, pawnio: false, lhm: false,
                  lhm_url: sources::LHM_URL.to_string(), lhm_user: String::new(), lhm_password: String::new(),
                  url: String::new(), token: String::new(), entities: Vec::new(), extra: serde_json::Map::new() }
     }
@@ -475,6 +478,7 @@ impl Source {
         }
         match key {
             "hwinfo" => Some(json!(self.hwinfo)),
+            "pawnio" => Some(json!(self.pawnio)),
             "lhm" => Some(json!(self.lhm)),
             "lhm_url" => Some(json!(self.lhm_url)).filter(|_| !self.lhm_url.is_empty()),
             "lhm_user" => Some(json!(self.lhm_user)).filter(|_| !self.lhm_user.is_empty()),
@@ -496,7 +500,7 @@ impl Source {
             "token" if catalog::is_builtin(&self.kind) => self.token = from.token.clone(),
             "lhm_password" if catalog::is_builtin(&self.kind) => self.lhm_password = from.lhm_password.clone(),
             "url" if catalog::is_builtin(&self.kind) => self.url = from.url.clone(),
-            "hwinfo" | "lhm" | "lhm_url" | "lhm_user" | "entities" if catalog::is_builtin(&self.kind) => {}
+            "hwinfo" | "pawnio" | "lhm" | "lhm_url" | "lhm_user" | "entities" if catalog::is_builtin(&self.kind) => {}
             _ => {
                 if let Some(v) = from.extra.get(key) {
                     self.extra.insert(key.to_string(), v.clone());
@@ -599,8 +603,8 @@ pub fn read_config(file: &Path) -> Result<Config, String> {
 pub struct Hub {
     pub file: PathBuf,
     config: Mutex<Config>,
-    /// The sources being polled, each with the flag that stops its thread.
-    running: Mutex<Vec<(Source, Arc<AtomicBool>)>>,
+    /// The sources being polled.
+    running: Mutex<Vec<Running>>,
     /// Each source's latest poll: its notes, or what went wrong.
     status: Mutex<BTreeMap<String, Status>>,
     /// The API's server, so a new port can take over from it.
@@ -609,6 +613,14 @@ pub struct Hub {
     pub plugins: PathBuf,
     /// When last-values.json was last written, so a streaming plugin doesn't rewrite it on every line.
     saved_at: Mutex<Option<Instant>>,
+}
+
+/// A source being polled, with the flag that stops its thread and the one that has it poll at once.
+#[derive(Clone)]
+struct Running {
+    source: Source,
+    stop: Arc<AtomicBool>,
+    wake: Arc<AtomicBool>,
 }
 
 /// Starts polling the sources in the data.json beside `playlist`, and serving the local API if `api`.
@@ -634,6 +646,13 @@ pub fn start(playlist: &Path, api: bool) -> Arc<Hub> {
             status.insert(kind, Status { result: Ok(Vec::new()), updated_at: Some(at) });
         }
     }
+    // a change in PawnIO's state (asked, allowed, declined, off) shows at once, not a pc interval later
+    let woken = Arc::downgrade(&hub);
+    pawnio::set_notify(Box::new(move || {
+        if let Some(hub) = woken.upgrade() {
+            hub.poll_now("pc");
+        }
+    }));
     hub.apply(config);
     let watcher = hub.clone();
     std::thread::spawn(move || watcher.watch());
@@ -651,22 +670,25 @@ impl Hub {
 
     /// Starts the sources that are new or changed, and stops the ones that changed or went.
     fn apply(self: &Arc<Self>, config: Config) {
+        // before any source starts, so the pc source's first poll already sees whether PawnIO is wanted
+        pawnio::set_wanted(config.sources.iter().any(|s| s.enabled && s.kind == "pc" && s.pawnio));
         let mut running = self.running.lock().unwrap();
         let wanted: Vec<&Source> = config.sources.iter().filter(|s| s.enabled).collect();
-        running.retain(|(source, stop)| {
-            let keep = wanted.contains(&source);
+        running.retain(|r| {
+            let keep = wanted.contains(&&r.source);
             if !keep {
-                stop.store(true, Ordering::Relaxed);
-                self.status.lock().unwrap().remove(&source.kind);
+                r.stop.store(true, Ordering::Relaxed);
+                self.status.lock().unwrap().remove(&r.source.kind);
             }
             keep
         });
         for source in wanted {
-            if !running.iter().any(|(r, _)| r == source) {
-                let stop = Arc::new(AtomicBool::new(false));
-                let (hub, polled, flag) = (self.clone(), source.clone(), stop.clone());
-                std::thread::spawn(move || hub.run(polled, flag));
-                running.push((source.clone(), stop));
+            if !running.iter().any(|r| r.source == *source) {
+                let flag = || Arc::new(AtomicBool::new(false));
+                let polled = Running { source: source.clone(), stop: flag(), wake: flag() };
+                let (hub, polling) = (self.clone(), polled.clone());
+                std::thread::spawn(move || hub.run(polling));
+                running.push(polled);
             }
         }
         let mut current = self.config.lock().unwrap();
@@ -709,10 +731,17 @@ impl Hub {
         }
     }
 
-    /// Polls one source at its interval until it's stopped. Failures are logged once, when they start
-    /// or change, and its values just go stale; a failure that backs off (see `Source::backs_off`)
-    /// pushes the next poll out. A streaming plugin is kept running instead.
-    fn run(self: Arc<Self>, source: Source, stop: Arc<AtomicBool>) {
+    /// Has the running source of this kind poll at once instead of at its next interval, within 250 ms.
+    pub fn poll_now(&self, kind: &str) {
+        for r in self.running.lock().unwrap().iter().filter(|r| r.source.kind == kind) {
+            r.wake.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Polls one source at its interval, or at once when woken (`poll_now`), until it's stopped. Failures
+    /// are logged once, when they start or change, and its values just go stale; a failure that backs off
+    /// (see `Source::backs_off`) pushes the next poll out. A streaming plugin is kept running instead.
+    fn run(self: Arc<Self>, Running { source, stop, wake }: Running) {
         let mut failing: Option<String> = None;
         let mut backoff = Backoff::default();
         if let Some(manifest) = catalog::manifest(&source.kind).filter(|m| m.streams()) {
@@ -727,7 +756,9 @@ impl Hub {
         let last_success = self.status.lock().unwrap().get(&source.kind).and_then(|s| s.updated_at);
         let mut next = Instant::now() + first_poll_delay(last_success, source.every(), Utc::now());
         while !stop.load(Ordering::Relaxed) {
-            if Instant::now() < next {
+            // woken: poll now, even straight after a poll, which may have begun before what it was woken for
+            let woken = wake.swap(false, Ordering::Relaxed);
+            if Instant::now() < next && !woken {
                 sleep(Duration::from_millis(250));
                 continue;
             }
@@ -822,11 +853,11 @@ impl Hub {
         let found = catalog::rescan(&self.plugins);
         let builtin = |kind: &str| catalog::builtins().iter().any(|m| m.id == kind);
         let mut running = self.running.lock().unwrap();
-        running.retain(|(source, stop)| {
-            let keep = builtin(&source.kind);
+        running.retain(|r| {
+            let keep = builtin(&r.source.kind);
             if !keep {
-                stop.store(true, Ordering::Relaxed);
-                self.status.lock().unwrap().remove(&source.kind);
+                r.stop.store(true, Ordering::Relaxed);
+                self.status.lock().unwrap().remove(&r.source.kind);
             }
             keep
         });
@@ -859,7 +890,7 @@ impl Hub {
     pub fn wait(&self, timeout: Duration) {
         let start = Instant::now();
         while start.elapsed() < timeout {
-            let kinds: Vec<String> = self.running.lock().unwrap().iter().map(|(s, _)| s.kind.clone()).collect();
+            let kinds: Vec<String> = self.running.lock().unwrap().iter().map(|r| r.source.kind.clone()).collect();
             let status = self.status.lock().unwrap();
             if kinds.iter().all(|k| status.contains_key(k)) {
                 return;
@@ -1166,6 +1197,10 @@ mod tests {
         let pc: Source = serde_json::from_str(r#"{ "type": "pc", "lhm_user": "cooler", "lhm_password": "pw" }"#).unwrap();
         assert!(pc.extra.is_empty() && pc.lhm_user == "cooler" && pc.lhm_password == "pw");
         assert_eq!((pc.setting("lhm_user"), pc.setting("lhm_password")), (Some(json!("cooler")), Some(json!("pw"))));
+        // and PawnIO is off unless set
+        assert!(!c.sources[1].pawnio && c.sources[1].setting("pawnio") == Some(json!(false)));
+        let pc: Source = serde_json::from_str(r#"{ "type": "pc", "pawnio": true }"#).unwrap();
+        assert!(pc.pawnio && pc.extra.is_empty() && pc.setting("pawnio") == Some(json!(true)));
         assert_eq!(plugins_for(Path::new("C:/x/playlist/playlist.json")), Path::new("C:/x/plugins"));
     }
 
@@ -1174,11 +1209,12 @@ mod tests {
     #[test]
     fn plugin_settings_named_like_builtins() {
         let c: Config = serde_json::from_str(r#"{ "sources": [ { "type": "pc", "hwinfo": true },
-            { "type": "myplugin", "url": "", "token": "abc", "hwinfo": "yes", "entities": "one", "lhm_url": 5, "interval": 30 } ] }"#).unwrap();
+            { "type": "myplugin", "url": "", "token": "abc", "hwinfo": "yes", "pawnio": 1, "entities": "one", "lhm_url": 5, "interval": 30 } ] }"#).unwrap();
         let p = &c.sources[1];
         assert_eq!(p.setting("url"), Some(json!("")));
         assert_eq!(p.setting("token"), Some(json!("abc")));
         assert_eq!(p.setting("hwinfo"), Some(json!("yes")));
+        assert_eq!(p.setting("pawnio"), Some(json!(1)));
         assert_eq!(p.setting("entities"), Some(json!("one")));
         assert_eq!(p.setting("lhm_url"), Some(json!(5)));
         assert_eq!(p.setting("lhm"), None);
@@ -1186,6 +1222,7 @@ mod tests {
         assert!(c.sources[0].hwinfo && c.sources[0].extra.is_empty());
         // a built-in's are still typed, and still read the way they were
         assert!(serde_json::from_str::<Source>(r#"{ "type": "pc", "hwinfo": "yes" }"#).is_err());
+        assert!(serde_json::from_str::<Source>(r#"{ "type": "pc", "pawnio": "yes" }"#).is_err());
         let ha: Source = serde_json::from_str(r#"{ "type": "homeassistant", "url": "", "token": "t", "entities": ["sensor.x"] }"#).unwrap();
         assert_eq!((ha.setting("url"), ha.token.as_str(), ha.setting("entities")), (None, "t", Some(json!(["sensor.x"]))));
         // and a saved password stands in for a plugin's token like any other
@@ -1243,6 +1280,46 @@ mod tests {
     fn hub_with(sources: Vec<Source>) -> Hub {
         Hub { file: PathBuf::new(), config: Mutex::new(Config { sources, ..Config::default() }), running: Mutex::default(),
               status: Mutex::default(), server: Mutex::default(), plugins: PathBuf::new(), saved_at: Mutex::default() }
+    }
+
+    /// PawnIO hears whether it's wanted before any source of the new data.json starts, so the pc source's
+    /// first poll already reads it (or says why not), on every apply.
+    #[test]
+    fn pawnio_hears_first() {
+        let hub = Arc::new(hub_with(Vec::new()));
+        let seen = hub.clone();
+        // how many sources run at each call into pawnio; "busy" if apply has them in hand already
+        pawnio::calls::watch(move || seen.running.try_lock().map_or("busy".into(), |r| format!("{} running", r.len())));
+        let pc = |pawnio: bool| Source { pawnio, ..source("pc", Some(60.0)) };
+        hub.apply(Config { sources: vec![pc(true), source("time", None)], ..Config::default() });
+        hub.apply(Config { sources: vec![pc(true), Source { enabled: false, ..source("time", None) }], ..Config::default() });
+        hub.apply(Config { sources: vec![Source { enabled: false, ..pc(true) }], ..Config::default() });
+        hub.apply(Config { sources: vec![pc(false)], ..Config::default() });
+        hub.apply(Config::default());
+        assert_eq!(pawnio::calls::take(), ["set_wanted(true): 0 running", "set_wanted(true): 2 running",
+                                           "set_wanted(false): 1 running", "set_wanted(false): 0 running",
+                                           "set_wanted(false): 1 running"]);
+    }
+
+    /// A woken source polls at once, not at its next interval (PawnIO's state changing wakes the pc source).
+    #[test]
+    fn poll_now_wakes_a_source() {
+        let hub = Arc::new(hub_with(Vec::new()));
+        hub.apply(Config { sources: vec![source("pc", Some(60.0))], ..Config::default() });
+        hub.wait(Duration::from_secs(20));
+        let polled = || hub.status.lock().unwrap().get("pc").and_then(|s| s.updated_at);
+        let first = polled().expect("pc wasn't polled");
+        sleep(Duration::from_millis(600));
+        assert_eq!(polled(), Some(first), "polled again without being woken");
+        hub.poll_now("homeassistant"); // not running: nothing
+        hub.poll_now("pc");
+        let start = Instant::now();
+        while polled() == Some(first) && start.elapsed() < Duration::from_secs(5) {
+            sleep(Duration::from_millis(10));
+        }
+        let took = start.elapsed();
+        hub.apply(Config::default());
+        assert!(took < Duration::from_millis(500), "{took:?}");
     }
 
     #[test]

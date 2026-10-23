@@ -12,7 +12,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crate::panel::Panel;
 use crate::playlist::{self, Playlist, Scene, Text};
-use crate::{art, cache, data, scene};
+use crate::{art, cache, data, pawnio, scene};
 
 /// A still picture is re-sent this often, so the screen comes back by itself after the panel resets.
 const STILL_REFRESH: Duration = Duration::from_secs(2);
@@ -503,6 +503,8 @@ pub fn play(target: &Path, opts: art::Options, seconds: f64) -> Result<(), Box<d
     cache::prune();
     // live values for text, and the API the studio uses, from the data.json beside a playlist
     if target.extension().is_some_and(|e| e.eq_ignore_ascii_case("json")) {
+        // only the player itself may ask for administrator rights, for PawnIO's sensors
+        pawnio::allow_elevation();
         data::start(target, true);
     }
     // Started with Windows, the playlist (or the drive it's on) may not be there yet: wait for it.

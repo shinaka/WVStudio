@@ -309,7 +309,7 @@ const LHM_MAX_SENSORS: usize = 4096;
 /// An error is the pc poll's note. `login` (a user name and password, from Options > Remote Web Server >
 /// Authentication) goes to that address alone, in the request's `Authorization` header: never through a
 /// proxy, never on to wherever a redirect points, and never into a note.
-fn lhm(url: &str, login: Option<(&str, &str)>) -> Result<(Vec<(String, Value)>, Option<String>), String> {
+pub(crate) fn lhm(url: &str, login: Option<(&str, &str)>) -> Result<(Vec<(String, Value)>, Option<String>), String> {
     let base = lhm_base(url);
     let not_answering = |why: &str| {
         format!("Libre Hardware Monitor isn't answering at {base} ({why}): check that it's running, with Options > Remote Web Server on")
@@ -435,13 +435,13 @@ fn add_lhm(values: &mut Vec<(String, Value)>, lhm: Vec<(String, Value)>) {
 /// One Libre Hardware Monitor sensor: its hardware's key (numbered when two have the same name), whether
 /// that hardware is a CPU, its type (`temperature`, `load`...), its name, its name as a key part, and its
 /// value (None when it has no reading: "-").
-struct LhmSensor {
-    hardware: String,
-    cpu: bool,
-    kind: String,
-    name: String,
-    key: String,
-    value: Option<f64>,
+pub(crate) struct LhmSensor {
+    pub(crate) hardware: String,
+    pub(crate) cpu: bool,
+    pub(crate) kind: String,
+    pub(crate) name: String,
+    pub(crate) key: String,
+    pub(crate) value: Option<f64>,
 }
 
 /// The hardware the walk is in.
@@ -459,7 +459,7 @@ struct LhmHardware {
 /// then the sensors. Sensors have `SensorId` and `Type` (0.8.7 on), and since 0.9.5 `RawValue`, while
 /// hardware has `HardwareId`. Without those (Open Hardware Monitor's shape), a group is told by its
 /// children all being leaves.
-fn lhm_sensors(tree: &Json) -> Vec<LhmSensor> {
+pub(crate) fn lhm_sensors(tree: &Json) -> Vec<LhmSensor> {
     let mut sensors = Vec::new();
     lhm_walk(tree, &LhmHardware::default(), None, &mut HashMap::new(), &mut sensors);
     sensors
@@ -513,7 +513,7 @@ fn lhm_cpu_id(id: &str) -> bool {
 
 /// A sensor's type from its group's name, for versions that don't give `Type`: "Temperatures" is
 /// `temperature` (LHM's TypeNode names).
-fn lhm_type(group: &str) -> String {
+pub(crate) fn lhm_type(group: &str) -> String {
     const GROUPS: [(&str, &str); 20] = [
         ("voltages", "voltage"), ("currents", "current"), ("capacities", "energy"), ("clocks", "clock"),
         ("load", "load"), ("temperatures", "temperature"), ("fans", "fan"), ("flows", "flow"),
@@ -619,7 +619,7 @@ fn bidi_mark(c: char) -> bool {
 /// A hardware or sensor name as a key part: slugified, with accents dropped ("Température" is
 /// `temperature`). When that leaves nothing (a name in another script, like a NIC that Windows calls
 /// "イーサネット"), it's the slugified id (`nic_<guid>`, `temperature_3`), else `fallback`.
-fn lhm_name(name: &str, id: Option<&str>, fallback: &str) -> String {
+pub(crate) fn lhm_name(name: &str, id: Option<&str>, fallback: &str) -> String {
     [slug(&plain_latin(name)), id.map(slug).unwrap_or_default()]
         .into_iter()
         .find(|key| !key.is_empty())
@@ -668,7 +668,7 @@ fn plain_latin(s: &str) -> String {
 /// Every sensor with a reading as `lhm.<hardware>.<type>.<sensor>`, plus `pc.cpu.temp`: the CPU die
 /// temperature. A key that's taken gets `_2`, `_3`... in tree order, counting the sensors with no reading
 /// too, so a sensor's key doesn't change when another one's reading comes and goes.
-fn lhm_values(sensors: &[LhmSensor]) -> Vec<(String, Value)> {
+pub(crate) fn lhm_values(sensors: &[LhmSensor]) -> Vec<(String, Value)> {
     let mut values = Vec::new();
     let mut taken = HashSet::new();
     for s in sensors {
@@ -766,7 +766,7 @@ fn hwinfo_values(readings: &[Reading]) -> Vec<(String, Value)> {
 }
 
 /// Lowercase a-z, 0-9 and `_`, with runs of anything else as one `_`.
-fn slug(s: &str) -> String {
+pub(crate) fn slug(s: &str) -> String {
     let mut out = String::new();
     for c in s.chars().map(|c| c.to_ascii_lowercase()) {
         if c.is_ascii_lowercase() || c.is_ascii_digit() {

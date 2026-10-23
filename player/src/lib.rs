@@ -8,6 +8,7 @@ pub mod cli;
 pub mod data;
 pub mod media;
 pub mod panel;
+pub mod pawnio;
 pub mod player;
 pub mod plugin;
 pub mod playlist;
