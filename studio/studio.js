@@ -1249,7 +1249,8 @@ function edit(fn, key = "") {
     putBack(before);
     for (const [id, json] of locked) lib.set(id, JSON.parse(json));
     message(`${widgetName(holderWidgetId() ?? locked[0][0])} is read-only: duplicate it to edit.`, "warn");
-    changed({ save: false });
+    refilling = true;  // the field typed in shows what was kept, not what was refused
+    try { changed({ save: false }); } finally { refilling = false; }
     return false;
   }
   // an edit of a widget brings the stored sizes of the copies in it up to date (only then: see tidyDocument)
@@ -2478,7 +2479,8 @@ $("deleteLayer").addEventListener("click", () => {
 
 // --- The properties panel ----------------------------------------------------------------------------
 
-const set = (id, v) => { if (document.activeElement !== $(id)) $(id).value = v; };
+let refilling = false;  // while true, `set` fills the field being typed in too: an edit was refused
+const set = (id, v) => { if (refilling || document.activeElement !== $(id)) $(id).value = v; };
 const seg = (id, value) => { for (const b of $(id).children) b.setAttribute("aria-pressed", b.dataset.value === String(value)); };
 
 /** The properties panel: the sections for the selection (or the scene, widget or layer), filled in. Then the widget
@@ -2500,6 +2502,10 @@ function fillProps() {
   $("pShape").hidden = !(p && p.type === "shape");
   $("pCopy").hidden = !(widgetsOn && p?.type === "widget");
   $("pExport").hidden = !(h && !isGlobal() && !isWidgetHolder() && !p && !layer);
+  // a read-only widget is for viewing (docs/widgets.md, The widget editor): the controls for what's selected in it
+  // are greyed out (body.readonly), and can't be reached from the keyboard either (#pWidget's own are library.js's)
+  const locked = isWidgetHolder() && isReadOnly(holderWidgetId());
+  for (const s of $("propsPane").children) if (s.tagName === "SECTION" && s.id !== "pWidget" && !s.classList.contains("small")) s.inert = locked;
   if (!h) return;
   if (!$("pScene").hidden) {
     set("sName", h.name || "");
