@@ -1319,7 +1319,7 @@ function changed({ save = true } = {}) {
 // `saved`, the playlist's `saving.doc`), widgets first, so the player never reads a playlist naming a widget whose
 // file isn't there yet. One flush at a time, in order. What each file has on its way is kept (`sending`), so a page
 // going away can send the rest at once.
-const saving = { timer: 0, last: Promise.resolve(), pending: false, doc: null, sending: null, held: "", heldAt: 0, holding: null };
+const saving = { timer: 0, last: Promise.resolve(), pending: false, doc: null, sending: null, heldAt: 0, holding: null };
 function saveSoon(ms = 400) { saving.pending = true; clearTimeout(saving.timer); saving.timer = setTimeout(flushSave, ms); }
 /** Saves now, after the one before it, so saves arrive in order. */
 function flushSave() {
@@ -1454,20 +1454,29 @@ function sendPlaylist(budget = null) {
   return sending.done;
 }
 
-/** Asks the server to keep every file the history could still undo back to (docs/widgets.md, Undo): when that set
- *  changed since the last time, or every 5 minutes. A hold already on its way is waited for, not sent again. */
+/** Asks the server to keep every file the history could still undo back to (docs/widgets.md, Undo), with every flush
+ *  and every few minutes while the page is open (HOLD_EVERY). The server keeps a file for 10 minutes after it was
+ *  last named, and forgets every hold when it restarts; another tab's save, or this page's first save after a
+ *  restart, then tidies by that. So a hold is never skipped because it was sent before: only one already on its way
+ *  with the same files is waited for, not sent again. */
 function sendHold(budget = null) {
   const refs = [...new Set([...hist.undo, ...hist.redo].flatMap(entryRefs))].sort(), key = JSON.stringify(refs);
   if (saving.holding?.key === key) return saving.holding.done;
-  if (!refs.length || (key === saving.held && Date.now() - saving.heldAt < 5 * 60e3)) return Promise.resolve();
+  if (!refs.length) return Promise.resolve();
   const body = JSON.stringify({ refs }), holding = { key };
   holding.done = api("/api/media/hold", { method: "POST", headers: { "Content-Type": "application/json" }, body,
                                           keepalive: keepalive(budget, body) })
-    .then((res) => { if (res.ok) [saving.held, saving.heldAt] = [key, Date.now()]; }, () => {})
+    .then((res) => { if (res.ok) saving.heldAt = Date.now(); }, () => {})
     .finally(() => { if (saving.holding === holding) saving.holding = null; });
   saving.holding = holding;
   return holding.done;
 }
+// Between flushes the hold is sent again every 4 minutes, well inside the server's 10, so it's always fresh when
+// another tab saves; and when the page is shown again (a sleeping tab's timers may not have run). The check runs
+// often and is cheap, so a throttled background tab still holds in time.
+const HOLD_EVERY = 4 * 60e3;
+setInterval(() => { if (widgetsOn && Date.now() - saving.heldAt >= HOLD_EVERY) sendHold(); }, 15e3);
+document.addEventListener("visibilitychange", () => { if (widgetsOn && document.visibilityState === "visible") sendHold(); });
 
 // --- The library: widgets as the server has them ------------------------------------------------------
 
