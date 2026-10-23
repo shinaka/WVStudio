@@ -43,10 +43,31 @@
         {"id": "n/in1", "type": "image", "x": 28, "y": 40, "w": 4, "h": 4, "opacity": 1, "clip": [0, 40, 40, 50], "groups": [], "src": "playlist/inputs/fe20a98c93d7.png", "keep_aspect": false, "tint": null},
         {"id": "n/in2", "type": "image", "x": 32, "y": 40, "w": 4, "h": 4, "opacity": 1, "clip": [0, 40, 40, 50], "groups": [], "src": "playlist/inputs/fe20a98c93d7.PNG", "keep_aspect": false, "tint": null}
       ]
+    },
+    {
+      "id": "s3",
+      "note": "picture values on a copy in a scene or Global (docs/widgets.md, A copy's values): only inputs/<file> or sources/<file> (two parts, the folder in any letter case, one of the media types) is a file, read with the folder in lowercase; any other value counts as not set and the widget's default is drawn; \"\" draws nothing. The Global copies g0 and g1 follow the same rule",
+      "placement": {"on_top": false, "cut": null},
+      "leaves": [
+        {"id": "c0/i", "type": "image", "x": 0, "y": 0, "w": 4, "h": 4, "opacity": 1, "clip": [0, 0, 4, 4], "groups": [], "src": "playlist/inputs/fe20a98c93d7.png", "keep_aspect": false, "tint": null},
+        {"id": "c1/i", "type": "image", "x": 5, "y": 0, "w": 4, "h": 4, "opacity": 1, "clip": [5, 0, 9, 4], "groups": [], "src": "playlist/inputs/fe20a98c93d7.png", "keep_aspect": false, "tint": null},
+        {"id": "c2/i", "type": "image", "x": 10, "y": 0, "w": 4, "h": 4, "opacity": 1, "clip": [10, 0, 14, 4], "groups": [], "src": "playlist/sources/fe20a98c93d7.png", "keep_aspect": false, "tint": null},
+        {"id": "c3/i", "type": "image", "x": 15, "y": 0, "w": 4, "h": 4, "opacity": 1, "clip": [15, 0, 19, 4], "groups": [], "src": "playlist/sources/fe20a98c93d7.png", "keep_aspect": false, "tint": null},
+        {"id": "c4/i", "type": "image", "x": 20, "y": 0, "w": 4, "h": 4, "opacity": 1, "clip": [20, 0, 24, 4], "groups": [], "src": "widgets/one/media/ok-4b0edc2b.png", "keep_aspect": false, "tint": null},
+        {"id": "c5/i", "type": "image", "x": 25, "y": 0, "w": 4, "h": 4, "opacity": 1, "clip": [25, 0, 29, 4], "groups": [], "src": "widgets/one/media/ok-4b0edc2b.png", "keep_aspect": false, "tint": null},
+        {"id": "c6/i", "type": "image", "x": 30, "y": 0, "w": 4, "h": 4, "opacity": 1, "clip": [30, 0, 34, 4], "groups": [], "src": "widgets/one/media/ok-4b0edc2b.png", "keep_aspect": false, "tint": null},
+        {"id": "c7/i", "type": "image", "x": 35, "y": 0, "w": 4, "h": 4, "opacity": 1, "clip": [35, 0, 39, 4], "groups": [], "src": "widgets/one/media/ok-4b0edc2b.png", "keep_aspect": false, "tint": null},
+        {"id": "c8/i", "type": "image", "x": 40, "y": 0, "w": 4, "h": 4, "opacity": 1, "clip": [40, 0, 44, 4], "groups": [], "src": "widgets/one/media/ok-4b0edc2b.png", "keep_aspect": false, "tint": null},
+        {"id": "c9/i", "type": "image", "x": 45, "y": 0, "w": 4, "h": 4, "opacity": 1, "clip": [45, 0, 49, 4], "groups": [], "src": "widgets/one/media/ok-4b0edc2b.png", "keep_aspect": false, "tint": null},
+        {"id": "c10/i", "type": "image", "x": 50, "y": 0, "w": 4, "h": 4, "opacity": 1, "clip": [50, 0, 54, 4], "groups": [], "src": "widgets/one/media/ok-4b0edc2b.png", "keep_aspect": false, "tint": null},
+        {"id": "c11/i", "type": "image", "x": 55, "y": 0, "w": 4, "h": 4, "opacity": 1, "clip": [55, 0, 59, 4], "groups": [], "src": "widgets/one/media/ok-4b0edc2b.png", "keep_aspect": false, "tint": null}
+      ]
     }
   ],
   "global": {
     "leaves": [
+      {"id": "g0/i", "type": "image", "x": 0, "y": 100, "w": 4, "h": 4, "opacity": 1, "clip": [0, 100, 4, 104], "groups": [], "src": "widgets/one/media/ok-4b0edc2b.png", "keep_aspect": false, "tint": null},
+      {"id": "g1/i", "type": "image", "x": 5, "y": 100, "w": 4, "h": 4, "opacity": 1, "clip": [5, 100, 9, 104], "groups": [], "src": "playlist/sources/fe20a98c93d7.png", "keep_aspect": false, "tint": null}
     ]
   }
 }

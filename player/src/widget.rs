@@ -566,6 +566,16 @@ impl Frame {
     }
 }
 
+/// A picture value written in the playlist, on a copy in a scene or the global layers (docs/widgets.md, A copy's
+/// values): a media file in its `inputs\` or `sources\` folder, `inputs/<file>` or `sources/<file>`, the folder in
+/// any letter case (as Windows opens it) and read in lowercase, as the studio does. Anything else isn't set.
+fn playlist_file(value: &str) -> Option<String> {
+    let (folder, file) = value.split_once('/')?;
+    let folder = folder.to_ascii_lowercase();
+    let kept = (folder == "inputs" || folder == "sources") && !file.contains('/') && path_ok(value) && media_ok(value);
+    kept.then(|| format!("{folder}/{file}"))
+}
+
 /// The input values a copy draws with (docs/widgets.md, A copy's values and Passing inputs down): what it
 /// sets, in its holder's terms, and the widget's defaults for the rest.
 fn values(copy: &Value, frame: &Frame, def: &Def) -> Scope {
@@ -597,6 +607,7 @@ fn values(copy: &Value, frame: &Frame, def: &Def) -> Scope {
                     match reference(v) {
                         Some(id) => frame.scope.image.get(id).cloned(),
                         None if v.is_empty() => Some(PathBuf::new()),
+                        None if frame.stack.is_empty() => playlist_file(v).map(|file| frame.folder.join(file)),
                         None => (path_ok(v) && media_ok(v)).then(|| frame.folder.join(v)),
                     }
                 });
@@ -1037,6 +1048,19 @@ mod tests {
             assert!(!font_name_ok(bad), "{bad}");
         }
         assert!(font_name_ok(&format!("{}.ttf", "é".repeat(100))));
+    }
+
+    #[test]
+    fn picture_values_in_the_playlist() {
+        let kept = [("inputs/q.png", "inputs/q.png"), ("Inputs/q.png", "inputs/q.png"), ("SOURCES/a.GIF", "sources/a.GIF"),
+                    ("sources/clip.webm", "sources/clip.webm")];
+        for (value, file) in kept {
+            assert_eq!(playlist_file(value).as_deref(), Some(file), "{value}");
+        }
+        for value in ["q.png", "sub/q.png", "inputs/sub/q.png", "sources/deep/a.png", "widgets/w/media/a.png", "media/a.png",
+                      "inputs/x.jfif", "inputs/clip.avi", "inputs/CON.png", "inputs/", "inputs", "../inputs/q.png", ""] {
+            assert_eq!(playlist_file(value), None, "{value}");
+        }
     }
 
     #[test]

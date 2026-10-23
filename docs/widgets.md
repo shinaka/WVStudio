@@ -300,9 +300,12 @@ copy.
   the default applies.
 - **image:** a path relative to the folder of the file the copy is written in, or `""` for no image.
   - In `playlist.json` it's a file in the playlist's **`inputs\`** folder: `"inputs/9c1e2a7b3f10.png"`. It isn't
-    in `sources\`, because an older studio would delete it there (section 7).
-  - In a widget's `widget.json`, it's a file in that widget's folder, normally `media\`.
-  - A path that breaks the rule of section 2.5 counts as not set.
+    in `sources\`, because an older studio would delete it there (section 7), though a file there
+    (`"sources/9c1e2a7b3f10.png"`) is read too. The value is a file only when it's exactly `inputs/<file>` or
+    `sources/<file>`: the folder's name in any letter case, and a file of one of the media types (section 2.5).
+    Any other value counts as not set, and the widget's default is drawn.
+  - In a widget's `widget.json`, it's a file in that widget's folder, normally `media\`. A path that breaks the
+    rule of section 2.5 counts as not set.
 - Values for ids the widget doesn't declare (any more) are ignored and kept. The studio never gives a new
   input an id that copies still hold values for, so an old value can't come back with a new meaning.
 - **At the top level** (a copy in a scene or the global layer) there's no widget around the copy, so a colour
