@@ -5,25 +5,55 @@
 //!
 //! The exit codes are the reader's: 8 the folder isn't administrator-only, 9 another reader is running so
 //! the move failed, 10 the module files beside the player are damaged.
+//!
+//! The module folder beside the player can be changed by anyone (C:\Git grants Authenticated Users
+//! Modify), so what's copied from it as administrator is a fixed list of files, each with the SHA-256 this
+//! build ships: never a walk of whatever is there, which could hold a junction to a folder only an
+//! administrator may read.
 
 use std::path::Path;
 
 use super::ModuleId;
-use super::blobs;
+use super::{blobs, sha256};
 
 /// Exit codes for `--install`, shared with helper.rs (§4.4 step 6).
 pub const NOT_ADMIN_ONLY: i32 = 8;
 pub const MOVE_FAILED: i32 = 9;
 pub const DAMAGED: i32 = 10;
 
-/// Copies `reader_exe` and the pinned modules from `modules_dir` into `target` (`…\Wonder Vision`): the
-/// whole `pawnio\` folder bar dotfiles, then the reader itself through a `.new` file and a replace, so a
-/// half-written reader is never left. `admin_only` says whether a path is administrator-only; the target,
-/// if it was already there, and the finished folder, exe and blobs must all be.
+/// The module folder's other files, installed beside the two modules (blobs.rs pins those), each with its
+/// SHA-256: the licence, the NOTICE and the modules' source (player/pawnio/README.md). A change to one of
+/// them changes its pin here too.
+const TEXTS: [(&str, &str); 10] = [
+    ("COPYING", "1e7e6bae5a5bde32f1ae5a7c37a082d1ab03cf89354f7f936ac40be9e39a6531"),
+    ("README.md", "b4899422cfea341cb3184e0b41c4b3c86983a302f17f649c18647ea4accce4e3"),
+    ("src\\AMDFamily17.p", "8a1808a2e51e184f96d17362991ae900c65a1a23135a68c256ec6759e8297bb9"),
+    ("src\\LpcIO.p", "43f0eae8cbcfbb5d1dd7492c45f343061a8d7c81970af56c15010ece2da1678e"),
+    ("src\\include\\core.inc", "3c3fdb0bb54d48792e5fadf4a17607023a35f25f1c006893a114342bac9d6aff"),
+    ("src\\include\\extra.inc", "4780c6ba2489264ff5982f2f9a5e2b7f4e8ec8951adfe8ef88e728592f1b2e94"),
+    ("src\\include\\native.inc", "b526bf69d66ebe00b22ea8609d9b6c2073ba6eeaf0730a2cf32477d0b64ee395"),
+    ("src\\include\\ntstatus.inc", "bcb76abca4bc951f286074b59f64fb950e384a2204d4dfe6d1e0d03502d0bd2a"),
+    ("src\\include\\pawnio.inc", "0809f5964d7707272398b212879078f62e08bc579a3def0283a1a059cf9e72a4"),
+    ("src\\include\\util.inc", "ab390f9d9e244c2f7a5932f42a7e79194d100dc4a16549dbc31f9cf4932f3027"),
+];
+
+/// Copies `reader_exe` and the module folder's files from `modules_dir` into `target` (`…\Wonder Vision`):
+/// the two modules and `TEXTS` under `pawnio\`, all read and checked against their pins before anything is
+/// written, then the reader itself through a `.new` file and a replace, so a half-written reader is never
+/// left. `admin_only` says whether a path is administrator-only; the target, if it was already there, and
+/// the finished folder, exe and blobs must all be.
 pub fn install(reader_exe: &Path, modules_dir: &Path, target: &Path, admin_only: &dyn Fn(&Path) -> bool) -> Result<(), i32> {
-    // the module files beside the player must be the pinned ones
+    // everything that's copied, as this build ships it: the pinned modules, then the texts
+    let mut files = Vec::new();
     for module in [ModuleId::AmdFamily17, ModuleId::LpcIo] {
-        blobs::read(modules_dir, module).map_err(|_| DAMAGED)?;
+        files.push((module.file(), blobs::read(modules_dir, module).map_err(|_| DAMAGED)?));
+    }
+    for (name, pin) in TEXTS {
+        let bytes = std::fs::read(modules_dir.join(name)).map_err(|_| DAMAGED)?;
+        if sha256::hex(&bytes) != pin {
+            return Err(DAMAGED);
+        }
+        files.push((name, bytes));
     }
 
     let existed = target.exists();
@@ -34,8 +64,9 @@ pub fn install(reader_exe: &Path, modules_dir: &Path, target: &Path, admin_only:
         return Err(NOT_ADMIN_ONLY);
     }
 
-    // every file of the module folder, bar dotfiles (.gitattributes), under target\pawnio
-    copy_tree(modules_dir, &pawnio).map_err(|_| MOVE_FAILED)?;
+    for (name, bytes) in &files {
+        write_bytes_through(&pawnio.join(name), bytes).map_err(|_| MOVE_FAILED)?;
+    }
 
     // the reader through a .new file and a replace, so a running old reader fails the move, not a half-write
     let exe = target.join("wvsensors.exe");
@@ -50,26 +81,6 @@ pub fn install(reader_exe: &Path, modules_dir: &Path, target: &Path, admin_only:
         && admin_only(&pawnio.join("AMDFamily17.bin"))
         && admin_only(&pawnio.join("LpcIO.bin"));
     if ok { Ok(()) } else { Err(NOT_ADMIN_ONLY) }
-}
-
-/// Copies every file under `from` to `to` (making folders), skipping dotfiles.
-fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(to)?;
-    for entry in std::fs::read_dir(from)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        if name.to_string_lossy().starts_with('.') {
-            continue;
-        }
-        let (src, dst) = (entry.path(), to.join(&name));
-        if src.is_dir() {
-            copy_tree(&src, &dst)?;
-        } else {
-            let bytes = std::fs::read(&src)?;
-            write_bytes_through(&dst, &bytes)?;
-        }
-    }
-    Ok(())
 }
 
 /// Copies one file to `dst` so it's on disk before the move (flushed, like FILE_FLAG_WRITE_THROUGH).
@@ -142,6 +153,33 @@ mod tests {
         exe
     }
 
+    /// Each text's pin is the repo's file as it is: a changed NOTICE needs its pin changed too. And the
+    /// list is the whole module folder bar its .gitattributes and the two modules.
+    #[test]
+    fn the_texts_are_the_repo_files() {
+        for (name, pin) in TEXTS {
+            let bytes = std::fs::read(vendored().join(name)).unwrap();
+            assert_eq!(sha256::hex(&bytes), pin, "{name}: change its pin in TEXTS");
+        }
+        fn files(dir: &Path, base: &Path, out: &mut Vec<String>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    files(&path, base, out);
+                } else {
+                    out.push(path.strip_prefix(base).unwrap().to_string_lossy().into_owned());
+                }
+            }
+        }
+        let mut found = Vec::new();
+        files(&vendored(), &vendored(), &mut found);
+        let mut listed: Vec<String> = TEXTS.iter().map(|(name, _)| name.to_string()).collect();
+        listed.extend(["AMDFamily17.bin", "LpcIO.bin", ".gitattributes"].map(String::from));
+        found.sort();
+        listed.sort();
+        assert_eq!(found, listed);
+    }
+
     /// A clean install copies the reader and the whole module folder (bar dotfiles), and the finished
     /// folder passes the administrator-only check.
     #[test]
@@ -158,6 +196,58 @@ mod tests {
         assert!(pawnio.join("src\\AMDFamily17.p").exists() && pawnio.join("src\\include\\pawnio.inc").exists());
         // the repo's .gitattributes is a dotfile: it isn't copied
         assert!(!pawnio.join(".gitattributes").exists());
+    }
+
+    /// A copy of the repo's module folder in `dir`, for a test to add to or change.
+    fn modules_copy(dir: &Path) -> PathBuf {
+        fn copy(from: &Path, to: &Path) {
+            std::fs::create_dir_all(to).unwrap();
+            for entry in std::fs::read_dir(from).unwrap() {
+                let entry = entry.unwrap();
+                let (src, dst) = (entry.path(), to.join(entry.file_name()));
+                if src.is_dir() { copy(&src, &dst) } else { std::fs::copy(&src, &dst).map(drop).unwrap() }
+            }
+        }
+        let modules = dir.join("modules");
+        copy(&vendored(), &modules);
+        modules
+    }
+
+    /// Only the module folder's own files are copied, as administrator: anything else in it (a file, a
+    /// folder, a junction someone made there) stays where it is.
+    #[test]
+    fn copies_only_the_listed_files() {
+        let scratch = Scratch::new("listed");
+        let reader = fake_reader(&scratch.0);
+        let modules = modules_copy(&scratch.0);
+        std::fs::write(modules.join("extra.txt"), b"not ours").unwrap();
+        std::fs::create_dir_all(modules.join("x")).unwrap();
+        std::fs::write(modules.join("x\\private.txt"), b"someone's").unwrap();
+        std::fs::write(modules.join("src\\include\\more.inc"), b"not ours either").unwrap();
+        let target = scratch.0.join("Program Files\\Wonder Vision");
+        assert_eq!(install(&reader, &modules, &target, &|_| true), Ok(()));
+        let pawnio = target.join("pawnio");
+        assert!(pawnio.join("COPYING").exists() && pawnio.join("src\\include\\pawnio.inc").exists());
+        for stray in ["extra.txt", "x", "src\\include\\more.inc"] {
+            assert!(!pawnio.join(stray).exists(), "{stray} was copied");
+        }
+    }
+
+    /// A licence, NOTICE or source file that isn't the one this build ships is exit 10, before anything is
+    /// written: only those exact bytes are ever copied into Program Files.
+    #[test]
+    fn a_changed_text_is_exit_10() {
+        for name in ["COPYING", "README.md", "src\\LpcIO.p", "src\\include\\ntstatus.inc"] {
+            let scratch = Scratch::new("text");
+            let reader = fake_reader(&scratch.0);
+            let modules = modules_copy(&scratch.0);
+            let mut bytes = std::fs::read(modules.join(name)).unwrap();
+            bytes.extend_from_slice(b"\nchanged");
+            std::fs::write(modules.join(name), bytes).unwrap();
+            let target = scratch.0.join("Program Files\\Wonder Vision");
+            assert_eq!(install(&reader, &modules, &target, &|_| true), Err(DAMAGED), "{name}");
+            assert!(!target.exists(), "{name}: something was written");
+        }
     }
 
     /// A module file that isn't the pinned one is exit 10, and nothing is installed.

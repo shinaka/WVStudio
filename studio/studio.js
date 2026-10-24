@@ -3074,7 +3074,13 @@ function fillPawnio(line, p) {
 async function askPawnio() {
   let out;
   try { out = await postJson("/api/pawnio/ask", {}); } catch (err) { out = { error: err.message }; }
-  if (out?.player === false) { pawnioNote("The player isn't running: start it with Play on cooler.", "warn"); return null; }
+  if (out?.player === false) {
+    // no answer: from a player that's gone, or from one still running that was busy (a slow Test) or not listening yet
+    let running = false;
+    try { running = (await (await api("/api/player")).json()).running === true; } catch {}
+    pawnioNote(running ? "The player didn't answer." : "The player isn't running: start it with Play on cooler.", "warn");
+    return null;
+  }
   if (typeof out?.state !== "string") { pawnioNote(String(out?.error || "The player didn't answer."), "warn"); return null; }
   pawnio.info = { state: out.state, message: String(out.message ?? ""), can_ask: out.can_ask === true };
   pawnio.remote = out.remote === true ? out.state : "";
@@ -3129,7 +3135,10 @@ async function checkPawnio(why) {
       return;
     }
     const p = state?.pawnio;
-    if (state && (!p || typeof p !== "object")) {
+    // a running player that didn't answer /info (busy with a slow Test, or its API not up yet after Play) tells
+    // nothing yet: asked again, never taken for an older one
+    const answered = !(state?.running && state.widgets === null);
+    if (state && answered && (!p || typeof p !== "object")) {
       return pawnioNote(pawnio.built === false ? PAWNIO_REBUILD : "The running player is older: Stop and Play to use PawnIO.", "warn");
     }
     if (p?.state === "not-asked") {

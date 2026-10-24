@@ -182,6 +182,13 @@ pub fn api_bound() {
     control::api_bound();
 }
 
+/// The API couldn't have its port (api.rs; another player has it). If it gets it later, this player readies
+/// PawnIO but doesn't ask for administrator rights by itself: that was for the start of `play`.
+pub fn api_bind_failed() {
+    called("api_bind_failed");
+    control::api_bind_failed();
+}
+
 /// What to call after every change of state, with no lock held: data.rs has the pc source poll at once
 /// (`Hub::poll_now`), so the readings and the note follow.
 pub fn set_notify(f: Box<dyn Fn() + Send + Sync>) {

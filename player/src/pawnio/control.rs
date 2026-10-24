@@ -4,11 +4,11 @@
 //! tests drive it on a fake one. The process-wide one uses `RealEnv` (elevation.rs), or, in tests, an
 //! `InertEnv` that is never elevated and never launches.
 //!
-//! mod.rs's functions lock the one `Control` and delegate, then, with the lock let go, wake the pc poll
-//! when the state changed and start the launch the checks asked for. The launch and the pipe reads never
-//! hold the lock.
+//! mod.rs's functions lock the one `Control` and delegate, then, with the lock let go, log each change, wake
+//! the pc poll when the state changed and start the launch the checks asked for. The launch and the pipe
+//! reads never hold the lock.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -16,7 +16,6 @@ use std::time::Duration;
 use serde_json::{Value as Json, json};
 
 use super::blobs::DAMAGED;
-use super::reader::io_text;
 use super::{Label, Readings};
 
 /// The reader on its pipe, from the player's side (client.rs; a fake in tests).
@@ -32,8 +31,19 @@ pub trait Launched: Send {
     fn pid(&self) -> u32;
     /// The pipe the reader makes, from this player's id.
     fn pipe_name(&self) -> String;
+    /// Its exit code once it has exited, without waiting; None while it runs.
+    fn exited(&self) -> Option<i32>;
     /// Blocks until the reader exits, and gives its exit code.
     fn wait(self: Box<Self>) -> i32;
+}
+
+/// Why connecting to the reader's pipe failed.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ConnectError {
+    /// The reader exited before it opened its pipe (its checks, or a failed install): its exit code says why.
+    Exited(i32),
+    /// The sentence to show.
+    Failed(String),
 }
 
 /// What this process can do about PawnIO's hardware: the §4.2 checks, and the slow steps (launch, connect,
@@ -57,9 +67,9 @@ pub trait Env: Send + Sync + 'static {
     /// Raises the prompt (or, when already elevated, starts it with no prompt) and starts the reader.
     /// `Err(1223)` is the user declining; any other `Err` is its Win32 code.
     fn launch(&self, target: &std::path::Path, install: bool, elevated: bool) -> Result<Box<dyn Launched>, u32>;
-    /// Connects to the reader's pipe, checks it's really the launched process, and reads its hello. The
-    /// `Err` is the sentence to show.
-    fn connect(&self, launched: &dyn Launched, timeout: Duration) -> Result<Box<dyn Pipe>, String>;
+    /// Connects to the reader's pipe, checks it's really the launched process, and reads its hello. Gives up
+    /// at once when the reader exits first.
+    fn connect(&self, launched: &dyn Launched, timeout: Duration) -> Result<Box<dyn Pipe>, ConnectError>;
 }
 
 /// This Windows account's rights, from its token (R-E §1.1).
@@ -111,10 +121,19 @@ pub struct Plan {
     elevated: bool,
 }
 
+/// The launch in flight: its generation, and what it starts (for the log).
+struct InFlight {
+    gen_id: u64,
+    target: PathBuf,
+    elevated: bool,
+}
+
 /// A finished launch, back from `Env`.
 enum Fin {
     Connected(Box<dyn Pipe>, Box<dyn Launched>),
     Declined,
+    /// The reader exited before it opened its pipe, with this code.
+    Exited(i32),
     Failed(String),
 }
 
@@ -164,14 +183,15 @@ pub struct Control<E: Env> {
     /// Whether the API has its port; the start prompt waits for it.
     bound: bool,
     state: State,
-    /// The reader, once connected.
-    reader: Option<Arc<dyn Pipe>>,
-    /// Bumped on every launch and on turning off, so a finishing launch or a reader's exit that isn't the
-    /// current one is ignored.
+    /// The reader, once connected, with the generation of the launch that started it.
+    reader: Option<(u64, Arc<dyn Pipe>)>,
+    /// Counts launches, so a reader's exit, a read's answer or its failure that isn't the connected
+    /// reader's is ignored.
     generation: u64,
-    /// A launch is being raised or is connecting.
-    launching: bool,
-    /// When the last prompt went up, for the one-per-10 s limit.
+    /// The launch being raised or connecting. Only its own finish clears it, so turning PawnIO off and on
+    /// while its prompt is up never raises a second.
+    launching: Option<InFlight>,
+    /// When the last prompt went up, for the one-per-10 s limit; turning off doesn't forget it.
     last_prompt: Option<Duration>,
     /// A name and label for every key read since PawnIO was last turned on, sorted by key.
     labels: BTreeMap<String, Label>,
@@ -181,13 +201,17 @@ pub struct Control<E: Env> {
     watch: Option<(u64, Box<dyn Launched>)>,
     /// Whether the state changed since last asked, so the pc poll is woken once per change.
     changed: bool,
+    /// Lines for the log since last asked (§3.9), written with the lock let go.
+    logs: Vec<String>,
+    /// The connected reader's notes already logged, so each is logged once.
+    noted: BTreeSet<String>,
 }
 
 impl<E: Env> Control<E> {
     pub fn new(env: Arc<E>) -> Control<E> {
         Control { env, wanted: false, started: false, at_play_start: false, bound: false, state: State::Off, reader: None,
-                  generation: 0, launching: false, last_prompt: None, labels: BTreeMap::new(), pending: None, watch: None,
-                  changed: false }
+                  generation: 0, launching: None, last_prompt: None, labels: BTreeMap::new(), pending: None, watch: None,
+                  changed: false, logs: Vec::new(), noted: BTreeSet::new() }
     }
 
     fn env(&self) -> Arc<E> {
@@ -195,19 +219,17 @@ impl<E: Env> Control<E> {
     }
 
     /// Whether an enabled pc source has `pawnio` on. Turning it off stops the reader at once; turning it on
-    /// never prompts by itself.
+    /// never prompts by itself. The checks run on a change only (§4.2): re-applying the same setting, as any
+    /// other save does, leaves the state as it is, so a decline stays declined, a failure keeps its reason
+    /// and a connected reader keeps reading.
     pub fn set_wanted(&mut self, on: bool) {
         let edge = on && !self.wanted;
         self.wanted = on;
         if !on {
             self.turn_off();
-            return;
+        } else if edge {
+            self.evaluate(false);
         }
-        // decline stays until a rising edge, an explicit ask, or a new process
-        if matches!(self.state, State::Declined) && !edge {
-            return;
-        }
-        self.evaluate(false);
     }
 
     /// This process is `wvplay play`, so it may ask, and this is the start of `play`.
@@ -228,9 +250,18 @@ impl<E: Env> Control<E> {
         self.at_play_start = false;
     }
 
-    /// The studio's Ask now / Ask again / Check again: re-run the checks, which may raise a prompt.
+    /// The API couldn't have its port (another player has it). It's no longer the start of `play`: if it
+    /// gets the port later, when that player has gone, it readies but doesn't ask by itself.
+    pub fn api_bind_failed(&mut self) {
+        if !self.bound {
+            self.at_play_start = false;
+        }
+    }
+
+    /// The studio's Ask now / Ask again / Check again: re-run the checks, which may raise a prompt. Only in a
+    /// state that offers one of them (§3.9).
     pub fn ask(&mut self) {
-        if self.started && self.wanted {
+        if self.started && self.wanted && describe(&self.state).2 {
             self.evaluate(true);
         }
     }
@@ -254,11 +285,41 @@ impl<E: Env> Control<E> {
     pub fn read_target(&self) -> ReadTarget {
         match &self.state {
             State::Ok => match &self.reader {
-                Some(reader) => ReadTarget::Reader(reader.clone()),
+                Some((_, reader)) => ReadTarget::Reader(reader.clone()),
                 None => ReadTarget::Note(DIDNT_ANSWER.to_string()),
             },
             State::Off => ReadTarget::Note(NOT_ON_YET.to_string()),
             other => ReadTarget::Note(describe(other).1),
+        }
+    }
+
+    /// The connected reader's generation, which `read_done` takes back with the read's answer.
+    pub fn reader_gen(&self) -> Option<u64> {
+        self.reader.as_ref().map(|(gen_id, _)| *gen_id)
+    }
+
+    /// A read of the reader `gen_id` finished, off the lock: its labels join the live set and its new notes
+    /// are logged, or, when it failed, the reader is dropped. When that reader isn't the connected one any
+    /// more (PawnIO was turned off meanwhile, or another reader started), its answer is dropped and the
+    /// state's note given instead, so labels cleared by turning off never come back.
+    pub fn read_done(&mut self, gen_id: u64, read: Result<Readings, String>) -> Readings {
+        if self.reader_gen() != Some(gen_id) {
+            return match self.read_target() {
+                ReadTarget::Note(note) => Readings { notes: vec![note], ..Readings::default() },
+                ReadTarget::Reader(_) => Readings::default(),
+            };
+        }
+        match read {
+            Ok(readings) => {
+                self.merge_labels(&readings.labels);
+                for note in &readings.notes {
+                    if self.noted.insert(note.clone()) {
+                        self.logs.push(format!("data: pawnio: {note}"));
+                    }
+                }
+                readings
+            }
+            Err(_) => Readings { notes: vec![self.reader_failed()], ..Readings::default() },
         }
     }
 
@@ -272,8 +333,6 @@ impl<E: Env> Control<E> {
     /// The reader stopped answering: the state fails and the pipe is dropped. Gives the note to show.
     pub fn reader_failed(&mut self) -> String {
         self.reader = None;
-        self.generation += 1;
-        self.launching = false;
         if self.wanted {
             self.set_state(State::Failed(DIDNT_ANSWER.to_string()));
         } else {
@@ -282,16 +341,16 @@ impl<E: Env> Control<E> {
         DIDNT_ANSWER.to_string()
     }
 
-    /// Turning off: stop the reader, forget the labels, and invalidate any launch in flight.
+    /// Turning off: stop the reader and forget the labels. A launch not started yet is dropped; one whose
+    /// prompt is up stays in flight, and when it finishes with PawnIO still off, its reader is told to quit.
     fn turn_off(&mut self) {
-        if let Some(reader) = self.reader.take() {
+        if let Some((_, reader)) = self.reader.take() {
             reader.quit();
         }
         self.labels.clear();
-        self.generation += 1;
-        self.launching = false;
-        self.pending = None;
-        self.last_prompt = None;
+        if self.pending.take().is_some() {
+            self.launching = None;
+        }
         self.set_state(State::Off);
     }
 
@@ -318,8 +377,14 @@ impl<E: Env> Control<E> {
             self.set_state(State::NeedsAdmin);
             return;
         }
-        // a reader is already connected or on its way: leave it
-        if self.reader.is_some() || self.launching {
+        // a reader is already connected or on its way: leave it, and say so (a check above may have said
+        // otherwise a moment ago)
+        if self.reader.is_some() {
+            self.set_state(State::Ok);
+            return;
+        }
+        if self.launching.is_some() {
+            self.set_state(State::Asking);
             return;
         }
         let (target, install, update) = match self.pick() {
@@ -351,10 +416,11 @@ impl<E: Env> Control<E> {
         {
             return;
         }
-        self.launching = true;
         self.last_prompt = Some(self.env.now());
         self.generation += 1;
-        self.pending = Some(Plan { gen_id: self.generation, target, install, elevated: self.env.is_elevated() });
+        let elevated = self.env.is_elevated();
+        self.launching = Some(InFlight { gen_id: self.generation, target: target.clone(), elevated });
+        self.pending = Some(Plan { gen_id: self.generation, target, install, elevated });
         self.set_state(State::Asking);
     }
 
@@ -406,41 +472,54 @@ impl<E: Env> Control<E> {
         std::mem::take(&mut self.changed)
     }
 
+    /// The log lines since last asked (then they're forgotten), to write with the lock let go.
+    pub fn take_logs(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.logs)
+    }
+
     /// A launch has finished (`run_plan`, off the lock): set the state, keep the reader, and, when it's
-    /// kept, hand its process to the watch. A finish from an old generation (turned off, or re-asked) is
-    /// ignored.
+    /// kept, hand its process to the watch. Turned off meanwhile, its reader (if it started) is told to quit
+    /// (§4.3); turned off and on again, its answer counts. A finish that isn't the launch in flight's can't
+    /// happen, and its reader is never kept.
     fn finish_launch(&mut self, plan: &Plan, fin: Fin) {
-        if plan.gen_id != self.generation {
+        if self.launching.as_ref().map(|l| l.gen_id) != Some(plan.gen_id) {
             if let Fin::Connected(pipe, _) = fin {
                 pipe.quit();
             }
             return;
         }
-        self.launching = false;
+        self.launching = None;
+        if !self.wanted {
+            if let Fin::Connected(pipe, _) = fin {
+                pipe.quit();
+            }
+            self.set_state(State::Off);
+            return;
+        }
         match fin {
             Fin::Declined => self.set_state(State::Declined),
+            Fin::Exited(code) => {
+                self.logs.push(format!("data: pawnio: the sensor reader exited before it answered (code {code})"));
+                self.set_state(State::Failed(self.exit_sentence(code)));
+            }
             Fin::Failed(sentence) => self.set_state(State::Failed(sentence)),
             Fin::Connected(pipe, launched) => {
-                if !self.wanted {
-                    pipe.quit();
-                    self.set_state(State::Off);
-                } else {
-                    self.reader = Some(Arc::from(pipe));
-                    self.watch = Some((plan.gen_id, launched));
-                    self.set_state(State::Ok);
-                }
+                self.reader = Some((plan.gen_id, Arc::from(pipe)));
+                self.watch = Some((plan.gen_id, launched));
+                self.noted.clear();
+                self.set_state(State::Ok);
             }
         }
     }
 
-    /// The reader exited. While it was the connected one and PawnIO is still wanted, the state fails with
-    /// the exit code's sentence; it's never re-asked on its own.
+    /// The reader exited. While it was the connected one, the state fails with the exit code's sentence;
+    /// it's never re-asked on its own.
     fn reader_exited(&mut self, gen_id: u64, code: i32) {
-        if gen_id != self.generation || self.reader.is_none() {
+        if self.reader_gen() != Some(gen_id) {
             return;
         }
         self.reader = None;
-        self.generation += 1;
+        self.logs.push(format!("data: pawnio: the sensor reader exited (code {code})"));
         if self.wanted {
             self.set_state(State::Failed(self.exit_sentence(code)));
         } else {
@@ -469,8 +548,24 @@ impl<E: Env> Control<E> {
         )
     }
 
+    /// Changes the state, marking the change for the pc poll and logging it once (§1.2, §3.9).
     fn set_state(&mut self, state: State) {
         if self.state != state {
+            let line = match (&state, &self.launching) {
+                (State::Asking, Some(InFlight { target, elevated: false, .. })) => {
+                    format!("data: pawnio: asking for administrator rights ({})", target.display())
+                }
+                (State::Asking, Some(InFlight { target, elevated: true, .. })) => {
+                    format!("data: pawnio: starting the sensor reader, already as administrator ({})", target.display())
+                }
+                // the state's name, and the sentence where it says more than the name: which wording, or why
+                (State::NotAsked(_) | State::Failed(_), _) => {
+                    let (name, message, _) = describe(&state);
+                    format!("data: pawnio: {name}: {message}")
+                }
+                _ => format!("data: pawnio: {}", describe(&state).0),
+            };
+            self.logs.push(line);
             self.state = state;
             self.changed = true;
         }
@@ -482,12 +577,13 @@ fn run_plan<E: Env>(env: &E, plan: &Plan) -> Fin {
     match env.launch(&plan.target, plan.install, plan.elevated) {
         // the user said No
         Err(1223) => Fin::Declined,
-        Err(code) => Fin::Failed(format!("Couldn't start PawnIO's sensor reader: {}.", io_text(super::IoError::Other(code)))),
+        Err(code) => Fin::Failed(format!("Couldn't start PawnIO's sensor reader: {}.", super::elevation::system_message(code))),
         Ok(launched) => {
             let timeout = if plan.install { CONNECT_INSTALL } else { CONNECT };
             match env.connect(&*launched, timeout) {
                 Ok(pipe) => Fin::Connected(pipe, launched),
-                Err(sentence) => Fin::Failed(sentence),
+                Err(ConnectError::Exited(code)) => Fin::Exited(code),
+                Err(ConnectError::Failed(sentence)) => Fin::Failed(sentence),
             }
         }
     }
@@ -518,18 +614,25 @@ fn fire_notify() {
     }
 }
 
-/// Runs `f` under the lock, then, with the lock let go, wakes the pc poll if the state changed and starts
-/// the launch the checks asked for.
+/// With the lock let go: writes the log lines, and wakes the pc poll if the state changed.
+fn after(logs: Vec<String>, changed: bool) {
+    for line in logs {
+        crate::player::log(line);
+    }
+    if changed {
+        fire_notify();
+    }
+}
+
+/// Runs `f` under the lock, then, with the lock let go, logs, wakes the pc poll if the state changed and
+/// starts the launch the checks asked for.
 fn act<R>(f: impl FnOnce(&mut Control<ProcessEnv>) -> R) -> R {
     let shared = shared();
     let mut control = shared.control.lock().unwrap();
     let out = f(&mut control);
-    let changed = control.take_changed();
-    let plan = control.take_launch();
+    let (logs, changed, plan) = (control.take_logs(), control.take_changed(), control.take_launch());
     drop(control);
-    if changed {
-        fire_notify();
-    }
+    after(logs, changed);
     if let Some(plan) = plan {
         spawn_launch(plan);
     }
@@ -545,23 +648,18 @@ fn spawn_launch(plan: Plan) {
         let watch = {
             let mut control = shared().control.lock().unwrap();
             control.finish_launch(&plan, fin);
-            let changed = control.take_changed();
-            let watch = control.take_watch();
+            let (logs, changed, watch) = (control.take_logs(), control.take_changed(), control.take_watch());
             drop(control);
-            if changed {
-                fire_notify();
-            }
+            after(logs, changed);
             watch
         };
         if let Some((gen_id, launched)) = watch {
             let code = launched.wait();
             let mut control = shared().control.lock().unwrap();
             control.reader_exited(gen_id, code);
-            let changed = control.take_changed();
+            let (logs, changed) = (control.take_logs(), control.take_changed());
             drop(control);
-            if changed {
-                fire_notify();
-            }
+            after(logs, changed);
         }
     });
 }
@@ -576,6 +674,10 @@ pub fn allow_elevation() {
 
 pub fn api_bound() {
     act(|c| c.api_bound());
+}
+
+pub fn api_bind_failed() {
+    act(|c| c.api_bind_failed());
 }
 
 pub fn ask() -> Json {
@@ -604,18 +706,15 @@ pub fn set_notify(f: Box<dyn Fn() + Send + Sync>) {
 /// Reads the connected reader, or gives the state's note. Never holds the lock across the pipe read, and
 /// never launches.
 pub fn read() -> Readings {
-    let target = shared().control.lock().unwrap().read_target();
+    let (target, gen_id) = {
+        let control = shared().control.lock().unwrap();
+        (control.read_target(), control.reader_gen().unwrap_or(0))
+    };
     match target {
-        ReadTarget::Reader(reader) => match reader.read() {
-            Ok(readings) => {
-                act(|c| c.merge_labels(&readings.labels));
-                readings
-            }
-            Err(_) => {
-                let note = act(|c| c.reader_failed());
-                Readings { notes: vec![note], ..Readings::default() }
-            }
-        },
+        ReadTarget::Reader(reader) => {
+            let read = reader.read();
+            act(|c| c.read_done(gen_id, read))
+        }
         ReadTarget::Note(note) => Readings { notes: vec![note], ..Readings::default() },
     }
 }
@@ -676,7 +775,7 @@ impl Env for InertEnv {
     fn launch(&self, _: &std::path::Path, _: bool, _: bool) -> Result<Box<dyn Launched>, u32> {
         panic!("the test env never launches")
     }
-    fn connect(&self, _: &dyn Launched, _: Duration) -> Result<Box<dyn Pipe>, String> {
+    fn connect(&self, _: &dyn Launched, _: Duration) -> Result<Box<dyn Pipe>, ConnectError> {
         panic!("the test env never connects")
     }
 }
@@ -702,7 +801,7 @@ mod tests {
         launches: Vec<(PathBuf, bool, bool)>,
         /// What the next launch does: Err(code), or Ok with a connect result.
         launch_result: Option<Result<(), u32>>,
-        connect_result: Option<Result<FakePipe, String>>,
+        connect_result: Option<Result<FakePipe, ConnectError>>,
         /// The exit code the launched reader gives when waited on.
         exit_code: i32,
     }
@@ -756,7 +855,7 @@ mod tests {
                 Err(code) => Err(code),
             }
         }
-        fn connect(&self, _: &dyn Launched, _: Duration) -> Result<Box<dyn Pipe>, String> {
+        fn connect(&self, _: &dyn Launched, _: Duration) -> Result<Box<dyn Pipe>, ConnectError> {
             match self.0.lock().unwrap().connect_result.take() {
                 Some(Ok(pipe)) => Ok(Box::new(pipe)),
                 Some(Err(e)) => Err(e),
@@ -774,6 +873,9 @@ mod tests {
         }
         fn pipe_name(&self) -> String {
             String::new()
+        }
+        fn exited(&self) -> Option<i32> {
+            None
         }
         fn wait(self: Box<Self>) -> i32 {
             self.code
@@ -886,8 +988,9 @@ mod tests {
         let mut not_play = Rig::ready();
         not_play.control.set_wanted(true);
         assert_eq!(not_play.state(), "unavailable");
-        // a standard account (not a split-token admin, not elevated)
+        // a standard account (not a split-token admin, not elevated); the checks run on a change
         rig.env.set(|s| s.elevation = Some(Elevation::Default));
+        rig.control.set_wanted(false);
         rig.control.set_wanted(true);
         assert_eq!(rig.state(), "needs-admin");
     }
@@ -1179,6 +1282,232 @@ mod tests {
         assert_eq!(labels.iter().map(|l| l.key.as_str()).collect::<Vec<_>>(), ["pawnio.a", "pawnio.b"]);
         rig.control.set_wanted(false);
         assert!(rig.control.labels().is_empty());
+    }
+
+    /// Turned off and on while the prompt is up, then asked: no second prompt while the first is up (§4.3,
+    /// S-MEDIUM-7). The first prompt's Yes still counts, as PawnIO is on again by then.
+    #[test]
+    fn off_and_on_while_asking_raises_no_second_prompt() {
+        let mut rig = Rig::ready();
+        rig.installed_current();
+        rig.control.allow_elevation();
+        rig.control.set_wanted(true);
+        rig.control.api_bound();
+        let first = rig.control.take_launch().expect("the first prompt");
+        // the prompt is up; PawnIO is turned off and on, and the studio asks, twice over
+        for _ in 0..2 {
+            rig.control.set_wanted(false);
+            rig.control.set_wanted(true);
+            rig.control.ask();
+            assert!(rig.control.take_launch().is_none(), "a second prompt went up while the first was up");
+            assert_eq!(rig.state(), "asking");
+        }
+        let fin = run_plan(&rig.env, &first);
+        rig.control.finish_launch(&first, fin);
+        assert_eq!(rig.state(), "ok");
+        assert_eq!(rig.env.launches().len(), 1);
+    }
+
+    /// Declined, then turned off and on and asked within 10 s of that prompt: no new prompt until the 10 s
+    /// are up (§4.3).
+    #[test]
+    fn off_and_on_keeps_the_ten_seconds() {
+        let mut rig = Rig::ready();
+        rig.installed_current();
+        rig.control.allow_elevation();
+        rig.control.set_wanted(true);
+        rig.control.api_bound();
+        rig.env.set(|s| s.launch_result = Some(Err(1223)));
+        rig.drive();
+        assert_eq!(rig.state(), "declined");
+        rig.control.set_wanted(false);
+        rig.control.set_wanted(true);
+        rig.env.set(|s| s.now += Duration::from_secs(3));
+        rig.control.ask();
+        assert!(rig.control.take_launch().is_none(), "a prompt 3 s after the last");
+        assert_eq!(rig.state(), "not-asked");
+        rig.env.set(|s| s.now += Duration::from_secs(8));
+        rig.control.ask();
+        rig.drive();
+        assert_eq!((rig.state().as_str(), rig.env.launches().len()), ("ok", 2));
+    }
+
+    /// A check that fails for a moment while the prompt is up doesn't stick: Check again finds the prompt
+    /// still up, and raises no second one.
+    #[test]
+    fn check_again_finds_the_prompt_still_up() {
+        let mut rig = Rig::ready();
+        rig.installed_current();
+        rig.control.allow_elevation();
+        rig.control.set_wanted(true);
+        rig.control.api_bound();
+        let first = rig.control.take_launch().expect("the first prompt");
+        rig.control.set_wanted(false);
+        rig.env.set(|s| s.service = false);
+        rig.control.set_wanted(true);
+        assert_eq!(rig.state(), "not-running");
+        rig.env.set(|s| s.service = true);
+        rig.control.ask();
+        assert!(rig.control.take_launch().is_none(), "a second prompt went up while the first was up");
+        assert_eq!(rig.state(), "asking");
+        let fin = run_plan(&rig.env, &first);
+        rig.control.finish_launch(&first, fin);
+        assert_eq!(rig.state(), "ok");
+    }
+
+    /// Re-applying the same setting (saving anything else) is no change, so the checks don't run again
+    /// (§4.2): a reader keeps reading through a moment when PawnIO's driver restarts, and a failure keeps
+    /// its reason.
+    #[test]
+    fn a_reapply_changes_nothing() {
+        let mut rig = Rig::ready();
+        rig.installed_current();
+        rig.control.allow_elevation();
+        rig.control.set_wanted(true);
+        rig.control.api_bound();
+        rig.drive();
+        rig.env.set(|s| s.service = false);
+        rig.control.set_wanted(true);
+        assert_eq!(rig.state(), "ok");
+        assert!(matches!(rig.control.read_target(), ReadTarget::Reader(_)));
+        rig.env.set(|s| s.service = true);
+        rig.end_reader(9);
+        rig.control.set_wanted(true);
+        assert_eq!(rig.state(), "failed");
+        assert!(rig.message().starts_with("Another copy"), "{}", rig.message());
+    }
+
+    /// A second player whose first bind failed, and which gets the port only later (the first player gone),
+    /// readies but doesn't ask by itself; an ask still asks.
+    #[test]
+    fn a_late_bind_never_asks() {
+        let mut rig = Rig::ready();
+        rig.installed_current();
+        rig.control.allow_elevation();
+        rig.control.set_wanted(true);
+        rig.control.api_bind_failed();
+        rig.control.api_bind_failed();
+        rig.control.api_bound();
+        assert_eq!((rig.state().as_str(), rig.message()), ("not-asked", MSG_ASK.to_string()));
+        assert!(rig.control.take_launch().is_none());
+        rig.control.ask();
+        rig.drive();
+        assert_eq!((rig.state().as_str(), rig.env.launches().len()), ("ok", 1));
+        // a bind that fails after the first one worked changes nothing
+        rig.control.api_bind_failed();
+        assert_eq!(rig.state(), "ok");
+    }
+
+    /// A reader that exits before it opens its pipe (a failed install, its checks) fails with its exit
+    /// code's sentence at once, not "didn't answer" (§4.3).
+    #[test]
+    fn an_early_exit_says_why() {
+        for (code, mark) in [(9, "Another copy"), (10, "damaged or from another version"), (8, "without administrator rights"),
+                             (3, "stopped (code 3)"), (5, "stopped (code 5)")] {
+            let mut rig = Rig::ready();
+            rig.env.set(|s| {
+                s.build = Some(PathBuf::from(r"C:\build\wvsensors.exe"));
+                s.files.push((PathBuf::from(r"C:\build\wvsensors.exe"), "built".into()));
+                s.connect_result = Some(Err(ConnectError::Exited(code)));
+            });
+            rig.control.allow_elevation();
+            rig.control.set_wanted(true);
+            rig.control.api_bound();
+            rig.control.ask();
+            rig.drive();
+            assert_eq!(rig.state(), "failed", "code {code}");
+            assert!(rig.message().contains(mark), "code {code}: {}", rig.message());
+            assert!(rig.control.take_watch().is_none(), "code {code}: a reader that's gone is watched");
+            let logs = rig.control.take_logs();
+            assert!(logs.iter().any(|l| l.ends_with(&format!("before it answered (code {code})"))), "code {code}: {logs:?}");
+        }
+    }
+
+    /// A launch Windows refuses says Windows' own reason (§4.3), not a bare code.
+    #[test]
+    fn a_failed_start_says_windows_reason() {
+        let mut rig = Rig::ready();
+        rig.installed_current();
+        rig.env.set(|s| s.launch_result = Some(Err(2)));
+        rig.control.allow_elevation();
+        rig.control.set_wanted(true);
+        rig.control.api_bound();
+        rig.drive();
+        assert_eq!(rig.state(), "failed");
+        let reason = crate::pawnio::elevation::system_message(2);
+        assert_ne!(reason, "error 2");
+        assert_eq!(rig.message(), format!("Couldn't start PawnIO's sensor reader: {reason}."));
+    }
+
+    /// One log line per change (§1.2, §3.9): the path a prompt is for, a decline, an exit with its code, and
+    /// each of the reader's notes once.
+    #[test]
+    fn each_change_is_logged() {
+        let mut rig = Rig::ready();
+        rig.installed_current();
+        rig.control.allow_elevation();
+        rig.control.set_wanted(true);
+        assert_eq!(rig.control.take_logs(), [format!("data: pawnio: not-asked: {MSG_ASK}")]);
+        rig.control.api_bound();
+        assert_eq!(rig.control.take_logs(),
+                   [r"data: pawnio: asking for administrator rights (C:\Program Files\Wonder Vision\wvsensors.exe)"]);
+        rig.drive();
+        assert_eq!(rig.control.take_logs(), ["data: pawnio: ok"]);
+        let gen_id = rig.control.reader_gen().unwrap();
+        let read = || Ok(Readings { notes: vec!["a reader note".to_string()], ..Readings::default() });
+        rig.control.read_done(gen_id, read());
+        rig.control.read_done(gen_id, read());
+        assert_eq!(rig.control.take_logs(), ["data: pawnio: a reader note"]);
+        rig.end_reader(5);
+        let stopped = describe(&rig.control.state).1;
+        assert_eq!(rig.control.take_logs(), ["data: pawnio: the sensor reader exited (code 5)".to_string(),
+                                             format!("data: pawnio: failed: {stopped}")]);
+        rig.env.set(|s| {
+            s.now += Duration::from_secs(20);
+            s.launch_result = Some(Err(1223));
+        });
+        rig.control.ask();
+        rig.drive();
+        assert_eq!(rig.control.take_logs().last().map(String::as_str), Some("data: pawnio: declined"));
+        rig.control.set_wanted(false);
+        assert_eq!(rig.control.take_logs(), ["data: pawnio: off"]);
+        rig.control.set_wanted(false);
+        assert!(rig.control.take_logs().is_empty(), "no change, no line");
+    }
+
+    /// A read that finishes after PawnIO was turned off (or another reader started) changes nothing: its
+    /// labels don't come back into the catalog, and its failure fails nothing.
+    #[test]
+    fn a_stale_read_changes_nothing() {
+        let mut rig = Rig::ready();
+        rig.installed_current();
+        rig.control.allow_elevation();
+        rig.control.set_wanted(true);
+        rig.control.api_bound();
+        rig.drive();
+        let old = rig.control.reader_gen().unwrap();
+        let label = Label { key: "pawnio.cpu.temperature.tctl".into(), label: "CPU Tctl".into(), unit: "°C".into() };
+        let readings = Readings { labels: vec![label.clone()], ..Readings::default() };
+        // turned off while the read was in flight
+        rig.control.set_wanted(false);
+        let late = rig.control.read_done(old, Ok(readings.clone()));
+        assert!(rig.control.labels().is_empty(), "the labels came back after turning off");
+        assert_eq!(late.notes, [NOT_ON_YET]);
+        // on again with a new reader: the old reader's failure doesn't fail it
+        rig.control.set_wanted(true);
+        rig.env.set(|s| s.now += Duration::from_secs(20));
+        rig.control.ask();
+        rig.drive();
+        assert_eq!(rig.state(), "ok");
+        rig.control.read_done(old, Err("broken".into()));
+        assert_eq!(rig.state(), "ok");
+        assert!(matches!(rig.control.read_target(), ReadTarget::Reader(_)));
+        // the current reader's read counts
+        let now = rig.control.reader_gen().unwrap();
+        assert_eq!(rig.control.read_done(now, Ok(readings)).labels, [label.clone()]);
+        assert_eq!(rig.control.labels(), [label]);
+        assert_eq!(rig.control.read_done(now, Err("broken".into())).notes, [DIDNT_ANSWER]);
+        assert_eq!(rig.state(), "failed");
     }
 
     /// The second player, which never gets the API's port, never asks: the start prompt waits for the bind.

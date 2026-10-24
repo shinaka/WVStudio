@@ -36,6 +36,8 @@ pub fn serve(hub: Arc<Hub>) {
                 }
             }
             Err(e) => {
+                // a player that gets its port only later, when the other has gone, doesn't ask by itself
+                pawnio::api_bind_failed();
                 // most likely another player still has the port: keep trying, but say so once
                 if failed != Some(port) {
                     log(format_args!("data: no API on port {port} yet: {e}"));

@@ -156,30 +156,8 @@ pub fn pipe_name(player_pid: u32) -> String {
 pub fn admin_only(path: &Path) -> bool {
     use std::os::windows::ffi::OsStrExt;
 
-    use windows_sys::Win32::Foundation::{GENERIC_ALL, GENERIC_WRITE};
     use windows_sys::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
-    use windows_sys::Win32::Security::{
-        ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, ACL_SIZE_INFORMATION, AclSizeInformation, DACL_SECURITY_INFORMATION, GetAce,
-        GetAclInformation, INHERIT_ONLY_ACE, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
-    };
-    use windows_sys::Win32::Storage::FileSystem::{
-        DELETE, FILE_APPEND_DATA, FILE_DELETE_CHILD, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA, WRITE_DAC,
-        WRITE_OWNER,
-    };
-
-    // ACCESS_ALLOWED_ACE_TYPE (winnt.h): only an allow ACE grants; it's 0 (not pulling in SystemServices for one value)
-    const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
-
-    const WRITE: u32 = FILE_WRITE_DATA
-        | FILE_APPEND_DATA
-        | FILE_WRITE_EA
-        | FILE_WRITE_ATTRIBUTES
-        | DELETE
-        | FILE_DELETE_CHILD
-        | WRITE_DAC
-        | WRITE_OWNER
-        | GENERIC_WRITE
-        | GENERIC_ALL;
+    use windows_sys::Win32::Security::{ACL, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID};
 
     let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
     unsafe {
@@ -199,39 +177,98 @@ pub fn admin_only(path: &Path) -> bool {
         if got != 0 {
             return false;
         }
-        let ok = (|| {
-            // a NULL DACL grants everyone everything
-            if dacl.is_null() || !trusted(owner) {
-                return false;
-            }
-            let mut info: ACL_SIZE_INFORMATION = std::mem::zeroed();
-            if GetAclInformation(dacl, (&raw mut info).cast(), size_of::<ACL_SIZE_INFORMATION>() as u32, AclSizeInformation) == 0 {
-                return false;
-            }
-            for i in 0..info.AceCount {
-                let mut ace: *mut core::ffi::c_void = null_mut();
-                if GetAce(dacl, i, &mut ace) == 0 {
-                    return false;
-                }
-                let header = ace as *const ACE_HEADER;
-                // an inherit-only ACE doesn't apply to the object itself; only an allow ACE grants
-                if (*header).AceFlags as u32 & INHERIT_ONLY_ACE != 0 || (*header).AceType != ACCESS_ALLOWED_ACE_TYPE {
-                    continue;
-                }
-                let allowed = ace as *const ACCESS_ALLOWED_ACE;
-                if (*allowed).Mask & WRITE == 0 {
-                    continue;
-                }
-                let sid = std::ptr::addr_of!((*allowed).SidStart) as PSID;
-                if !trusted(sid) {
-                    return false;
-                }
-            }
-            true
-        })();
+        let ok = trusted(owner) && dacl_admin_only(dacl);
         LocalFree(descriptor as HLOCAL);
         ok
     }
+}
+
+/// Whether a DACL grants write to no SID but the trusted ones, failing closed: a NULL DACL grants everyone
+/// everything; an inherit-only ACE doesn't apply to the object itself, and a deny or audit ACE grants
+/// nothing, so those are skipped. An allow ACE (plain, or a conditional "callback" one, whose SID sits
+/// where the plain one's does) that grants write must name a trusted SID. Any other ACE that grants write
+/// (an object or compound ACE, or a type this doesn't know) counts as granting it to someone else.
+///
+/// # Safety
+/// `dacl` is null or points to a valid ACL.
+unsafe fn dacl_admin_only(dacl: *const windows_sys::Win32::Security::ACL) -> bool {
+    use windows_sys::Win32::Foundation::{GENERIC_ALL, GENERIC_WRITE};
+    use windows_sys::Win32::Security::{
+        ACCESS_ALLOWED_ACE, ACE_HEADER, ACL_SIZE_INFORMATION, AclSizeInformation, GetAce, GetAclInformation,
+        INHERIT_ONLY_ACE, PSID,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        DELETE, FILE_APPEND_DATA, FILE_DELETE_CHILD, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA, WRITE_DAC,
+        WRITE_OWNER,
+    };
+
+    // ACE types (winnt.h; not pulling in SystemServices for a few values): the two allow ACEs laid out as
+    // header, mask, SID; and those that grant nothing: denies (1, 6, 10, 12) and the system ones (audit,
+    // alarm, label and the rest, 2, 3, 7, 8 and 13 to 21), which a DACL shouldn't hold anyway
+    const ALLOWED: u8 = 0;
+    const ALLOWED_CALLBACK: u8 = 9;
+    const GRANTS_NOTHING: [u8; 17] = [1, 6, 10, 12, 2, 3, 7, 8, 13, 14, 15, 16, 17, 18, 19, 20, 21];
+
+    const WRITE: u32 = FILE_WRITE_DATA
+        | FILE_APPEND_DATA
+        | FILE_WRITE_EA
+        | FILE_WRITE_ATTRIBUTES
+        | DELETE
+        | FILE_DELETE_CHILD
+        | WRITE_DAC
+        | WRITE_OWNER
+        | GENERIC_WRITE
+        | GENERIC_ALL;
+
+    if dacl.is_null() {
+        return false;
+    }
+    unsafe {
+        let mut info: ACL_SIZE_INFORMATION = std::mem::zeroed();
+        if GetAclInformation(dacl, (&raw mut info).cast(), size_of::<ACL_SIZE_INFORMATION>() as u32, AclSizeInformation) == 0 {
+            return false;
+        }
+        for i in 0..info.AceCount {
+            let mut ace: *mut core::ffi::c_void = null_mut();
+            if GetAce(dacl, i, &mut ace) == 0 {
+                return false;
+            }
+            let header = ace as *const ACE_HEADER;
+            let kind = (*header).AceType;
+            if (*header).AceFlags as u32 & INHERIT_ONLY_ACE != 0 || GRANTS_NOTHING.contains(&kind) {
+                continue;
+            }
+            // every ACE has its mask right after the header
+            let allowed = ace as *const ACCESS_ALLOWED_ACE;
+            if (*allowed).Mask & WRITE == 0 {
+                continue;
+            }
+            if kind != ALLOWED && kind != ALLOWED_CALLBACK {
+                return false;
+            }
+            let sid = std::ptr::addr_of!((*allowed).SidStart) as PSID;
+            if !trusted(sid) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// Windows' sentence for a Win32 error code, without its final period ("The system cannot find the file
+/// specified"), or "error N" when Windows has none.
+pub fn system_message(code: u32) -> String {
+    use windows_sys::Win32::System::Diagnostics::Debug::{
+        FORMAT_MESSAGE_FROM_SYSTEM, FORMAT_MESSAGE_IGNORE_INSERTS, FormatMessageW,
+    };
+    let mut buffer = [0u16; 512];
+    let length = unsafe {
+        FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, std::ptr::null(), code, 0,
+                       buffer.as_mut_ptr(), buffer.len() as u32, std::ptr::null())
+    };
+    let text = String::from_utf16_lossy(&buffer[..length as usize]);
+    let text = text.trim_end().trim_end_matches('.').trim_end();
+    if text.is_empty() { format!("error {code}") } else { text.to_string() }
 }
 
 /// Whether a SID is one of the trusted ones (as a string).
@@ -289,11 +326,13 @@ mod real {
     use std::ptr::null;
     use std::time::Duration;
 
-    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_CANCELLED, GetLastError, HANDLE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, ERROR_CANCELLED, GetLastError, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
+    };
     use windows_sys::Win32::System::Threading::{GetCurrentProcessId, GetExitCodeProcess, INFINITE, WaitForSingleObject};
 
     use super::super::client;
-    use super::super::control::{Elevation, Env, Launched, Pipe};
+    use super::super::control::{ConnectError, Elevation, Env, Launched, Pipe};
     use super::{admin_only, elevation_type, file_sha256, installed_version, is_elevated, now, pipe_name, program_files_dir,
                 service_running};
 
@@ -321,6 +360,16 @@ mod real {
         }
         fn pipe_name(&self) -> String {
             self.name.clone()
+        }
+        fn exited(&self) -> Option<i32> {
+            unsafe {
+                if WaitForSingleObject(self.process.0, 0) != WAIT_OBJECT_0 {
+                    return None;
+                }
+                let mut code = 0u32;
+                GetExitCodeProcess(self.process.0, &mut code);
+                Some(code as i32)
+            }
         }
         fn wait(self: Box<Self>) -> i32 {
             unsafe {
@@ -373,8 +422,9 @@ mod real {
             Ok(Box::new(RealLaunched { process, pid, name }))
         }
 
-        fn connect(&self, launched: &dyn Launched, timeout: Duration) -> Result<Box<dyn Pipe>, String> {
-            client::connect_pipe(&launched.pipe_name(), launched.pid(), timeout).map(|c| Box::new(c) as Box<dyn Pipe>)
+        fn connect(&self, launched: &dyn Launched, timeout: Duration) -> Result<Box<dyn Pipe>, ConnectError> {
+            client::connect_pipe(&launched.pipe_name(), launched.pid(), timeout, &|| launched.exited())
+                .map(|c| Box::new(c) as Box<dyn Pipe>)
         }
     }
 
@@ -459,6 +509,49 @@ mod tests {
         assert!(!admin_only(&ours), "a folder we just made shouldn't be administrator-only");
         assert!(!admin_only(&ours.join("missing")), "a file that isn't there isn't administrator-only");
         let _ = std::fs::remove_dir_all(&ours);
+    }
+
+    /// `dacl_admin_only` on a DACL made from SDDL (in memory: no file is changed).
+    fn dacl_from(sddl: &str) -> bool {
+        use windows_sys::Win32::Security::Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1};
+        use windows_sys::Win32::Security::{ACL, GetSecurityDescriptorDacl, PSECURITY_DESCRIPTOR};
+        let wide: Vec<u16> = sddl.encode_utf16().chain([0]).collect();
+        unsafe {
+            let mut descriptor: PSECURITY_DESCRIPTOR = null_mut();
+            let made = ConvertStringSecurityDescriptorToSecurityDescriptorW(wide.as_ptr(), SDDL_REVISION_1, &mut descriptor, null_mut());
+            assert!(made != 0, "{sddl} isn't SDDL Windows takes");
+            let (mut present, mut defaulted, mut dacl) = (0, 0, null_mut::<ACL>());
+            assert!(GetSecurityDescriptorDacl(descriptor, &mut present, &mut dacl, &mut defaulted) != 0);
+            let ok = dacl_admin_only(dacl);
+            LocalFree(descriptor as HLOCAL);
+            ok
+        }
+    }
+
+    /// Write granted to anyone but SYSTEM, Administrators or TrustedInstaller, by any kind of allow ACE that
+    /// applies to the object, isn't administrator-only; read and execute, a deny, or an inherit-only ACE
+    /// are. A conditional ACE, an object ACE, or a kind it doesn't know fails closed (§4.2).
+    #[test]
+    fn every_kind_of_allow_ace_counts() {
+        let admins = "(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
+        assert!(dacl_from(&format!("D:P{admins}(A;OICI;0x1200a9;;;BU)")), "Users with read and execute");
+        assert!(dacl_from(&format!("D:P{admins}(D;;FA;;;WD)")), "a deny");
+        assert!(dacl_from(&format!("D:P{admins}(A;OICIIO;FA;;;CO)")), "inherit-only, for CREATOR OWNER");
+        assert!(!dacl_from(&format!("D:P{admins}(A;;FW;;;BU)")), "Users with write");
+        assert!(!dacl_from(&format!("D:P{admins}(XA;;FA;;;AU;(Member_of {{SID(AU)}}))")), "a conditional ACE for Authenticated Users");
+        assert!(!dacl_from(&format!("D:P{admins}(OA;;FA;;;AU)")), "an object ACE for Authenticated Users");
+        assert!(dacl_from(&format!("D:P{admins}(XA;;FA;;;BA;(Member_of {{SID(BA)}}))")), "a conditional ACE for Administrators");
+        assert!(dacl_from(&format!("D:P{admins}(XA;;0x1200a9;;;AU;(Member_of {{SID(AU)}}))")), "a conditional read");
+        // no DACL at all grants everyone everything
+        assert!(!dacl_from("O:BA"), "a NULL DACL");
+    }
+
+    /// Windows' own sentence for an error, without its period; "error N" for a code it has none for.
+    #[test]
+    fn windows_says_why() {
+        let text = system_message(2);
+        assert!(!text.is_empty() && !text.ends_with('.') && !text.ends_with(char::is_whitespace) && text != "error 2", "{text:?}");
+        assert_eq!(system_message(0x2000_FFFF), "error 536936447");
     }
 
     /// The calls that start a process are only ever built outside tests (§4.3, D acceptance): no test can

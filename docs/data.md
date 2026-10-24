@@ -359,7 +359,8 @@ administrator, from `C:\Program Files\Wonder Vision\`, and only while the player
 A routine prompt names `C:\Program Files\Wonder Vision\wvsensors.exe`. A prompt naming another path should only
 appear right after you choose Ask now or press Play after an update. The reader isn't signed, so the prompt
 shows no verified publisher, and any program can raise one that looks the same: answer **No** to a prompt you
-didn't expect.
+didn't expect. The player's log (`.cache\wvplay.log`) has a line for each of its prompts, with the path it was
+for, and one for each change of PawnIO's state.
 
 **Each player start, and each logon.** With PawnIO on, Windows asks each time the player starts: when you press
 Play, and after you log in when **Start with Windows** is ticked, so once per logon.
@@ -368,7 +369,8 @@ Play, and after you log in when **Start with Windows** is ticked, so once per lo
 - The prompt waits until you answer. The panel plays meanwhile, without PawnIO's readings.
 - Nothing can raise the prompt again, or take it back, while it's up.
 
-**After a rebuild** that changed `wvsensors.exe`, the player doesn't ask when it starts. The studio says "The
+**After a rebuild** that changed `wvsensors.exe`, the player doesn't ask when it starts. A rebuild that left the
+reader's own code alone builds the same `wvsensors.exe`, byte for byte, so it needs no update. The studio says "The
 sensor reader in Program Files is from another build of Wonder Vision: choose Ask now to update it (Windows asks
 for administrator rights)." Press Play in the studio, which then asks, or choose **Ask now**. The prompt names the
 build folder's reader again, and it updates the copy in Program Files. Until the reader is set up or updated,
@@ -425,7 +427,8 @@ only time it uses the chips' configuration registers.
   - Libre Hardware Monitor reads the same way, so it has the same exposure today. The reader keeps each access
     short and only ever reads.
 - **A second player** you start by hand while one plays never asks: it can't take the API's port, and only a
-  player that has it asks.
+  player that has it from the start asks. If it gets the port later, once the first has gone, it says to choose
+  Ask now instead.
 - **A prompt you approve after Stop** does nothing: the reader finds its player gone and exits.
 
 #### What the studio shows

@@ -22,6 +22,6 @@ tiny_http = "0.12"
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 # PawnIO (src/pawnio) needs, beyond the rest: Storage_FileSystem and System_IO (the driver), Security_Authorization
 # (mutex and pipe SDDL, ACL checks), System_Pipes, System_Registry, System_Services, System_Com, UI_Shell and
-# UI_WindowsAndMessaging (asking for administrator rights), System_WindowsProgramming (QueryInterruptTime) and
-# System_Console (the probe's Ctrl+C)
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Pipes", "Win32_System_Registry", "Win32_System_Services", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_System_WindowsProgramming", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+# UI_WindowsAndMessaging (asking for administrator rights), System_Diagnostics_Debug (Windows' sentence for a
+# failed start, FormatMessageW), System_WindowsProgramming (QueryInterruptTime) and System_Console (the probe's Ctrl+C)
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_Console", "Win32_System_Diagnostics_Debug", "Win32_System_Diagnostics_ToolHelp", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Pipes", "Win32_System_Registry", "Win32_System_Services", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_System_WindowsProgramming", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }

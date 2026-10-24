@@ -9,5 +9,8 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
         // 0x800 is LOAD_LIBRARY_SEARCH_SYSTEM32, for the imports Windows loads before the program runs
         println!("cargo:rustc-link-arg-bins=/DEPENDENTLOADFLAG:0x800");
+        // the sensor reader links to the same bytes whenever its code is the same: the player tells an update
+        // from the installed reader's SHA-256, which a link time stamp alone would change at every rebuild
+        println!("cargo:rustc-link-arg-bin=wvsensors=/Brepro");
     }
 }

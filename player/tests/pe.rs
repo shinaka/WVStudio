@@ -1,7 +1,8 @@
 //! The programs built here never load a DLL from their own folder (build.rs, .cargo/config.toml): each
 //! imports Windows' own DLLs only, none of the C runtime's, puts off none of them until first use, and has
 //! Windows look for them in System32 alone (its load configuration's DependentLoadFlags is 0x800, as
-//! `dumpbin /loadconfig` shows it). Read from the programs' PE headers, so no tool is needed.
+//! `dumpbin /loadconfig` shows it). And the sensor reader, wvsensors.exe, links to the same bytes whenever
+//! its code is the same. Read from the programs' PE headers, so no tool is needed.
 
 /// LOAD_LIBRARY_SEARCH_SYSTEM32.
 const SYSTEM32_ONLY: u16 = 0x800;
@@ -21,30 +22,61 @@ fn u32_at(file: &[u8], at: usize) -> Option<u32> {
     Some(u32::from_le_bytes(file.get(at..at + 4)?.try_into().ok()?))
 }
 
+/// A 64-bit program's headers: where its optional header and section table are, and how many sections it
+/// has. None when it isn't a 64-bit PE.
+struct Pe<'a> {
+    file: &'a [u8],
+    optional: usize,
+    table: usize,
+    sections: usize,
+}
+
+impl Pe<'_> {
+    fn of(file: &[u8]) -> Option<Pe<'_>> {
+        let pe = u32_at(file, 0x3C)? as usize;
+        if file.get(pe..pe + 4)? != b"PE\0\0" || u16_at(file, pe + 24)? != 0x20B {
+            return None;
+        }
+        let (sections, optional_size) = (u16_at(file, pe + 6)? as usize, u16_at(file, pe + 20)? as usize);
+        Some(Pe { file, optional: pe + 24, table: pe + 24 + optional_size, sections })
+    }
+
+    /// Data directory i's address and size: 1 is the imports, 6 the debug directory, 10 the load
+    /// configuration, 13 the delay-loaded imports.
+    fn directory(&self, i: usize) -> Option<(u32, u32)> {
+        if i >= u32_at(self.file, self.optional + 108)? as usize {
+            return Some((0, 0));
+        }
+        Some((u32_at(self.file, self.optional + 112 + 8 * i)?, u32_at(self.file, self.optional + 116 + 8 * i)?))
+    }
+
+    /// Where an address in the loaded program is in the file.
+    fn offset(&self, rva: u32) -> Option<usize> {
+        (0..self.sections).find_map(|i| {
+            let s = self.table + 40 * i;
+            let f = self.file;
+            let (size, va, raw_size, raw) = (u32_at(f, s + 8)?, u32_at(f, s + 12)?, u32_at(f, s + 16)?, u32_at(f, s + 20)?);
+            (va <= rva && rva < va + size.max(raw_size)).then(|| (rva - va + raw) as usize)
+        })
+    }
+
+    /// The type of each entry in the debug directory (IMAGE_DEBUG_DIRECTORY, 28 bytes each, its type at 12).
+    fn debug_types(&self) -> Option<Vec<u32>> {
+        let (rva, size) = self.directory(6)?;
+        if rva == 0 {
+            return Some(Vec::new());
+        }
+        let at = self.offset(rva)?;
+        (0..size as usize / 28).map(|i| u32_at(self.file, at + 28 * i + 12)).collect()
+    }
+}
+
 /// A 64-bit program's imports, whether it has a delay-load directory, and its load configuration's
 /// DependentLoadFlags (None without one). None when it isn't a 64-bit PE.
 fn imports(file: &[u8]) -> Option<Imports> {
-    let pe = u32_at(file, 0x3C)? as usize;
-    if file.get(pe..pe + 4)? != b"PE\0\0" || u16_at(file, pe + 24)? != 0x20B {
-        return None;
-    }
-    let (sections, optional_size) = (u16_at(file, pe + 6)? as usize, u16_at(file, pe + 20)? as usize);
-    let (optional, table) = (pe + 24, pe + 24 + optional_size);
-    // data directory i's address and size: 1 is the imports, 10 the load configuration, 13 the delay-loaded
-    let directory = |i: usize| -> Option<(u32, u32)> {
-        if i >= u32_at(file, optional + 108)? as usize {
-            return Some((0, 0));
-        }
-        Some((u32_at(file, optional + 112 + 8 * i)?, u32_at(file, optional + 116 + 8 * i)?))
-    };
-    // where an address in the loaded program is in the file
-    let offset = |rva: u32| -> Option<usize> {
-        (0..sections).find_map(|i| {
-            let s = table + 40 * i;
-            let (size, va, raw_size, raw) = (u32_at(file, s + 8)?, u32_at(file, s + 12)?, u32_at(file, s + 16)?, u32_at(file, s + 20)?);
-            (va <= rva && rva < va + size.max(raw_size)).then(|| (rva - va + raw) as usize)
-        })
-    };
+    let pe = Pe::of(file)?;
+    let directory = |i: usize| pe.directory(i);
+    let offset = |rva: u32| pe.offset(rva);
     let mut dlls = Vec::new();
     // one 20-byte descriptor per DLL, its name's address at 12, then an empty one
     let mut at = offset(directory(1)?.0)?;
@@ -107,4 +139,15 @@ fn wvsensors_loads_dlls_from_system32_only() {
         let ok = dll.starts_with("api-ms-win-") || system.contains(&dll.as_str());
         assert!(ok, "{exe} imports {dll}, which isn't one of Windows' own");
     }
+}
+
+/// wvsensors.exe links to the same bytes whenever its code is the same (/Brepro, build.rs): the player tells
+/// an update from the installed reader's SHA-256 (§4.2), which a link time stamp alone would change at every
+/// rebuild. Linked that way, its debug directory has a REPRO entry (IMAGE_DEBUG_TYPE_REPRO, 16).
+#[test]
+fn wvsensors_links_reproducibly() {
+    let exe = env!("CARGO_BIN_EXE_wvsensors");
+    let file = std::fs::read(exe).unwrap();
+    let types = Pe::of(&file).and_then(|pe| pe.debug_types()).unwrap_or_else(|| panic!("{exe}: no debug directory to read"));
+    assert!(types.contains(&16), "{exe} wasn't linked with /Brepro: its debug entries are of types {types:?}");
 }

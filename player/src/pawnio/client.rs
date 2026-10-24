@@ -1,18 +1,18 @@
 //! The player's side of the reader's pipe: connect to it, check it's really the reader's, read its hello,
 //! then serve reads and the quit from one worker thread, so polls and /test don't talk over each other.
 //!
-//! The worker owns the pipe; `read` and `quit` hand it a request and wait on a channel, so a reader that
-//! stops answering is a timeout, not a hang.
+//! The worker owns the pipe; `read` hands it a request and waits on a channel, so a reader that stops
+//! answering is a timeout, not a hang. `quit` only hands it the request, so it never waits for a read.
 
 use std::io::{BufRead, Read, Write};
 use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::Value as Json;
 
 use super::Readings;
-use super::control::Pipe;
+use super::control::{ConnectError, Pipe};
 
 /// How long one read waits for the reader to answer (§4.5).
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
@@ -30,16 +30,12 @@ enum Cmd {
     Quit,
 }
 
-/// The connected reader. One worker thread owns the pipe; this hands it requests.
+/// The connected reader. One worker thread owns the pipe; this hands it requests. A read holds `answers`
+/// while it waits, so reads take turns; a quit needs only the sender.
 #[derive(Debug)]
 pub struct Client {
-    inner: Mutex<Inner>,
-}
-
-#[derive(Debug)]
-struct Inner {
     to_worker: Sender<Cmd>,
-    answers: Receiver<Result<Readings, String>>,
+    answers: Mutex<Receiver<Result<Readings, String>>>,
 }
 
 impl Client {
@@ -62,26 +58,25 @@ impl Client {
         let (to_worker, from_player) = channel::<Cmd>();
         let (to_player, answers) = channel::<Result<Readings, String>>();
         std::thread::spawn(move || worker(reader, writer, &from_player, &to_player));
-        Ok(Client { inner: Mutex::new(Inner { to_worker, answers }) })
+        Ok(Client { to_worker, answers: Mutex::new(answers) })
     }
 }
 
 impl Pipe for Client {
     fn read(&self) -> Result<Readings, String> {
-        let inner = self.inner.lock().unwrap();
-        if inner.to_worker.send(Cmd::Read).is_err() {
+        let answers = self.answers.lock().unwrap();
+        if self.to_worker.send(Cmd::Read).is_err() {
             return Err(NO_ANSWER.to_string());
         }
-        match inner.answers.recv_timeout(READ_TIMEOUT) {
+        match answers.recv_timeout(READ_TIMEOUT) {
             Ok(result) => result,
             Err(RecvTimeoutError::Timeout) | Err(RecvTimeoutError::Disconnected) => Err(NO_ANSWER.to_string()),
         }
     }
 
+    /// Queued behind a read in flight, if there is one; it doesn't wait for that read.
     fn quit(&self) {
-        if let Ok(inner) = self.inner.lock() {
-            let _ = inner.to_worker.send(Cmd::Quit);
-        }
+        let _ = self.to_worker.send(Cmd::Quit);
     }
 }
 
@@ -116,14 +111,37 @@ fn worker<R: BufRead, W: Write>(mut reader: R, mut writer: W, cmds: &Receiver<Cm
     }
 }
 
+/// Waits up to `timeout` for the reader's pipe: `open` tries it once (None while it isn't there yet). Gives
+/// up at once when `exited` says the reader has exited, with its code, so a reader that stopped before it
+/// opened its pipe (its checks, or a failed install) says why at once, not "didn't answer" at the end.
+pub(crate) fn wait_for_pipe<T>(
+    timeout: Duration,
+    mut open: impl FnMut() -> Option<Result<T, String>>,
+    exited: &dyn Fn() -> Option<i32>,
+) -> Result<T, ConnectError> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(opened) = open() {
+            return opened.map_err(ConnectError::Failed);
+        }
+        if let Some(code) = exited() {
+            return Err(ConnectError::Exited(code));
+        }
+        if Instant::now() >= deadline {
+            return Err(ConnectError::Failed(NO_ANSWER.to_string()));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// Connects to the reader's pipe for real (never in tests): waits for it, opens it at identification level,
-/// checks it belongs to the launched reader, and reads its hello.
+/// checks it belongs to the launched reader, and reads its hello. `exited` is the launched reader's exit
+/// code once it has exited.
 #[cfg(not(test))]
-pub fn connect_pipe(name: &str, server_pid: u32, timeout: Duration) -> Result<Client, String> {
+pub fn connect_pipe(name: &str, server_pid: u32, timeout: Duration, exited: &dyn Fn() -> Option<i32>) -> Result<Client, ConnectError> {
     use std::io::BufReader;
     use std::os::windows::io::FromRawHandle;
     use std::ptr::{null, null_mut};
-    use std::time::Instant;
 
     use windows_sys::Win32::Foundation::{CloseHandle, GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::Storage::FileSystem::{
@@ -132,33 +150,29 @@ pub fn connect_pipe(name: &str, server_pid: u32, timeout: Duration) -> Result<Cl
     use windows_sys::Win32::System::Pipes::{GetNamedPipeServerProcessId, WaitNamedPipeW};
 
     let wide: Vec<u16> = name.encode_utf16().chain([0]).collect();
-    let deadline = Instant::now() + timeout;
-    loop {
+    let open = || {
         unsafe { WaitNamedPipeW(wide.as_ptr(), 500) };
         let handle = unsafe {
             CreateFileW(wide.as_ptr(), GENERIC_READ | GENERIC_WRITE, 0, null(), OPEN_EXISTING,
                         SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, null_mut())
         };
-        if handle != INVALID_HANDLE_VALUE {
-            let mut pid = 0u32;
-            let same = unsafe { GetNamedPipeServerProcessId(handle, &mut pid) } != 0 && pid == server_pid;
-            if !same {
-                // not the reader we started: don't talk to it
-                unsafe { CloseHandle(handle) };
-                return Err(NO_ANSWER.to_string());
-            }
-            let file = unsafe { std::fs::File::from_raw_handle(handle as _) };
-            let reader = match file.try_clone() {
-                Ok(clone) => BufReader::new(clone),
-                Err(_) => return Err(NO_ANSWER.to_string()),
-            };
-            return Client::serve(reader, file);
+        if handle == INVALID_HANDLE_VALUE {
+            return None;
         }
-        if Instant::now() >= deadline {
-            return Err(NO_ANSWER.to_string());
+        let mut pid = 0u32;
+        let same = unsafe { GetNamedPipeServerProcessId(handle, &mut pid) } != 0 && pid == server_pid;
+        if !same {
+            // not the reader we started: don't talk to it
+            unsafe { CloseHandle(handle) };
+            return Some(Err(NO_ANSWER.to_string()));
         }
-        std::thread::sleep(Duration::from_millis(50));
-    }
+        let file = unsafe { std::fs::File::from_raw_handle(handle as _) };
+        Some(match file.try_clone() {
+            Ok(clone) => Client::serve(BufReader::new(clone), file),
+            Err(_) => Err(NO_ANSWER.to_string()),
+        })
+    };
+    wait_for_pipe(timeout, open, exited)
 }
 
 #[cfg(test)]
@@ -246,6 +260,44 @@ mod tests {
         let start = std::time::Instant::now();
         assert_eq!(client.read().unwrap_err(), NO_ANSWER);
         assert!(start.elapsed() >= READ_TIMEOUT && start.elapsed() < READ_TIMEOUT + Duration::from_secs(2), "{:?}", start.elapsed());
+    }
+
+    /// Quitting doesn't wait for a read in flight, so turning PawnIO off never waits up to 5 s on a reader
+    /// that stopped answering (§4.6).
+    #[test]
+    fn quit_doesnt_wait_for_a_read() {
+        let (stream, _thread) = server(r#"{"wvsensors":1}"#, |_| Reply::Silent);
+        let client = std::sync::Arc::new(client(stream).unwrap());
+        let reading = {
+            let client = client.clone();
+            std::thread::spawn(move || client.read())
+        };
+        std::thread::sleep(Duration::from_millis(200));
+        let start = Instant::now();
+        client.quit();
+        assert!(start.elapsed() < Duration::from_secs(1), "quit waited {:?}", start.elapsed());
+        assert_eq!(reading.join().unwrap().unwrap_err(), NO_ANSWER);
+    }
+
+    /// Waiting for the pipe: a reader that exits before it opens its pipe gives its exit code at once, not
+    /// "didn't answer" after the whole wait; one that opens it is connected; one that does neither in time
+    /// didn't answer.
+    #[test]
+    fn waiting_for_the_pipe() {
+        let tries = std::cell::Cell::new(0);
+        let start = Instant::now();
+        let gone = wait_for_pipe::<()>(Duration::from_secs(30), || { tries.set(tries.get() + 1); None },
+                                       &|| (tries.get() >= 3).then_some(9));
+        assert_eq!(gone, Err(ConnectError::Exited(9)));
+        assert!(start.elapsed() < Duration::from_secs(2), "{:?}", start.elapsed());
+        let opened = wait_for_pipe(Duration::from_secs(30), || Some(Ok("pipe")), &|| None);
+        assert_eq!(opened, Ok("pipe"));
+        let refused = wait_for_pipe::<()>(Duration::from_secs(30), || Some(Err(WRONG_BUILD.to_string())), &|| None);
+        assert_eq!(refused, Err(ConnectError::Failed(WRONG_BUILD.to_string())));
+        let start = Instant::now();
+        let silent = wait_for_pipe::<()>(Duration::from_millis(300), || None, &|| None);
+        assert_eq!(silent, Err(ConnectError::Failed(NO_ANSWER.to_string())));
+        assert!(start.elapsed() >= Duration::from_millis(300));
     }
 
     /// A reader whose pipe breaks is "didn't answer".
