@@ -1,6 +1,6 @@
 //! Where live values come from (docs/data.md): Claude plan usage, the PC's own sensors (Windows, NVIDIA,
-//! HWiNFO, Libre Hardware Monitor) and Home Assistant. Each poll returns its values, or what went wrong;
-//! tokens and passwords never appear in either.
+//! HWiNFO, Libre Hardware Monitor, PawnIO) and Home Assistant. Each poll returns its values, or what went
+//! wrong; tokens and passwords never appear in either.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -12,6 +12,7 @@ use chrono::{DateTime, Utc};
 use serde_json::Value as Json;
 
 use crate::data::{Source, Value};
+use crate::pawnio;
 
 /// A poll's values, plus notes on parts that were skipped (no NVIDIA driver, HWiNFO not running...).
 #[derive(Debug)]
@@ -228,9 +229,10 @@ fn ha_values(states: &Json, entities: &[String]) -> Polled {
     Polled { values, notes }
 }
 
-/// The PC's own sensors: CPU load and memory from Windows, the GPU from NVIDIA's driver, and (with
-/// `hwinfo`, `lhm`) everything HWiNFO or Libre Hardware Monitor reads. A part that can't be read is a
-/// note, never a failure, so the rest still comes through.
+/// The PC's own sensors: CPU load and memory from Windows, the GPU from NVIDIA's driver, (with `hwinfo`,
+/// `lhm`) everything HWiNFO or Libre Hardware Monitor reads, and (with `pawnio`) the CPU, fan and
+/// motherboard sensors read through PawnIO. A part that can't be read is a note, never a failure, so the
+/// rest still comes through.
 fn pc(source: &Source, state: &mut State) -> Polled {
     let (mut values, mut notes) = (Vec::new(), Vec::new());
     let mut put = |key: &str, value: f64| values.push((key.to_string(), Value::Number(value)));
@@ -289,6 +291,10 @@ fn pc(source: &Source, state: &mut State) -> Polled {
             }
             Err(e) => notes.push(e),
         }
+    }
+    // after the others, so its CPU temperature can take the place of theirs
+    if source.pawnio {
+        add_pawnio(&mut values, &mut notes, pawnio::read());
     }
     Polled { values, notes }
 }
@@ -430,6 +436,19 @@ fn lhm_base(url: &str) -> String {
 fn add_lhm(values: &mut Vec<(String, Value)>, lhm: Vec<(String, Value)>) {
     let has_temp = values.iter().any(|(k, _)| k == "pc.cpu.temp");
     values.extend(lhm.into_iter().filter(|(k, _)| !(has_temp && k == "pc.cpu.temp")));
+}
+
+/// Adds what PawnIO read to the pc poll's: its readings (all under `pawnio.`), and its notes (what it
+/// couldn't read, and why). Its `pc.cpu.temp`, read straight from the CPU, takes the place of HWiNFO's and
+/// Libre Hardware Monitor's.
+fn add_pawnio(values: &mut Vec<(String, Value)>, notes: &mut Vec<String>, read: pawnio::Readings) {
+    let readings = read.values.into_iter().filter(|(k, v)| k.starts_with("pawnio.") && v.is_finite());
+    values.extend(readings.map(|(k, v)| (k, Value::Number(v))));
+    if let Some(temp) = read.cpu_temp.filter(|t| t.is_finite()) {
+        values.retain(|(k, _)| k != "pc.cpu.temp");
+        values.push(("pc.cpu.temp".into(), Value::Number(temp)));
+    }
+    notes.extend(read.notes);
 }
 
 /// One Libre Hardware Monitor sensor: its hardware's key (numbered when two have the same name), whether
@@ -783,8 +802,10 @@ mod win {
     use std::ffi::c_void;
     use std::mem::{size_of, transmute, zeroed};
 
-    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
-    use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, HMODULE};
+    use windows_sys::Win32::System::LibraryLoader::{
+        GetProcAddress, LOAD_LIBRARY_FLAGS, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
+    };
     use windows_sys::Win32::System::Memory::{
         FILE_MAP_READ, MEMORY_BASIC_INFORMATION, MapViewOfFile, OpenFileMappingW, UnmapViewOfFile, VirtualQuery,
     };
@@ -869,13 +890,24 @@ mod win {
         NVML.get_or_init(|| unsafe { load_nvml() }).as_ref().map_err(|e| *e)
     }
 
+    /// Where nvml.dll is looked for: in System32, where NVIDIA's driver puts it, then where older drivers
+    /// did, taking what it needs from there or System32. Never by the usual search, which looks in the
+    /// player's own folder first: any user of the PC may be able to write there, and the player may run
+    /// as administrator.
+    pub const NVML_FILES: [(&str, LOAD_LIBRARY_FLAGS); 2] = [
+        ("nvml.dll", LOAD_LIBRARY_SEARCH_SYSTEM32),
+        (r"C:\Program Files\NVIDIA Corporation\NVSMI\nvml.dll", LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32),
+    ];
+
+    /// A DLL, loaded and searched for as `flags` say; None if it isn't there.
+    pub fn load_library(path: &str, flags: LOAD_LIBRARY_FLAGS) -> Option<HMODULE> {
+        let lib = unsafe { LoadLibraryExW(wide(path).as_ptr(), std::ptr::null_mut(), flags) };
+        (!lib.is_null()).then_some(lib)
+    }
+
     unsafe fn load_nvml() -> Result<Nvml, &'static str> {
         unsafe {
-            let lib = ["nvml.dll", r"C:\Program Files\NVIDIA Corporation\NVSMI\nvml.dll"]
-                .iter()
-                .map(|path| LoadLibraryW(wide(path).as_ptr()))
-                .find(|lib| !lib.is_null())
-                .ok_or("no NVIDIA driver (nvml.dll)")?;
+            let lib = NVML_FILES.iter().find_map(|&(path, flags)| load_library(path, flags)).ok_or("no NVIDIA driver (nvml.dll)")?;
             let symbol = |name: &[u8]| GetProcAddress(lib, name.as_ptr()).ok_or("NVML is missing a function");
             let init: Init = transmute(symbol(b"nvmlInit_v2\0")?);
             let handle: Handle = transmute(symbol(b"nvmlDeviceGetHandleByIndex_v2\0")?);
@@ -1388,6 +1420,94 @@ mod tests {
         assert_eq!(get(&values, "pc.cpu.temp"), Some(&Value::Number(45.3)));
     }
 
+    #[test]
+    fn pawnio_cpu_temperature_comes_first() {
+        let read = |cpu_temp: Option<f64>| pawnio::Readings {
+            values: vec![("pawnio.cpu.temperature.tctl".into(), 70.375), ("pawnio.ite_it87952e.fan.fan_2".into(), 6308.4),
+                         ("pawnio.ite_it8696e.temperature.temperature_6".into(), f64::NAN), ("pc.cpu.temp".into(), 1.0),
+                         ("lhm.cpu.temperature.core_tctl_tdie".into(), 2.0)],
+            labels: Vec::new(),
+            cpu_temp,
+            notes: vec!["a note".into()],
+        };
+        let lhm = lhm_tree(&cpu_tree(Some("/amdcpu/0"), "cpu.png", &[("Core (Tctl/Tdie)", 45.3)]));
+        // what the pc poll has by then: HWiNFO's pc.cpu.temp, which won over LHM's
+        let others = || {
+            let mut values = vec![("pc.cpu.temp".to_string(), Value::Number(61.5)), ("pc.cpu.load".to_string(), Value::Number(9.0))];
+            add_lhm(&mut values, lhm.clone());
+            values
+        };
+        let temp = |values: &[(String, Value)]| {
+            let temps: Vec<&Value> = values.iter().filter(|(k, _)| k == "pc.cpu.temp").map(|(_, v)| v).collect();
+            assert!(temps.len() <= 1, "{temps:?}");
+            temps.first().cloned().cloned()
+        };
+        // PawnIO's, read straight from the CPU, takes their place; everything else stays
+        let (mut values, mut notes) = (others(), vec!["no NVIDIA driver (nvml.dll)".to_string()]);
+        add_pawnio(&mut values, &mut notes, read(Some(70.375)));
+        assert_eq!(temp(&values), Some(Value::Number(70.375)));
+        assert_eq!(get(&values, "pawnio.cpu.temperature.tctl"), Some(&Value::Number(70.375)));
+        assert_eq!(get(&values, "pawnio.ite_it87952e.fan.fan_2"), Some(&Value::Number(6308.4)));
+        assert_eq!(get(&values, "lhm.cpu.temperature.core_tctl_tdie"), Some(&Value::Number(45.3)));
+        assert_eq!(get(&values, "pc.cpu.load"), Some(&Value::Number(9.0)));
+        assert_eq!(notes, ["no NVIDIA driver (nvml.dll)", "a note"]);
+        // only numbers, and only under pawnio.: never another source's key
+        assert_eq!(get(&values, "pawnio.ite_it8696e.temperature.temperature_6"), None);
+        assert_eq!(values.iter().filter(|(k, _)| k.starts_with("pawnio.")).count(), 2);
+        assert_eq!(values.len(), others().len() + 2);
+        // LHM's too, when it's the only other
+        let mut values = vec![("pc.cpu.load".to_string(), Value::Number(9.0))];
+        add_lhm(&mut values, lhm.clone());
+        assert_eq!(temp(&values), Some(Value::Number(45.3)));
+        add_pawnio(&mut values, &mut Vec::new(), read(Some(70.375)));
+        assert_eq!(temp(&values), Some(Value::Number(70.375)));
+        // no CPU temperature from PawnIO (one that isn't a number is none): theirs stays
+        for none in [None, Some(f64::NAN), Some(f64::INFINITY)] {
+            let mut values = others();
+            add_pawnio(&mut values, &mut Vec::new(), read(none));
+            assert_eq!(temp(&values), Some(Value::Number(61.5)), "{none:?}");
+        }
+        // and with nothing from them, PawnIO's alone
+        let mut values = Vec::new();
+        add_pawnio(&mut values, &mut Vec::new(), read(Some(49.5)));
+        assert_eq!(temp(&values), Some(Value::Number(49.5)));
+    }
+
+    /// NVML is loaded from System32 (or, for older drivers, by its full path), never by the usual search,
+    /// which would look in the player's own folder first and load a DLL put there.
+    #[test]
+    fn nvml_from_system32_only() {
+        use windows_sys::Win32::Foundation::FreeLibrary;
+        use windows_sys::Win32::System::LibraryLoader::{GetModuleFileNameW, LOAD_LIBRARY_AS_DATAFILE};
+        use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
+        let (name, flags) = win::NVML_FILES[0];
+        assert!(name == "nvml.dll" && win::NVML_FILES[1].0.ends_with(r"\nvml.dll"));
+        assert!(std::path::Path::new(win::NVML_FILES[1].0).is_absolute());
+        let mut buffer = [0u16; 520];
+        let n = unsafe { GetSystemDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) } as usize;
+        let system32 = PathBuf::from(String::from_utf16_lossy(&buffer[..n]));
+        // a DLL beside this program, where the usual search finds it, isn't looked for there
+        let planted = format!("wvtest-planted-{}.dll", std::process::id());
+        let beside = std::env::current_exe().unwrap().with_file_name(&planted);
+        std::fs::copy(system32.join("version.dll"), &beside).unwrap();
+        let ours = win::load_library(&planted, flags);
+        let usual = win::load_library(&planted, LOAD_LIBRARY_AS_DATAFILE);
+        for lib in [ours, usual].into_iter().flatten() {
+            unsafe { FreeLibrary(lib) };
+        }
+        let _ = std::fs::remove_file(&beside);
+        assert!(ours.is_none() && usual.is_some(), "{ours:?} {usual:?}");
+        // this PC's NVIDIA driver, when it has one, is found in System32
+        if system32.join(name).is_file() {
+            let lib = win::load_library(name, flags).expect("nvml.dll is in System32, but didn't load from there");
+            let n = unsafe { GetModuleFileNameW(lib, buffer.as_mut_ptr(), buffer.len() as u32) } as usize;
+            let loaded = PathBuf::from(String::from_utf16_lossy(&buffer[..n]));
+            unsafe { FreeLibrary(lib) };
+            let folder = loaded.parent().map(|f| f.to_string_lossy().to_lowercase());
+            assert_eq!(folder, Some(system32.to_string_lossy().to_lowercase()), "{loaded:?}");
+        }
+    }
+
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
     use std::sync::mpsc;
@@ -1483,6 +1603,24 @@ mod tests {
         let note = lhm(&url, None).unwrap_err();
         assert!(start.elapsed() < LHM_TIMEOUT, "{:?}", start.elapsed());
         assert!(note.contains(&format!("isn't answering at {url} (nothing is listening there)")), "{note}");
+    }
+
+    #[test]
+    fn pawnio_not_available_is_a_note() {
+        // whatever stops PawnIO here (a test never reads it): the pc poll still works, with one note from
+        // PawnIO saying why, and isn't held up. Which note depends on what other tests have told PawnIO, so
+        // it isn't checked here.
+        let source: Source = serde_json::from_value(serde_json::json!({ "type": "pc", "pawnio": true })).unwrap();
+        let start = Instant::now();
+        let polled = poll(&source, &mut State::default()).unwrap_or_else(|e| panic!("failed: {e}"));
+        assert!(start.elapsed() < Duration::from_secs(5), "{:?}", start.elapsed());
+        assert_eq!(polled.notes.iter().filter(|n| n.starts_with("PawnIO")).count(), 1, "{:?}", polled.notes);
+        assert!(get(&polled.values, "pc.ram.total_gb").is_some() && get(&polled.values, "pc.cpu.load").is_some());
+        assert!(polled.values.iter().all(|(k, _)| !k.starts_with("pawnio.")));
+        // with it off, PawnIO isn't read, and says nothing
+        let off: Source = serde_json::from_value(serde_json::json!({ "type": "pc", "pawnio": false })).unwrap();
+        let polled = poll(&off, &mut State::default()).unwrap_or_else(|e| panic!("failed: {e}"));
+        assert!(polled.notes.iter().all(|n| !n.contains("PawnIO")), "{:?}", polled.notes);
     }
 
     #[test]

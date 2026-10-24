@@ -20,10 +20,12 @@
   {
     "id": "pc",
     "name": "This PC",
-    "description": "CPU load and memory from Windows, the GPU from NVIDIA's driver, and, with HWiNFO or Libre Hardware Monitor, every sensor they read (HWiNFO needs Shared Memory Support on; Libre Hardware Monitor needs its Remote Web Server on).",
+    "description": "CPU load and memory from Windows, the GPU from NVIDIA's driver, and, with HWiNFO, Libre Hardware Monitor or PawnIO, CPU, fan, pump and motherboard sensors (HWiNFO needs Shared Memory Support on; Libre Hardware Monitor needs its Remote Web Server on; PawnIO asks for administrator rights).",
     "interval": { "default": 60, "min": 5 },
     "settings": [
       { "key": "hwinfo", "label": "Read HWiNFO sensors", "type": "bool", "default": false },
+      { "key": "pawnio", "label": "Read sensors through PawnIO (asks for administrator rights)", "type": "bool", "default": false,
+        "help": "CPU temperatures and power, fan and pump speeds and motherboard temperatures, read straight from the hardware through the free PawnIO driver (pawnio.eu). PawnIO needs administrator rights, so Windows asks for them when you turn this on and each time the player starts (docs/data.md, Setting up PawnIO). For live fan readings set the interval to 5 s." },
       { "key": "lhm", "label": "Read Libre Hardware Monitor sensors", "type": "bool", "default": false },
       { "key": "lhm_url", "label": "Libre Hardware Monitor address", "type": "text", "default": "http://127.0.0.1:8085" },
       { "key": "lhm_user", "label": "Libre Hardware Monitor user name", "type": "text", "default": "" },
@@ -31,7 +33,7 @@
     ],
     "provides": [
       { "key": "pc.cpu.load", "label": "CPU load", "unit": "%", "kind": "number" },
-      { "key": "pc.cpu.temp", "label": "CPU temperature (needs HWiNFO or Libre Hardware Monitor)", "unit": "°C", "kind": "number" },
+      { "key": "pc.cpu.temp", "label": "CPU temperature (needs PawnIO, HWiNFO or Libre Hardware Monitor)", "unit": "°C", "kind": "number" },
       { "key": "pc.ram.used_gb", "label": "RAM used", "unit": "GB", "kind": "number" },
       { "key": "pc.ram.total_gb", "label": "RAM total", "unit": "GB", "kind": "number" },
       { "key": "pc.ram.used_pct", "label": "RAM used", "unit": "%", "kind": "number" },
@@ -41,7 +43,8 @@
       { "key": "pc.gpu.vram_used_gb", "label": "VRAM used", "unit": "GB", "kind": "number" },
       { "key": "pc.gpu.vram_total_gb", "label": "VRAM total", "unit": "GB", "kind": "number" },
       { "key": "hwinfo.*", "label": "HWiNFO readings, as hwinfo.<sensor>.<label>", "kind": "number", "pattern": true },
-      { "key": "lhm.*", "label": "Libre Hardware Monitor sensors, as lhm.<hardware>.<type>.<sensor>", "kind": "number", "pattern": true }
+      { "key": "lhm.*", "label": "Libre Hardware Monitor sensors, as lhm.<hardware>.<type>.<sensor>", "kind": "number", "pattern": true },
+      { "key": "pawnio.*", "label": "PawnIO sensors, as pawnio.cpu.<type>.<sensor> and pawnio.<chip>.<type>.<sensor>", "kind": "number", "pattern": true }
     ]
   },
   {
