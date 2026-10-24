@@ -35,11 +35,14 @@ studio builds its UI entirely from these manifests:
 - **Setting extras,** all optional and passed to the studio as they are: `help` (a line under the control),
   `placeholder` (grey text in an empty box), and for a number, `min` and `max` (the box's limits, as hints).
 - **`provides`** documents keys up front, so the window and autocomplete can show them before any value
-  arrives. A `pattern: true` entry covers dynamic keys such as `hwinfo.*`, `lhm.*` or `ha.*`; the live
-  values fill those in.
+  arrives. A `pattern: true` entry covers dynamic keys such as `hwinfo.*`, `lhm.*`, `pawnio.*` or `ha.*`;
+  the live values fill those in. The player's pc manifest also has a row for each `pawnio.*` key read since
+  PawnIO was turned on, with its name and unit, marked `"live": true`. The studio lists those under the
+  `pawnio.*` row, and they never rebuild the settings form.
 - **Built-ins:** their manifests are compiled into the player (`player/src/builtins.json`). Their settings:
-  - **pc** (This PC): `hwinfo` and `lhm` (bools), `lhm_url` and `lhm_user` (text), `lhm_password`
-    (password). See data.md.
+  - **pc** (This PC): `hwinfo`, `pawnio` and `lhm` (bools), `lhm_url` and `lhm_user` (text),
+    `lhm_password` (password). See data.md: `pawnio` reads the CPU, fan, pump and board sensors through the
+    PawnIO driver, and Windows asks for administrator rights for its sensor reader.
   - **homeassistant:** `url` (text), `token` (password) and `entities` (list). Its `ha.*` keys come from
     `entities`.
 
@@ -70,7 +73,8 @@ studio builds its UI entirely from these manifests:
 - **Rules:**
   - A plugin may only set keys that start with its own `id.`, so a plugin can't overwrite `claude.week`.
   - A plugin's id can't be a built-in's (`claude`, `pc`, `homeassistant`, `time`), the first part of keys a
-    built-in sets (`ha`, `hwinfo`, `lhm`), or another plugin's: such a plugin is refused, with the reason.
+    built-in sets (`ha`, `hwinfo`, `lhm`, `pawnio`), or another plugin's: such a plugin is refused, with the
+    reason.
   - A setting can't be called `type`, `enabled` or `interval`, end in `_set` (the studio's flag for a saved
     password), or have another setting's key. Any other key is the plugin's own, even one a built-in uses
     (`url`, `token`...).
@@ -100,7 +104,8 @@ default settings.
 
 - `GET /catalog`: every manifest (without `run`), each with
   `status: {enabled, ok, error, notes, updated_at}`.
-- `POST /catalog/rescan`: re-reads the plugins folder.
+- `POST /catalog/rescan`: re-reads the plugins folder. Like every POST, it needs the header `X-WV: 1`
+  (data.md, "The player").
 - `/test` works for plugins too: it runs the plugin once with the given settings. A plugin's run gives up
   after 30 s at most, so the studio waits longer than that (45 s) and shows the player's own error.
 

@@ -1,0 +1,7 @@
+# Everything here is kept byte for byte as released: README.md lists the SHA-256 values, and the player
+# pins the modules' values. Git mustn't change line endings (COPYING is CRLF, the sources are LF). Only the
+# notes written here are ordinary text.
+* -text
+*.bin binary
+README.md text
+.gitattributes text

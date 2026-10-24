@@ -317,7 +317,7 @@ mod tests {
         // its Authentication's user name, a text setting (so changing it, like the address, drops a saved
         // password), and its password, a secret like Home Assistant's token, right after
         let keys: Vec<&str> = pc.settings.iter().map(|s| s.key.as_str()).collect();
-        assert_eq!(keys, ["hwinfo", "lhm", "lhm_url", "lhm_user", "lhm_password"]);
+        assert_eq!(keys, ["hwinfo", "pawnio", "lhm", "lhm_url", "lhm_user", "lhm_password"]);
         let user = pc.setting("lhm_user").unwrap();
         assert_eq!((user.kind.as_str(), &user.default, user.label.as_str()), ("text", &Some(json!("")), "Libre Hardware Monitor user name"));
         let password = pc.setting("lhm_password").unwrap();
@@ -325,8 +325,17 @@ mod tests {
         let secrets: Vec<&str> = all.iter().flat_map(|m| &m.settings).filter(|s| s.kind == "password").map(|s| s.key.as_str()).collect();
         assert_eq!(secrets, ["lhm_password", "token"]);
         assert!(pc.provides.iter().any(|p| p.key == "lhm.*" && p.pattern));
+        // PawnIO: off, with the other "Read ..." switches (after HWiNFO's), saying it asks for administrator
+        // rights, with help on where to get it and when Windows asks; its keys are all under pawnio.
+        let pawnio = pc.setting("pawnio").unwrap();
+        assert_eq!((pawnio.kind.as_str(), &pawnio.default), ("bool", &Some(json!(false))));
+        assert!(pawnio.label.contains("PawnIO") && pawnio.label.contains("administrator rights"), "{}", pawnio.label);
+        let help = pawnio.help.as_deref().unwrap_or_default();
+        assert!(help.contains("pawnio.eu") && help.contains("each time the player starts"), "{help}");
+        assert!(pc.provides.iter().any(|p| p.key == "pawnio.*" && p.pattern && p.kind.as_deref() == Some("number")));
+        assert!(pc.description.contains("PawnIO"));
         let temp = pc.provides.iter().find(|p| p.key == "pc.cpu.temp").unwrap();
-        assert!(temp.label.contains("HWiNFO") && temp.label.contains("Libre Hardware Monitor"));
+        assert!(temp.label.contains("PawnIO") && temp.label.contains("HWiNFO") && temp.label.contains("Libre Hardware Monitor"));
         for key in ["pc.cpu.load", "pc.cpu.temp", "pc.ram.used_gb", "pc.gpu.temp", "pc.gpu.vram_total_gb"] {
             assert!(pc.provides.iter().any(|p| p.key == key), "{key}");
         }
@@ -402,7 +411,7 @@ mod tests {
             let e = check(&serde_json::from_str(&manifest(key)).unwrap()).unwrap_err();
             assert!(e.contains("can't have that key"), "{key}: {e}");
         }
-        for key in ["hwinfo", "lhm", "lhm_url", "url", "token", "entities", "enabled_at", "offset", "set"] {
+        for key in ["hwinfo", "pawnio", "lhm", "lhm_url", "url", "token", "entities", "enabled_at", "offset", "set"] {
             check(&serde_json::from_str(&manifest(key)).unwrap()).unwrap_or_else(|e| panic!("{key}: {e}"));
         }
         // the studio's password flags, and one key twice
@@ -474,7 +483,8 @@ mod tests {
         assert_eq!(taken("ha", &empty).unwrap(), "the id \"ha\" is taken: the built-in Home Assistant source sets keys starting with \"ha.\"");
         assert_eq!(taken("hwinfo", &empty).unwrap(), "the id \"hwinfo\" is taken: the built-in This PC source sets keys starting with \"hwinfo.\"");
         assert!(taken("lhm", &empty).unwrap().contains("This PC"));
-        for id in ["weather", "disk", "hw", "claudes", "pc2", "home"] {
+        assert_eq!(taken("pawnio", &empty).unwrap(), "the id \"pawnio\" is taken: the built-in This PC source sets keys starting with \"pawnio.\"");
+        for id in ["weather", "disk", "hw", "claudes", "pc2", "home", "pawn"] {
             assert_eq!(taken(id, &empty), None, "{id}");
         }
         assert!(is_builtin("pc") && is_builtin("time") && !is_builtin("ha") && !is_builtin("weather"));

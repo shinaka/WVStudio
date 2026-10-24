@@ -10,9 +10,11 @@ import base64
 import contextlib
 import copy
 import csv
+import ctypes
 import errno
 import hashlib
 import io
+import ipaddress
 import json
 import math
 import os
@@ -232,6 +234,10 @@ PLAYER = wv.ROOT / "player" / "target" / "release" / "wvplayw.exe"  # the one wi
 PLAYER_LOG = wv.ROOT / ".cache" / "wvplay.log"
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"  # per-user startup apps
 RUN_NAME = "Wonder Vision player"
+# PawnIO's uninstall entry, which has a DisplayVersion once it's installed, and the key that says where Program Files
+# is: both read in HKLM's 64-bit view, as the player reads them
+PAWNIO_KEY = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\PawnIO"
+WINDOWS_KEY = r"SOFTWARE\Microsoft\Windows\CurrentVersion"
 RIVALS = re.compile(r"TRCC|InfoPanel|USBLCD", re.I)  # other programs that drive the cooler
 rivals_seen = (0.0, [])
 DEFAULT_SECONDS = 30
@@ -885,6 +891,74 @@ def set_autostart(on):
     return player_state()
 
 
+def hklm_value(path, name):
+    """A value under HKLM, read in its 64-bit view, or None when the key or the value isn't there."""
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, path, 0, winreg.KEY_READ | winreg.KEY_WOW64_64KEY) as key:
+            return winreg.QueryValueEx(key, name)[0]
+    except OSError:
+        return None
+
+
+def pawnio_service():
+    """The state of PawnIO's driver service, as Windows' service manager gives it to a caller that may only ask:
+    "running", "stopped" (starting, stopping or paused too: not running, as the player counts it), "missing" (no
+    such service) or "unknown" (the manager didn't say)."""
+    try:
+        advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    except OSError:
+        return "unknown"
+    handle = ctypes.c_void_p
+    advapi.OpenSCManagerW.restype = advapi.OpenServiceW.restype = handle
+    advapi.OpenSCManagerW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
+    advapi.OpenServiceW.argtypes = [handle, ctypes.c_wchar_p, ctypes.c_uint32]
+    advapi.QueryServiceStatus.argtypes = [handle, ctypes.c_void_p]
+    advapi.CloseServiceHandle.argtypes = [handle]
+    status = (ctypes.c_uint32 * 7)()  # SERVICE_STATUS, whose second field is the state
+    manager = advapi.OpenSCManagerW(None, None, 1)  # SC_MANAGER_CONNECT
+    if not manager:
+        return "unknown"
+    try:
+        service = advapi.OpenServiceW(manager, "PawnIO", 4)  # SERVICE_QUERY_STATUS
+        if not service:
+            return "missing" if ctypes.get_last_error() == 1060 else "unknown"  # ERROR_SERVICE_DOES_NOT_EXIST
+        try:
+            if not advapi.QueryServiceStatus(service, status):
+                return "unknown"
+        finally:
+            advapi.CloseServiceHandle(service)
+    finally:
+        advapi.CloseServiceHandle(manager)
+    return "running" if status[1] == 4 else "stopped"  # SERVICE_RUNNING
+
+
+def pawnio_status():
+    """What the studio sees of PawnIO itself, for the install line in the Data sources window (the player's own
+    state comes from its /info): whether PawnIO is installed (its uninstall entry has a DisplayVersion, the player's
+    test) and which version, its driver service's state, and whether the sensor reader is built beside the player
+    and installed in Program Files. It only reads."""
+    version, programs = hklm_value(PAWNIO_KEY, "DisplayVersion"), hklm_value(WINDOWS_KEY, "ProgramFilesDir")
+    return {"installed": version is not None, "version": None if version is None else str(version),
+            "service": pawnio_service(), "reader_built": PLAYER.with_name("wvsensors.exe").exists(),
+            "reader_installed": isinstance(programs, str) and bool(programs)
+                                and Path(programs, "Wonder Vision", "wvsensors.exe").exists()}
+
+
+def pawnio_ask(client):
+    """The page's Ask now, Ask again or Check again, passed on to the player, which answers with PawnIO's state
+    after. Asked from another PC (over Tailscale, say), the answer also says "remote": Windows asks on this PC's
+    own screen, so only someone sitting at it can answer."""
+    out = player_api("/pawnio/ask", {})
+    try:
+        address = ipaddress.ip_address(client)
+        remote = not (getattr(address, "ipv4_mapped", None) or address).is_loopback
+    except ValueError:
+        remote = True
+    if remote and isinstance(out, dict):
+        out["remote"] = True
+    return out
+
+
 def rivals():
     """Other cooler software set to start with Windows: it would take the cooler before the player can."""
     global rivals_seen
@@ -917,28 +991,34 @@ def player_state():
         last = lines[-1] if lines else ""
     # whether the player running draws widgets: it says so at /info; an older one doesn't know /info (None: none
     # running, or it didn't answer, so there's nothing to tell yet)
-    widgets = None
+    widgets = pawnio = elevated = None
     if running:
         info = player_api("/info")
         if isinstance(info, dict) and info.get("widgets") == 1:
             widgets = True
         elif not (isinstance(info, dict) and info.get("player") is False):
             widgets = False
+        if isinstance(info, dict):
+            # its PawnIO state ({state, message, can_ask}) and whether it runs as administrator, as it says them: an
+            # older player has neither, and the page then says nothing about either
+            pawnio, elevated = info.get("pawnio"), info.get("elevated")
     return {"running": running, "log": last, "built": PLAYER.exists(), "autostart": autostart(), "rivals": rivals(),
-            "widgets": widgets}
+            "widgets": widgets, "pawnio": pawnio, "elevated": elevated}
 
 
 player_widgets = None  # what player_features() found: /api/config's player_widgets
+player_pawnio = None  # and whether that build reads PawnIO (`pawnio 1`): /api/config's player_pawnio
 player_stamp = None  # wvplay.exe's (path, size, mtime) when player_features() last asked it
 
 
 def player_features():
     """Whether the built player (the wvplay.exe beside PLAYER, which Play and Export PNG use) draws widgets: True
     when `wvplay.exe features` prints `widgets 1`, False when it runs and doesn't (built before widgets), None when
-    it isn't built or gives no answer. Run when the studio starts, and asked again by /api/config only once
-    wvplay.exe has changed (rebuilt while the studio runs); /api/config tells the page."""
-    global player_widgets, player_stamp
-    exe, found = PLAYER.with_name("wvplay.exe"), None
+    it isn't built or gives no answer. player_pawnio says the same of `pawnio 1` (built before PawnIO). Run when
+    the studio starts, and asked again by /api/config only once wvplay.exe has changed (rebuilt while the studio
+    runs); /api/config tells the page."""
+    global player_widgets, player_pawnio, player_stamp
+    exe, found, pawnio = PLAYER.with_name("wvplay.exe"), None, None
     try:
         st = exe.stat()
         stamp = (str(exe), st.st_size, st.st_mtime_ns)
@@ -950,11 +1030,12 @@ def player_features():
         try:
             out = subprocess.run([str(exe), "features"], capture_output=True, text=True, errors="replace", timeout=5,
                                  stdin=subprocess.DEVNULL, creationflags=NO_WINDOW).stdout
-            found = "widgets 1" in (line.strip() for line in out.splitlines())
+            lines = {line.strip() for line in out.splitlines()}
+            found, pawnio = "widgets 1" in lines, "pawnio 1" in lines
         except (OSError, subprocess.SubprocessError):
-            found = None
+            found = pawnio = None
     player_stamp = stamp
-    player_widgets = found
+    player_widgets, player_pawnio = found, pawnio
     return found
 
 
@@ -976,6 +1057,13 @@ def start_player():
 
 def stop_player():
     subprocess.run(["taskkill", "/IM", "wvplay*", "/F"], capture_output=True, creationflags=NO_WINDOW)
+    # taskkill can't stop a player run as administrator (Access is denied): one still running a moment later is
+    # reported, rather than shown as stopped
+    deadline = time.time() + 2
+    while player_running():
+        if time.time() > deadline:
+            raise ValueError("The player runs as administrator, so the studio can't stop it: close it in Task Manager.")
+        time.sleep(0.25)
     return player_state()
 
 
@@ -2950,10 +3038,17 @@ BUILTIN_CATALOG = [
                   {"key": "claude.session_severity", "label": "Session severity", "kind": "text"},
                   {"key": "claude.week_severity", "label": "Week severity", "kind": "text"},
                   {"key": "claude.week.*", "label": "Per-model weekly use", "unit": "%", "kind": "number", "pattern": True}]},
-    {"id": "pc", "name": "PC sensors", "description": "CPU, memory and NVIDIA GPU. CPU temperature needs HWiNFO "
-     "running with Shared Memory Support on, or Libre Hardware Monitor with its Remote Web Server on.",
+    {"id": "pc", "name": "PC sensors", "description": "CPU load and memory from Windows, the GPU from NVIDIA's driver, "
+     "and, with HWiNFO, Libre Hardware Monitor or PawnIO, CPU, fan, pump and motherboard sensors (HWiNFO needs Shared "
+     "Memory Support on; Libre Hardware Monitor needs its Remote Web Server on; PawnIO asks for administrator rights).",
      "interval": {"default": 60, "min": 5},
      "settings": [{"key": "hwinfo", "label": "Read HWiNFO too", "type": "bool", "default": False},
+                  {"key": "pawnio", "label": "Read sensors through PawnIO (asks for administrator rights)", "type": "bool",
+                   "default": False,
+                   "help": "CPU temperatures and power, fan and pump speeds and motherboard temperatures, read straight "
+                           "from the hardware through the free PawnIO driver (pawnio.eu). PawnIO needs administrator "
+                           "rights, so Windows asks for them when you turn this on and each time the player starts "
+                           "(docs/data.md, Setting up PawnIO). For live fan readings set the interval to 5 s."},
                   {"key": "lhm", "label": "Read Libre Hardware Monitor sensors", "type": "bool", "default": False},
                   {"key": "lhm_url", "label": "Libre Hardware Monitor address", "type": "text",
                    "default": "http://127.0.0.1:8085"},
@@ -2963,7 +3058,8 @@ BUILTIN_CATALOG = [
                    "help": "The password set in its Options > Remote Web Server > Authentication. Changing the address "
                            "or user name clears it, so type it last."}],
      "provides": [{"key": "pc.cpu.load", "label": "CPU load", "unit": "%", "kind": "number"},
-                  {"key": "pc.cpu.temp", "label": "CPU temperature", "unit": "°C", "kind": "number"},
+                  {"key": "pc.cpu.temp", "label": "CPU temperature (needs PawnIO, HWiNFO or Libre Hardware Monitor)",
+                   "unit": "°C", "kind": "number"},
                   {"key": "pc.ram.used_gb", "label": "RAM used", "unit": "GB", "kind": "number"},
                   {"key": "pc.ram.total_gb", "label": "RAM total", "unit": "GB", "kind": "number"},
                   {"key": "pc.ram.used_pct", "label": "RAM used", "unit": "%", "kind": "number"},
@@ -2973,7 +3069,9 @@ BUILTIN_CATALOG = [
                   {"key": "pc.gpu.vram_used_gb", "label": "VRAM used", "unit": "GB", "kind": "number"},
                   {"key": "pc.gpu.vram_total_gb", "label": "VRAM total", "unit": "GB", "kind": "number"},
                   {"key": "hwinfo.*", "label": "HWiNFO readings", "pattern": True},
-                  {"key": "lhm.*", "label": "Libre Hardware Monitor sensors", "pattern": True}]},
+                  {"key": "lhm.*", "label": "Libre Hardware Monitor sensors", "pattern": True},
+                  {"key": "pawnio.*", "label": "PawnIO sensors, as pawnio.cpu.<type>.<sensor> and "
+                   "pawnio.<chip>.<type>.<sensor>", "kind": "number", "pattern": True}]},
     {"id": "homeassistant", "name": "Home Assistant", "description": "The state and attributes of the entities listed.",
      "interval": {"default": 60, "min": 5},
      "settings": [{"key": "url", "label": "Address", "type": "text", "default": "", "placeholder": "http://homeassistant.local:8123"},
@@ -3208,10 +3306,12 @@ def data_port(data=None):
 
 def player_api(path, body=None, timeout=DATA_TIMEOUT, slow_ok=False):
     """Asks the player's local API: its answer, or {"player": False} when it isn't running. `slow_ok`: the
-    request may take a while (a test), so no answer in time is an error, not a player that isn't there."""
+    request may take a while (a test), so no answer in time is an error, not a player that isn't there. Every
+    request carries X-WV: 1, which the player requires on a POST: a page in a browser can't send it to another
+    site without a CORS preflight, which the player never grants."""
     req = urllib.request.Request(f"http://127.0.0.1:{data_port()}{path}",
                                  data=None if body is None else json.dumps(body).encode(),
-                                 headers={"Content-Type": "application/json"})
+                                 headers={"Content-Type": "application/json", "X-WV": "1"})
     try:
         with no_proxy.open(req, timeout=timeout) as r:
             return json.loads(r.read())
@@ -3383,7 +3483,8 @@ class Handler(BaseHTTPRequestHandler):
             # "widgets": 1 tells a newer page this server has the widget routes (an older one has no such key)
             self.json({"screen": [wv.SCREEN_W, wv.SCREEN_H], "safe": wv.SAFE, "camera": wv.CAMERA_HOLE,
                        "font": str(DEFAULT_FONT), "initial": initial, "widgets": 1,
-                       "widgets_folder": str(widgets_dir().absolute()), "player_widgets": player_features()})
+                       "widgets_folder": str(widgets_dir().absolute()), "player_widgets": player_features(),
+                       "player_pawnio": player_pawnio})  # as player_features() just found it
         elif (m := re.fullmatch(r"/api/frame/(\w+)/(\d+)\.png", url.path)) and (src := source_by_id(m[1])):
             i = int(m[2])
             if i < len(src.frames):
@@ -3402,6 +3503,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.json({"error": str(e)}, 500)
         elif url.path == "/api/player":
             self.json(player_state())
+        elif url.path == "/api/pawnio":
+            self.answer(pawnio_status)
         elif url.path == "/studio.js":
             self.send(200, SCRIPT.read_bytes(), "text/javascript; charset=utf-8")
         elif url.path[1:] in WIDGET_SCRIPTS:
@@ -3508,9 +3611,11 @@ class Handler(BaseHTTPRequestHandler):
             elif url.path == "/api/player/start":
                 self.json(start_player())
             elif url.path == "/api/player/stop":
-                self.json(stop_player())
+                self.answer(stop_player)  # a player it can't stop: 400 and the sentence, as it is
             elif url.path == "/api/autostart":
                 self.json(set_autostart(bool(json.loads(body)["on"])))
+            elif url.path == "/api/pawnio/ask":
+                self.json(pawnio_ask(self.client_address[0]))
             elif url.path == "/api/data/config":
                 self.json(save_data_config(json.loads(body)))
             elif url.path == "/api/data/resolve":

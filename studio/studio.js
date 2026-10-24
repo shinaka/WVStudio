@@ -2972,6 +2972,13 @@ function showPlayer(state) {
     : state.running ? "Playing on the cooler. Changes show up within a second."
     : "Not playing.";
   el.title = el.textContent;
+  // one run as administrator (by hand, or with UAC off) refuses the studio's Stop: said only when the player says so
+  // at /info, beside its PawnIO state, so one from before PawnIO shows nothing
+  $("playerElevated").textContent = state.running && state.pawnio && state.elevated === true
+    ? "The player runs as administrator: the studio can't stop it. Close it in Task Manager, or start it normally." : "";
+  pawnio.running = !!state.running;
+  pawnio.info = state.running && state.pawnio && typeof state.pawnio === "object" ? state.pawnio : null;
+  showPawnio();
   $("playerStart").disabled = state.running || !state.built;
   $("playerStop").disabled = !state.running;
   $("autostart").checked = !!state.autostart;
@@ -2986,6 +2993,7 @@ async function player(action) {
   try {
     await flushSave();
     showPlayer(await postJson(`/api/player/${action}`, {}));
+    if (action === "start" && pawnio.wanted) checkPawnio("play");
   } catch (err) {
     message(`Couldn't ${action} the player: ${err.message}`, "warn");
     showPlayer(await (await api("/api/player")).json());
@@ -3002,7 +3010,147 @@ $("autostart").addEventListener("change", async () => {
 });
 setInterval(async () => {
   try { showPlayer(await (await api("/api/player")).json()); } catch {}
+  if ($("sourcesDlg").open && $("srcPawnioInstall")) refreshPawnioStatus();
 }, 4000);
+
+// --- PawnIO (docs/data.md, Setting up PawnIO) ---------------------------------------------------------------
+//
+// The running player says how PawnIO stands at /info, through /api/player: {state, message, can_ask}. The page shows
+// its message as given, in the player box and under the pc form's PawnIO checkbox, with Ask now, Ask again or Check
+// again when it can ask. A player from before PawnIO has no such field, and then nothing here shows. The install line
+// under the checkbox comes from the studio's own look at this PC (/api/pawnio), for when no player says more.
+
+const pawnio = {
+  info: null,      // the running player's {state, message, can_ask}; null with none running, or one from before PawnIO
+  running: false,  // whether a player runs
+  remote: "",      // the state an ask from another PC was answered with: its sentence is added while that state lasts
+  status: null,    // /api/pawnio: whether PawnIO is installed, and the sensor reader built (null: not known)
+  built: null,     // whether the built player reads PawnIO (/api/config's player_pawnio; null: not known)
+  wanted: false,   // whether data.json, as last saved, has an enabled pc source with PawnIO on, as the player reads it
+  seq: 0,          // the newest check after a save or Play
+};
+const PAWNIO_BUTTONS = { "not-installed": "Check again", "not-running": "Check again", "not-asked": "Ask now" };  // else Ask again
+const PAWNIO_REMOTE = "Windows asks on the PC itself: only someone there can answer.";
+const PAWNIO_REBUILD = "Rebuild the player (cargo build --release) to read PawnIO sensors.";
+const AUTOSTART_TITLE = $("autostart").closest("label").title;
+const pawnioOn = (sources) => (Array.isArray(sources) ? sources : []).some((s) => s && s.type === "pc" && s.enabled !== false && s.pawnio === true);
+const pawnioText = (p) => [String(p?.message ?? ""), pawnio.remote && p?.state === pawnio.remote ? PAWNIO_REMOTE : ""].filter(Boolean).join(" ");
+const pawnioClass = (p) => (["ok", "asking", "not-asked"].includes(p?.state) ? "info" : p?.state === "unavailable" ? "muted" : "warn");
+/** A sentence about PawnIO where the user is looking: in the Data sources window while it's open, else at the top. */
+const pawnioNote = (text, cls = "") => ($("sourcesDlg").open ? srcNote(text, cls) : message(text, cls));
+
+/** The PawnIO lines as the player last said: the player box's, the pc form's, the install line, Start with Windows'
+ *  title. */
+function showPawnio() {
+  if (pawnio.remote && pawnio.info?.state !== pawnio.remote) pawnio.remote = "";
+  fillPawnio($("pawnioState"), pawnio.info);
+  if ($("srcPawnioState")) fillPawnio($("srcPawnioState"), pawnio.info);
+  showInstallLine();
+  // the prompt at logon, said only once the player started with Windows would read PawnIO
+  $("autostart").closest("label").title = AUTOSTART_TITLE + (pawnio.built === true || pawnio.info
+    ? ". With PawnIO sensors on, Windows asks for administrator rights after you log in." : "");
+}
+/** One PawnIO line: the player's message and, when it can ask, its button. Left alone while it says the same, so a
+ *  click on the button isn't lost to a poll. */
+function fillPawnio(line, p) {
+  if (!line) return;
+  const text = pawnioText(p), label = p?.can_ask === true ? PAWNIO_BUTTONS[p.state] || "Ask again" : "";
+  const key = text ? JSON.stringify([text, pawnioClass(p), label]) : "";
+  if (line.dataset.key === key) return;
+  line.dataset.key = key;
+  if (!text) return line.replaceChildren();
+  const span = make("span", `text ${pawnioClass(p)}`, text);
+  span.title = text;
+  if (!label) return line.replaceChildren(span);
+  const button = make("button", "", label);
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    try { await askPawnio(); } finally { button.disabled = false; }
+  });
+  line.replaceChildren(span, button);
+}
+/** Ask now, Ask again, Check again: the player asks Windows (or checks PawnIO again), and its answer shows in the
+ *  PawnIO lines. Gives the state it answered with, or null. */
+async function askPawnio() {
+  let out;
+  try { out = await postJson("/api/pawnio/ask", {}); } catch (err) { out = { error: err.message }; }
+  if (out?.player === false) {
+    // no answer: from a player that's gone, or from one still running that was busy (a slow Test) or not listening yet
+    let running = false;
+    try { running = (await (await api("/api/player")).json()).running === true; } catch {}
+    pawnioNote(running ? "The player didn't answer." : "The player isn't running: start it with Play on cooler.", "warn");
+    return null;
+  }
+  if (typeof out?.state !== "string") { pawnioNote(String(out?.error || "The player didn't answer."), "warn"); return null; }
+  pawnio.info = { state: out.state, message: String(out.message ?? ""), can_ask: out.can_ask === true };
+  pawnio.remote = out.remote === true ? out.state : "";
+  showPawnio();
+  return pawnio.info;
+}
+/** Under the pc form's PawnIO checkbox: whether PawnIO is installed, said when it isn't or while no player runs (a
+ *  running one says more in the state line), and that the player needs rebuilding when it's from before PawnIO. */
+function showInstallLine() {
+  const line = $("srcPawnioInstall"), st = pawnio.status;
+  if (!line) return;
+  const key = JSON.stringify([st, pawnio.running, pawnio.built]);
+  if (line.dataset.key === key) return;
+  line.dataset.key = key;
+  const parts = [];
+  if (st && !st.installed) {
+    const link = Object.assign(make("a", "", "pawnio.eu"), { href: "https://pawnio.eu", target: "_blank", rel: "noopener" });
+    const missing = make("div");
+    missing.append("PawnIO isn't installed. Install it from ", link, ", or run ", make("code", "", "winget install namazso.PawnIO"),
+                   ", then turn this on.");
+    parts.push(missing);
+  } else if (st && !pawnio.running) {
+    parts.push(make("div", "", `PawnIO ${st.version ? `${st.version} ` : ""}is installed. While this is on, Windows asks you to allow `
+      + "Wonder Vision's sensor reader (C:\\Program Files\\Wonder Vision\\wvsensors.exe) to run as administrator each time the player "
+      + "starts." + (st.reader_installed === true ? "" : " The first time, it installs it there.")));
+  }
+  if (st?.reader_built === false || pawnio.built === false) parts.push(make("div", "warn", PAWNIO_REBUILD));
+  line.replaceChildren(...parts);
+}
+async function refreshPawnioStatus() {
+  let out = null;
+  try {
+    const res = await api("/api/pawnio");
+    if (res.ok) out = await res.json();
+  } catch {}
+  pawnio.status = out && typeof out === "object" && typeof out.installed === "boolean" ? out : null;  // none from an older studio
+  showInstallLine();
+}
+/** After a save that turns PawnIO on, and after Play with it on: reads the running player's PawnIO state every 500 ms
+ *  for up to 6 s, as the player takes the change in (about 2 s after a save). When it's ready to ask, it's asked to:
+ *  Windows' prompt then follows the user's own click, never a reload of data.json by itself. Anything else, it says. */
+async function checkPawnio(why) {
+  const seq = ++pawnio.seq, until = Date.now() + 6000;
+  for (;;) {
+    let state = null;
+    try { state = await (await api("/api/player")).json(); } catch {}
+    if (seq !== pawnio.seq) return;  // a newer check took over
+    if (state) showPlayer(state);
+    if (state && !("pawnio" in state)) return;  // a studio from before PawnIO: nothing to go on
+    if (state && !state.running) {
+      if (why === "save") pawnioNote(pawnio.built === false ? `Saved. ${PAWNIO_REBUILD}` : "Saved. Windows asks for administrator rights when the player starts.");
+      return;
+    }
+    const p = state?.pawnio;
+    // a running player that didn't answer /info (busy with a slow Test, or its API not up yet after Play) tells
+    // nothing yet: asked again, never taken for an older one
+    const answered = !(state?.running && state.widgets === null);
+    if (state && answered && (!p || typeof p !== "object")) {
+      return pawnioNote(pawnio.built === false ? PAWNIO_REBUILD : "The running player is older: Stop and Play to use PawnIO.", "warn");
+    }
+    if (p?.state === "not-asked") {
+      const answer = await askPawnio();
+      if (answer && seq === pawnio.seq) pawnioNote(pawnioText(answer), pawnioClass(answer));
+      return;
+    }
+    if (p && p.state !== "off") return pawnioNote(pawnioText(p), pawnioClass(p));
+    if (Date.now() >= until) return pawnioNote("The player hasn't picked up the change yet: choose Ask now in a moment.", "warn");
+    await new Promise((r) => setTimeout(r, 500));
+  }
+}
 
 async function doExport() {
   const h = holder(), i = doc.scenes.indexOf(h);
@@ -3254,7 +3402,9 @@ function showSources() {
 function showSource() {
   const m = manifestOf(live.selected), panel = $("srcPanel");
   if (!m) { panel.replaceChildren(); live.formKey = ""; return; }
-  const key = JSON.stringify([m.id, m.settings, m.interval, m.provides]);
+  // without the live rows (a key the source has published, with its label: PawnIO's), which come and grow as it
+  // reads: they're only listed in Provides, and rebuilding the form for them would wipe the Test output
+  const key = JSON.stringify([m.id, m.settings, m.interval, providesOf(m).filter((p) => !p.live)]);
   if (key !== live.formKey) {
     live.formKey = key;
     buildSource(m);
@@ -3270,7 +3420,15 @@ function buildSource(m) {
   const panel = $("srcPanel"), head = make("div", "row");
   head.append(make("h3", "", m.name || m.id), make("span", "spacer"), Object.assign(make("span", "small muted"), { id: "srcStatus" }));
   const form = Object.assign(make("div"), { id: "srcForm" });
-  for (const s of settingsOf(m)) form.append(settingRow(m, s));
+  for (const s of settingsOf(m)) {
+    const row = settingRow(m, s);
+    // under PawnIO's checkbox: the install line, and the player's state with its button (filled in by showPawnio)
+    if (m.id === "pc" && s.key === "pawnio" && s.type === "bool") {
+      row.append(Object.assign(make("div", "help small muted pawnio-line"), { id: "srcPawnioInstall" }),
+                 Object.assign(make("div", "help small pawnio-line"), { id: "srcPawnioState" }));
+    }
+    form.append(row);
+  }
   const iv = intervalOf(m), ivRow = make("div", "row setting"), ivIn = make("input");
   ivIn.type = "number"; ivIn.min = iv.min; ivIn.max = LONGEST_INTERVAL; ivIn.step = 1; ivIn.dataset.k = "interval";
   ivIn.title = `How often it's read: ${iv.default} s unless set, ${iv.min} s at least`;
@@ -3292,6 +3450,10 @@ function buildSource(m) {
   const table = Object.assign(make("table", "provides"), { id: "srcProvides" });
   panel.replaceChildren(head, make("div", "small muted", m.description || ""), form, testRow, out,
                         make("h4", "", "Provides"), make("div", "small muted", "Click a key to put it in the selected text."), table);
+  if ($("srcPawnioState")) {
+    showPawnio();
+    refreshPawnioStatus();
+  }
 }
 function settingRow(m, s) {
   const row = make("div", "row setting"), label = make("span", "label", s.label || s.key);
@@ -3353,6 +3515,9 @@ function fillForm(m) {
 const globRe = (pattern) => new RegExp("^" + pattern.split("*").map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*") + "$");
 function showProvides(m) {
   const table = $("srcProvides"), provides = providesOf(m), explicit = new Set(provides.filter((p) => !p.pattern).map((p) => p.key));
+  // a live row a pattern covers is listed under that pattern's header, with its label, before the other keys it matches
+  const patterns = provides.filter((p) => p.pattern).map((p) => globRe(p.key));
+  const grouped = provides.filter((p) => p.live && !p.pattern && patterns.some((re) => re.test(p.key)));
   const header = make("tr");
   for (const h of ["Key", "Label", "Unit", "Value"]) header.append(make("th", "", h));
   const rows = [header], covered = new Set();
@@ -3366,13 +3531,16 @@ function showProvides(m) {
     return tr;
   };
   for (const p of provides) {
+    if (grouped.includes(p)) continue;  // under its pattern
     if (!p.pattern) { covered.add(p.key); rows.push(row(p.key, p.label, p.unit, live.values[p.key])); continue; }
-    const re = globRe(p.key), keys = Object.keys(live.values).filter((k) => re.test(k) && !explicit.has(k) && !covered.has(k)).sort();
+    const re = globRe(p.key), mine = grouped.filter((g) => re.test(g.key) && !covered.has(g.key));
+    const keys = Object.keys(live.values).filter((k) => re.test(k) && !explicit.has(k) && !covered.has(k)).sort();
     const tr = make("tr", "group"), td = make("td");
     td.colSpan = 4;
-    td.append(make("code", "", p.key), ` ${p.label || ""}` + (keys.length ? "" : ": none yet"));
+    td.append(make("code", "", p.key), ` ${p.label || ""}` + (mine.length || keys.length ? "" : ": none yet"));
     rows.push(tr);
     tr.append(td);
+    for (const g of mine) { covered.add(g.key); rows.push(row(g.key, g.label, g.unit ?? p.unit, live.values[g.key])); }
     for (const k of keys) { covered.add(k); rows.push(row(k, "", p.unit, live.values[k])); }
   }
   const others = Object.keys(live.values).filter((k) => live.values[k]?.source === m.id && !covered.has(k)).sort();
@@ -3395,9 +3563,15 @@ function saveData() {
     for (const k of Object.keys(s)) if (k !== "type" && isSecret(s.type, k)) { delete s[k]; s[`${k}_set`] = true; }
   }
   live.saving = live.saving.then(() => postJson("/api/data/config", body, { keepalive: true }))
-    .then((saved) => { takeSecretFlags(saved); showDataConfig(); },
+    .then((saved) => { takeSecretFlags(saved); showDataConfig(); pawnioSaved(body.sources); },
           (err) => message(`Couldn't save the data sources: ${err.message}`, "warn"));
   return live.saving;
+}
+/** A save that turned PawnIO on, by its checkbox or the pc source's switch: the player is checked on (checkPawnio). */
+function pawnioSaved(sources) {
+  const was = pawnio.wanted;
+  pawnio.wanted = pawnioOn(sources);
+  if (pawnio.wanted && !was) checkPawnio("save");
 }
 /** Whether each password is still set, from the saved config the studio answers with: it drops a saved one when a
  *  text setting it went with (an address, a user name) changes, which the page would otherwise go on showing as
@@ -3431,6 +3605,7 @@ async function loadDataConfig() {
     const res = await api("/api/data/config"), out = await res.json();
     if (!res.ok) throw new Error(out.error || res.statusText);
     live.config = { ...out, sources: Array.isArray(out.sources) ? out.sources : [] };
+    pawnio.wanted = pawnioOn(live.config.sources);
   } catch (err) {
     message(`Couldn't read the data sources: ${err.message}`, "warn");
   }
@@ -3823,6 +3998,8 @@ const domReady = new Promise((ok) => (document.readyState === "loading" ? docume
     if (want.get("sel") && find(want.get("sel"))) select([want.get("sel")]);
     playerNote.config = cfg.player_widgets ?? null;
     notePlayer();
+    pawnio.built = cfg.player_pawnio ?? null;  // an older studio doesn't say: nothing is said of it
+    showPawnio();
     if (cfg.initial) {
       if (!doc.scenes.length) addScene();
       placeMedia(cfg.initial);

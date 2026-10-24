@@ -1,0 +1,597 @@
+//! The reader: opens the modules, reads the CPU and then the chips, and makes every failure a note, so the
+//! rest still comes through. Every hardware sequence holds one lock in the process, so whoever ends the
+//! process lets the sequence finish, and put back what it changed, first.
+//!
+//! It runs only where PawnIO can be opened: in the elevated sensor reader, and in `wvplay pawnio` (the probe).
+//! Everything it touches is handed to it (the module opener, the shared locks, the CPU, the board, the
+//! clock), so tests run it on fakes (fake.rs); `Reader::this_pc` hands it the real ones.
+
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
+
+use super::amd::{Amd, Cpuid};
+use super::blobs::{self, DAMAGED};
+use super::driver;
+use super::ite::SuperIo;
+use super::keys::{Cpu, Sensor};
+use super::labels::{Board, Names};
+use super::mutex::{self, Bus};
+use super::{IoError, Label, Lock, ModuleId, OpenError, OpenModule, Readings};
+
+/// A gap between the clock that counts sleep and the one that doesn't, longer than this, means the PC slept.
+const SLEPT: Duration = Duration::from_secs(5);
+
+/// The two clocks a reader goes by: time since Windows started, with and without the time asleep, so it can
+/// tell when the PC slept. And waiting, which detection does for a millisecond.
+pub trait Clock: Send {
+    /// Time since Windows started, counting time asleep (QueryInterruptTime).
+    fn since_boot(&self) -> Duration;
+    /// Time since Windows started, not counting time asleep (QueryUnbiasedInterruptTime).
+    fn awake(&self) -> Duration;
+    fn sleep(&self, time: Duration);
+}
+
+/// Windows' clocks.
+pub struct SystemClock;
+
+impl Clock for SystemClock {
+    fn since_boot(&self) -> Duration {
+        let mut ticks = 0u64;
+        unsafe { windows_sys::Win32::System::WindowsProgramming::QueryInterruptTime(&mut ticks) };
+        Duration::from_nanos(ticks.saturating_mul(100))
+    }
+
+    fn awake(&self) -> Duration {
+        let mut ticks = 0u64;
+        unsafe { windows_sys::Win32::System::WindowsProgramming::QueryUnbiasedInterruptTime(&mut ticks) };
+        Duration::from_nanos(ticks.saturating_mul(100))
+    }
+
+    fn sleep(&self, time: Duration) {
+        std::thread::sleep(time);
+    }
+}
+
+/// The lock in the process around every hardware sequence (the CPU's SMN reads, one chip detection, one
+/// chip's poll), and the flag that asks them to stop. Whoever ends the process calls `stop`: the sequence
+/// running has then finished, and has put the chip back as it found it (ite.rs). No sequence starts after
+/// that, as `hold` gives nothing once stopping, so what `stop` returns may be let go before the process ends
+/// (the probe does, to write what it has). A process has one, shared by its reader and whatever ends it.
+#[derive(Default)]
+pub struct HwLock {
+    stopping: AtomicBool,
+    lock: Mutex<()>,
+}
+
+impl HwLock {
+    /// Held around one hardware sequence; None once the process is ending, when the sequence mustn't start.
+    /// Inside the shared lock (`Lock`) for the same hardware, never around it.
+    pub fn hold(&self) -> Option<MutexGuard<'_, ()>> {
+        let held = self.lock();
+        (!self.stopping()).then_some(held)
+    }
+
+    fn lock(&self) -> MutexGuard<'_, ()> {
+        self.lock.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Whether the process is ending: a sequence checks between its steps, and returns once it has put
+    /// back what it changed.
+    pub fn stopping(&self) -> bool {
+        self.stopping.load(Ordering::SeqCst)
+    }
+
+    /// Asks the sequences to stop, without waiting.
+    pub fn ask_to_stop(&self) {
+        self.stopping.store(true, Ordering::SeqCst);
+    }
+
+    /// Asks the sequences to stop, and waits until the one running has finished.
+    pub fn stop(&self) -> MutexGuard<'_, ()> {
+        self.ask_to_stop();
+        self.lock()
+    }
+}
+
+/// The locks shared with other programs that read the same hardware (mutex.rs): `pci` around the CPU's SMN
+/// reads, `isa` around the Super I/O chips. None when it could be neither made nor opened: that part is
+/// then not read at all, rather than read without it.
+pub struct Locks {
+    pub pci: Option<Box<dyn Lock>>,
+    pub isa: Option<Box<dyn Lock>>,
+}
+
+impl Locks {
+    /// The real ones, the named mutexes. A part whose lock is None gives the same note as `mutex::shared`
+    /// (`Bus::unshared`), so that one isn't kept.
+    pub fn shared() -> Locks {
+        let shared = |bus| mutex::shared(bus).ok().map(|lock| Box::new(lock) as Box<dyn Lock>);
+        Locks { pci: shared(Bus::Pci), isa: shared(Bus::Isa) }
+    }
+}
+
+/// How the program at `exe` opens its modules for real: each from its pinned file in the module folder
+/// beside the program (blobs.rs), on a PawnIO device handle of its own (driver.rs). With no such folder,
+/// every module is `Damaged`, so each part says the files need rebuilding.
+pub fn modules(exe: &Path) -> OpenModule {
+    match blobs::find_dir(exe) {
+        Some(dir) => driver::opener(dir),
+        None => Box::new(|_| Err(OpenError::Damaged)),
+    }
+}
+
+/// What every part of one read goes by: the process's hardware lock, the clock, when the read began, and
+/// when the PC was last found to have woken from sleep (None if never, since the reader started).
+pub struct Poll<'a> {
+    pub hw: &'a HwLock,
+    pub clock: &'a dyn Clock,
+    pub now: Duration,
+    pub resumed_at: Option<Duration>,
+}
+
+/// Notes the CPU and the chips share, with DAMAGED from blobs.rs.
+pub(crate) const TOO_OLD: &str = "PawnIO is too old for its modules: update it from pawnio.eu.";
+pub(crate) const INTEL: &str = "PawnIO CPU readings aren't supported on Intel CPUs yet.";
+pub(crate) const OTHER_CPU: &str = "PawnIO CPU readings are only for AMD Ryzen CPUs (family 17h and later) so far.";
+
+/// The note for a module that couldn't be opened.
+pub(crate) fn open_note(module: ModuleId, error: OpenError) -> String {
+    let (what, machine) = match module {
+        ModuleId::AmdFamily17 => ("CPU readings", "CPU"),
+        ModuleId::LpcIo => ("fan or board readings", "PC"),
+    };
+    match error {
+        OpenError::NotInstalled => {
+            "PawnIO's driver isn't running: restart Windows (or reinstall PawnIO from pawnio.eu).".to_string()
+        }
+        OpenError::AccessDenied => "PawnIO needs administrator rights to read sensors.".to_string(),
+        OpenError::BadSignature | OpenError::Malformed | OpenError::Damaged => DAMAGED.to_string(),
+        OpenError::NotSupported => format!("PawnIO's {} module doesn't support this {machine}, so there are no {what}.", module.name()),
+        OpenError::TooOld => TOO_OLD.to_string(),
+        OpenError::Other(code) => format!("PawnIO couldn't load its {} module (error {code}), so there are no {what}.", module.name()),
+    }
+}
+
+/// An I/O error in a note.
+pub(crate) fn io_text(error: IoError) -> String {
+    match error {
+        IoError::AccessDenied => "access denied".to_string(),
+        IoError::NotReady => "not ready".to_string(),
+        IoError::NoSuchFunction => "no such function".to_string(),
+        IoError::BadArguments => "bad arguments".to_string(),
+        IoError::Fault => "the module faulted".to_string(),
+        IoError::Other(code) => format!("error {code}"),
+    }
+}
+
+/// Reads the CPU and the motherboard's sensor chips through PawnIO.
+pub struct Reader {
+    open: OpenModule,
+    locks: Locks,
+    names: Names,
+    clock: Box<dyn Clock>,
+    hw: Arc<HwLock>,
+    /// The CPU, when it can be read; else why not.
+    amd: Result<Amd, String>,
+    superio: SuperIo,
+    /// Both clocks at the last read, and when a sleep was last noticed.
+    last: Option<(Duration, Duration)>,
+    resumed_at: Option<Duration>,
+}
+
+impl Reader {
+    /// Opens the CPU's module, if the CPU is one it reads. The Super I/O chips are found on the first read.
+    pub fn open(open: OpenModule, locks: Locks, cpu: Cpuid, board: &Board, clock: Box<dyn Clock>, hw: Arc<HwLock>) -> Reader {
+        let amd = if cpu.amd_zen() {
+            open(ModuleId::AmdFamily17).map(|exec| Amd::new(exec, cpu)).map_err(|e| open_note(ModuleId::AmdFamily17, e))
+        } else if cpu.vendor == "GenuineIntel" {
+            Err(INTEL.to_string())
+        } else {
+            Err(OTHER_CPU.to_string())
+        };
+        Reader { open, locks, names: Names::for_board(board), clock, hw, amd, superio: SuperIo::default(), last: None,
+                 resumed_at: None }
+    }
+
+    /// The reader of this PC, for the program at `exe` (the sensor reader, the probe): its modules
+    /// (`modules`), the shared locks, this CPU and board, and Windows' clocks. Tests never make one: it
+    /// takes the mutexes other programs share.
+    pub fn this_pc(exe: &Path, hw: Arc<HwLock>) -> Reader {
+        Reader::open(modules(exe), Locks::shared(), Cpuid::current(), &Board::current(), Box::new(SystemClock), hw)
+    }
+
+    /// One read of everything: the CPU, then the chips. A part that can't be read is a note.
+    pub fn read(&mut self) -> Readings {
+        let (now, awake) = (self.clock.since_boot(), self.clock.awake());
+        if let Some((boot0, awake0)) = self.last
+            && now.saturating_sub(boot0).saturating_sub(awake.saturating_sub(awake0)) > SLEPT
+        {
+            self.resumed_at = Some(now);
+        }
+        self.last = Some((now, awake));
+        let mut readings = Readings::default();
+        if self.hw.stopping() {
+            return readings;
+        }
+        let poll = Poll { hw: &self.hw, clock: &*self.clock, now, resumed_at: self.resumed_at };
+        let mut read: Vec<(Sensor, f64)> = Vec::new();
+        let mut notes = Vec::new();
+
+        match &mut self.amd {
+            Ok(amd) => {
+                let mut cpu = Vec::new();
+                amd.read(&poll, self.locks.pci.as_deref(), &mut cpu, &mut notes);
+                read.extend(cpu.into_iter().map(|(c, v)| (Sensor::Cpu(c), v)));
+            }
+            Err(note) => notes.push(note.clone()),
+        }
+        self.superio.read(&poll, &self.open, self.locks.isa.as_deref(), &mut read, &mut notes);
+
+        let value = |cpu: Cpu| read.iter().find(|(s, _)| *s == Sensor::Cpu(cpu)).map(|(_, v)| *v);
+        readings.cpu_temp = value(Cpu::Tdie).or(value(Cpu::Tctl));
+        for (sensor, v) in &read {
+            let key = sensor.key();
+            readings.labels.push(Label { key: key.clone(), label: self.names.label(sensor), unit: sensor.unit().to_string() });
+            readings.values.push((key, *v));
+        }
+        for note in notes {
+            if !readings.notes.contains(&note) {
+                readings.notes.push(note);
+            }
+        }
+        readings
+    }
+
+    /// The Super I/O chips, as found so far, for the probe.
+    pub fn superio(&self) -> &SuperIo {
+        &self.superio
+    }
+
+    /// The Super I/O chips, for the probe to read more of their registers.
+    pub fn superio_mut(&mut self) -> &mut SuperIo {
+        &mut self.superio
+    }
+
+    /// The CPU's reader, when the CPU is read, for the probe.
+    pub fn amd(&self) -> Option<&Amd> {
+        self.amd.as_ref().ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pawnio::fake::{self, FakeAmd, FakeClock, FakeLock, FakeLpc};
+
+    const ELITE: (&str, &str) = ("Gigabyte Technology Co., Ltd.", "X870E AORUS ELITE X3D ICE");
+
+    /// The parts a test reader is made of, kept so the test can change them.
+    struct Rig {
+        amd: FakeAmd,
+        lpc: FakeLpc,
+        pci: FakeLock,
+        isa: FakeLock,
+        clock: FakeClock,
+        hw: Arc<HwLock>,
+    }
+
+    impl Rig {
+        /// This PC, as the hardware probe found it: a Ryzen 9 9950X3D at 72.125 °C with CCDs at 39 and 63 °C,
+        /// and its two ITE chips.
+        fn new() -> Rig {
+            Rig { amd: FakeAmd::this_pc(), lpc: FakeLpc::this_pc(), pci: FakeLock::default(), isa: FakeLock::default(),
+                  clock: FakeClock::default(), hw: Arc::default() }
+        }
+
+        /// The energy counter moves on by `counts` (2^-16 J each, this PC's unit).
+        fn energy(&self, counts: u64) {
+            self.amd.set_msr(0xC001_029B, self.amd.msr(0xC001_029B) + counts);
+        }
+
+        fn reader(&self, cpu: Cpuid, board: (&str, &str)) -> Reader {
+            let locks = Locks { pci: Some(Box::new(self.pci.clone())), isa: Some(Box::new(self.isa.clone())) };
+            let board = Board { manufacturer: board.0.to_string(), product: board.1.to_string() };
+            Reader::open(fake::opener(Ok(self.amd.clone()), Ok(self.lpc.clone())), locks, cpu, &board,
+                         Box::new(self.clock.clone()), self.hw.clone())
+        }
+    }
+
+    fn ryzen() -> Cpuid {
+        Cpuid { vendor: "AuthenticAMD".into(), family: 0x1A, model: 0x44, brand: "AMD Ryzen 9 9950X3D 16-Core Processor".into() }
+    }
+
+    fn value(readings: &Readings, key: &str) -> Option<f64> {
+        readings.values.iter().find(|(k, _)| k == key).map(|(_, v)| *v)
+    }
+
+    fn keys(readings: &Readings) -> Vec<&str> {
+        readings.values.iter().map(|(k, _)| k.as_str()).collect()
+    }
+
+    /// This PC, as the hardware probe found it: the CPU's keys, then each chip's, with the board's names
+    /// (the ELITE X3D ICE's map, labels.rs). Power comes from the second read on.
+    #[test]
+    fn this_pc_reads() {
+        let rig = Rig::new();
+        let mut reader = rig.reader(ryzen(), ELITE);
+        let first = reader.read();
+        assert_eq!(first.notes, Vec::<String>::new());
+        assert_eq!(keys(&first), [
+            "pawnio.cpu.temperature.tctl", "pawnio.cpu.temperature.ccd1", "pawnio.cpu.temperature.ccd2",
+            "pawnio.cpu.temperature.ccd_max", "pawnio.cpu.temperature.ccd_average",
+            "pawnio.ite_it8696e.temperature.temperature_1", "pawnio.ite_it8696e.temperature.temperature_2",
+            "pawnio.ite_it8696e.temperature.temperature_3", "pawnio.ite_it8696e.temperature.temperature_4",
+            "pawnio.ite_it8696e.temperature.temperature_5", "pawnio.ite_it8696e.fan.fan_1", "pawnio.ite_it8696e.fan.fan_2",
+            "pawnio.ite_it8696e.fan.fan_3", "pawnio.ite_it8696e.fan.fan_4", "pawnio.ite_it8696e.fan.fan_5",
+            "pawnio.ite_it87952e.temperature.temperature_1", "pawnio.ite_it87952e.temperature.temperature_3",
+            "pawnio.ite_it87952e.fan.fan_1", "pawnio.ite_it87952e.fan.fan_2", "pawnio.ite_it87952e.fan.fan_3",
+        ]);
+        assert_eq!(first.cpu_temp, Some(72.125));
+        assert_eq!(value(&first, "pawnio.cpu.temperature.ccd2"), Some(63.0));
+        assert_eq!(value(&first, "pawnio.cpu.temperature.ccd_average"), Some((39.0 + 63.0) / 2.0));
+        assert_eq!(value(&first, "pawnio.ite_it8696e.temperature.temperature_3"), Some(72.0));
+        assert_eq!(value(&first, "pawnio.ite_it8696e.fan.fan_5"), Some(0.0));
+        assert_eq!(value(&first, "pawnio.ite_it87952e.fan.fan_2"), Some(6250.0));
+        assert_eq!(first.labels.len(), first.values.len());
+        let label = |key: &str| first.labels.iter().find(|l| l.key == key).map(|l| (l.label.as_str(), l.unit.as_str()));
+        assert_eq!(label("pawnio.ite_it87952e.fan.fan_2"), Some(("System Fan #6 / Pump", "RPM")));
+        assert_eq!(label("pawnio.cpu.temperature.tctl"), Some(("CPU Tctl", "°C")));
+
+        // 1 s after the first read (which took 2 ms, waiting while it found the chips): 8 519 680 counts
+        rig.clock.advance(Duration::from_secs(1) - rig.clock.since_boot());
+        rig.energy(8_519_680);
+        let second = reader.read();
+        assert_eq!(value(&second, "pawnio.cpu.power.package"), Some(130.0));
+        let label = second.labels.iter().find(|l| l.key == "pawnio.cpu.power.package").unwrap();
+        assert_eq!((label.label.as_str(), label.unit.as_str()), ("CPU package power", "W"));
+    }
+
+    /// This PC's board, the ELITE X3D ICE, has the X870E AORUS PRO's names (labels.rs): every label of a
+    /// whole read, in order. The keys are the same as on a board with no map: names are never in keys.
+    #[test]
+    fn elite_x3d_ice_labels() {
+        let rig = Rig::new();
+        let mut reader = rig.reader(ryzen(), ELITE);
+        reader.read();
+        rig.clock.advance(Duration::from_secs(1));
+        rig.energy(65_536);
+        let read = reader.read();
+        let labels: Vec<(&str, &str, &str)> = read.labels.iter().map(|l| (l.key.as_str(), l.label.as_str(), l.unit.as_str())).collect();
+        assert_eq!(labels, [
+            ("pawnio.cpu.temperature.tctl", "CPU Tctl", "°C"), ("pawnio.cpu.temperature.ccd1", "CPU CCD1", "°C"),
+            ("pawnio.cpu.temperature.ccd2", "CPU CCD2", "°C"), ("pawnio.cpu.temperature.ccd_max", "CPU CCDs max", "°C"),
+            ("pawnio.cpu.temperature.ccd_average", "CPU CCDs average", "°C"), ("pawnio.cpu.power.package", "CPU package power", "W"),
+            ("pawnio.ite_it8696e.temperature.temperature_1", "System #1", "°C"), ("pawnio.ite_it8696e.temperature.temperature_2", "PCH", "°C"),
+            ("pawnio.ite_it8696e.temperature.temperature_3", "CPU", "°C"), ("pawnio.ite_it8696e.temperature.temperature_4", "PCIe x16", "°C"),
+            ("pawnio.ite_it8696e.temperature.temperature_5", "VRM MOS", "°C"), ("pawnio.ite_it8696e.fan.fan_1", "CPU Fan", "RPM"),
+            ("pawnio.ite_it8696e.fan.fan_2", "System Fan #1", "RPM"), ("pawnio.ite_it8696e.fan.fan_3", "System Fan #2", "RPM"),
+            ("pawnio.ite_it8696e.fan.fan_4", "System Fan #3", "RPM"), ("pawnio.ite_it8696e.fan.fan_5", "CPU Optional Fan", "RPM"),
+            ("pawnio.ite_it87952e.temperature.temperature_1", "PCIe x4", "°C"),
+            ("pawnio.ite_it87952e.temperature.temperature_3", "System #2", "°C"),
+            ("pawnio.ite_it87952e.fan.fan_1", "System Fan #5 / Pump", "RPM"), ("pawnio.ite_it87952e.fan.fan_2", "System Fan #6 / Pump", "RPM"),
+            ("pawnio.ite_it87952e.fan.fan_3", "System Fan #4", "RPM"),
+        ]);
+        // the same keys as on a board with no map, with generic names
+        let generic = Rig::new();
+        let mut unmapped = generic.reader(ryzen(), ("Gigabyte Technology Co., Ltd.", "X870E AORUS ELITE X3D"));
+        unmapped.read();
+        generic.clock.advance(Duration::from_secs(1));
+        generic.energy(65_536);
+        let other = unmapped.read();
+        assert_eq!(keys(&other), keys(&read));
+        assert_eq!(other.labels.iter().find(|l| l.key == "pawnio.ite_it87952e.fan.fan_2").unwrap().label, "ITE IT87952E fan 2");
+    }
+
+    /// A board with a map gets its names.
+    #[test]
+    fn mapped_board_names() {
+        let rig = Rig::new();
+        let read = rig.reader(ryzen(), ("Gigabyte Technology Co., Ltd.", "X870E AORUS PRO")).read();
+        let label = |key: &str| read.labels.iter().find(|l| l.key == key).unwrap().label.clone();
+        assert_eq!(label("pawnio.ite_it87952e.fan.fan_2"), "System Fan #6 / Pump");
+        assert_eq!(label("pawnio.ite_it8696e.temperature.temperature_3"), "CPU");
+        assert_eq!(label("pawnio.cpu.temperature.ccd2"), "CPU CCD2");
+    }
+
+    /// An Intel CPU gets a note, and the chips still come through, with no CPU module opened.
+    #[test]
+    fn intel_still_reads_chips() {
+        let rig = Rig::new();
+        let intel = Cpuid { vendor: "GenuineIntel".into(), family: 6, model: 0xB7, brand: "Intel Core i9".into() };
+        let read = rig.reader(intel, ELITE).read();
+        assert_eq!(read.notes, [INTEL]);
+        assert_eq!(read.cpu_temp, None);
+        assert!(read.values.iter().all(|(k, _)| k.starts_with("pawnio.ite_")) && read.values.len() == 15);
+        assert!(rig.amd.calls().is_empty());
+        let other = Cpuid { vendor: "AuthenticAMD".into(), family: 0x15, model: 0x02, brand: "AMD FX-8350".into() };
+        assert_eq!(Rig::new().reader(other, ELITE).read().notes, [OTHER_CPU]);
+    }
+
+    /// A CPU module that can't be opened is a note, and the chips still come through.
+    #[test]
+    fn module_errors_are_notes() {
+        for (error, note) in [
+            (OpenError::NotSupported, "PawnIO's AMDFamily17 module doesn't support this CPU, so there are no CPU readings."),
+            (OpenError::TooOld, TOO_OLD),
+            (OpenError::BadSignature, DAMAGED),
+            (OpenError::Damaged, DAMAGED),
+        ] {
+            let rig = Rig::new();
+            let locks = Locks { pci: Some(Box::new(rig.pci.clone())), isa: Some(Box::new(rig.isa.clone())) };
+            let mut reader = Reader::open(fake::opener(Err(error), Ok(rig.lpc.clone())), locks, ryzen(), &Board::default(),
+                                          Box::new(rig.clock.clone()), rig.hw.clone());
+            let read = reader.read();
+            assert_eq!(read.notes, [note]);
+            assert_eq!(read.values.len(), 15);
+            // and again at every read, as long as it lasts
+            assert_eq!(reader.read().notes, [note]);
+        }
+        // the same for the chips' module, with the CPU still read
+        let rig = Rig::new();
+        let locks = Locks { pci: Some(Box::new(rig.pci.clone())), isa: Some(Box::new(rig.isa.clone())) };
+        let mut reader = Reader::open(fake::opener(Ok(rig.amd.clone()), Err(OpenError::NotSupported)), locks, ryzen(),
+                                      &Board::default(), Box::new(rig.clock.clone()), rig.hw.clone());
+        let read = reader.read();
+        assert_eq!(read.notes, ["PawnIO's LpcIO module doesn't support this PC, so there are no fan or board readings."]);
+        assert_eq!(read.cpu_temp, Some(72.125));
+    }
+
+    /// A lock that can't be shared with other programs turns off what it guards, with a note; the energy
+    /// counter, which takes no lock, is still read.
+    #[test]
+    fn missing_locks_turn_parts_off() {
+        let rig = Rig::new();
+        let locks = Locks { pci: None, isa: None };
+        let mut reader = Reader::open(fake::opener(Ok(rig.amd.clone()), Ok(rig.lpc.clone())), locks, ryzen(),
+                                      &Board::default(), Box::new(rig.clock.clone()), rig.hw.clone());
+        let read = reader.read();
+        assert_eq!(read.notes, [Bus::Pci.unshared(), Bus::Isa.unshared()]);
+        assert!(read.values.is_empty());
+        rig.clock.advance(Duration::from_secs(1));
+        rig.energy(65_536);
+        assert_eq!(value(&reader.read(), "pawnio.cpu.power.package"), Some(1.0));
+        assert!(rig.lpc.calls().is_empty() && rig.amd.calls().iter().all(|(f, _)| f == "ioctl_read_msr"));
+    }
+
+    /// A sleep shows as the clock that counts it running ahead of the one that doesn't: the energy counter
+    /// is then read afresh, not over the sleep.
+    #[test]
+    fn sleep_is_noticed() {
+        let rig = Rig::new();
+        let mut reader = rig.reader(ryzen(), ELITE);
+        rig.amd.set_msr(0xC001_029B, 0);
+        reader.read();
+        assert_eq!(reader.resumed_at, None);
+        // 4 s awake since the first read (which took 2 ms, finding the chips), then 4 s asleep: no sleep yet
+        rig.clock.advance(Duration::from_secs(4) - rig.clock.since_boot());
+        rig.clock.suspend(Duration::from_secs(4));
+        rig.amd.set_msr(0xC001_029B, 65_536);
+        assert_eq!(value(&reader.read(), "pawnio.cpu.power.package"), Some(65_536.0 / 65_536.0 / 8.0));
+        assert_eq!(reader.resumed_at, None);
+        rig.clock.advance(Duration::from_secs(1));
+        rig.clock.suspend(Duration::from_secs(3600));
+        rig.amd.set_msr(0xC001_029B, 2 * 65_536);
+        let read = reader.read();
+        assert_eq!(value(&read, "pawnio.cpu.power.package"), None);
+        assert_eq!(read.notes, Vec::<String>::new());
+        assert_eq!(reader.resumed_at, Some(rig.clock.since_boot()));
+        rig.clock.advance(Duration::from_secs(2));
+        rig.amd.set_msr(0xC001_029B, 4 * 65_536);
+        assert_eq!(value(&reader.read(), "pawnio.cpu.power.package"), Some(1.0));
+    }
+
+    /// The notes come once each, though both parts give the same one.
+    #[test]
+    fn notes_come_once() {
+        let rig = Rig::new();
+        let locks = Locks { pci: Some(Box::new(rig.pci.clone())), isa: Some(Box::new(rig.isa.clone())) };
+        let mut reader = Reader::open(fake::opener(Err(OpenError::Damaged), Err(OpenError::Damaged)), locks, ryzen(),
+                                      &Board::default(), Box::new(rig.clock.clone()), rig.hw.clone());
+        assert_eq!(reader.read().notes, [DAMAGED]);
+    }
+
+    /// For real, the modules are their pinned files beside the program, loaded through the driver, which no
+    /// test gets past opening (driver.rs): each part's note then says what the device said. With no module
+    /// folder beside the program, the files are damaged, and the device isn't tried.
+    #[test]
+    fn real_modules() {
+        let both = [ModuleId::AmdFamily17, ModuleId::LpcIo];
+        let rig = Rig::new();
+        let locks = || Locks { pci: Some(Box::new(rig.pci.clone())), isa: Some(Box::new(rig.isa.clone())) };
+        // the repo's player\pawnio, from player\target-agent\release
+        let repo = modules(&Path::new(env!("CARGO_MANIFEST_DIR")).join("target-agent\\release\\wvplay.exe"));
+        for module in both {
+            assert_eq!(repo(module).err(), Some(OpenError::Other(0)), "{module:?}");
+        }
+        let mut reader = Reader::open(repo, locks(), ryzen(), &Board::default(), Box::new(rig.clock.clone()), rig.hw.clone());
+        let read = reader.read();
+        assert_eq!(read.notes, both.map(|module| open_note(module, OpenError::Other(0))));
+        assert!(read.values.is_empty() && read.cpu_temp.is_none());
+
+        let nowhere = std::env::temp_dir().join(format!("wvplay-pawnio-nowhere-{}", std::process::id()));
+        let none = modules(&nowhere.join("a\\b\\wvplay.exe"));
+        for module in both {
+            assert_eq!(none(module).err(), Some(OpenError::Damaged), "{module:?}");
+        }
+        let mut reader = Reader::open(none, locks(), ryzen(), &Board::default(), Box::new(rig.clock.clone()), rig.hw.clone());
+        assert_eq!(reader.read().notes, [DAMAGED]);
+    }
+
+    /// Once the process is ending, a read reads nothing.
+    #[test]
+    fn nothing_once_stopping() {
+        let rig = Rig::new();
+        let mut reader = rig.reader(ryzen(), ELITE);
+        rig.hw.ask_to_stop();
+        assert_eq!(reader.read(), Readings::default());
+        assert!(rig.lpc.calls().is_empty() && rig.amd.calls().is_empty());
+    }
+
+    /// `stop` waits for the sequence that holds the lock, and every later one sees it's stopping.
+    #[test]
+    fn stop_waits_for_the_sequence() {
+        let hw = Arc::new(HwLock::default());
+        let held = hw.hold().unwrap();
+        let (sent, got) = std::sync::mpsc::channel();
+        let stopper = hw.clone();
+        let thread = std::thread::spawn(move || {
+            let _held = stopper.stop();
+            sent.send(()).unwrap();
+        });
+        while !hw.stopping() {
+            std::thread::yield_now();
+        }
+        assert!(got.recv_timeout(Duration::from_millis(100)).is_err());
+        drop(held);
+        got.recv_timeout(Duration::from_secs(5)).unwrap();
+        thread.join().unwrap();
+    }
+
+    /// Once stopping, no sequence starts: `hold` gives nothing, also to one that was waiting for the lock as
+    /// the process began to end, and after whoever ends it has let go (as the probe does, to write what it
+    /// has). So a sequence never runs while the process may end under it.
+    #[test]
+    fn nothing_starts_once_stopping() {
+        let hw = Arc::new(HwLock::default());
+        let held = hw.hold().unwrap();
+        let waiter = hw.clone();
+        let thread = std::thread::spawn(move || waiter.hold().is_some());
+        hw.ask_to_stop();
+        drop(held);
+        assert!(!thread.join().unwrap());
+        drop(hw.stop());
+        assert!(hw.hold().is_none());
+    }
+
+    /// A reader can be handed to the thread that serves it, and its hardware lock shared with the one that
+    /// ends the process.
+    #[test]
+    fn reader_moves_between_threads() {
+        fn send<T: Send>() {}
+        fn shared<T: Send + Sync>() {}
+        send::<Reader>();
+        shared::<HwLock>();
+    }
+
+    /// The system clocks: asleep counts in one, not the other.
+    #[test]
+    fn system_clock() {
+        let clock = SystemClock;
+        let (boot, awake) = (clock.since_boot(), clock.awake());
+        assert!(boot >= awake && awake > Duration::ZERO);
+        clock.sleep(Duration::from_millis(2));
+        assert!(clock.since_boot() >= boot + Duration::from_millis(1));
+    }
+
+    /// Every note names what's off and, where there's one, the fix.
+    #[test]
+    fn open_notes() {
+        assert_eq!(open_note(ModuleId::LpcIo, OpenError::Other(1450)),
+                   "PawnIO couldn't load its LpcIO module (error 1450), so there are no fan or board readings.");
+        assert_eq!(open_note(ModuleId::AmdFamily17, OpenError::Malformed), DAMAGED);
+        assert!(open_note(ModuleId::AmdFamily17, OpenError::NotInstalled).contains("pawnio.eu"));
+        assert_eq!(io_text(IoError::Other(1168)), "error 1168");
+    }
+}

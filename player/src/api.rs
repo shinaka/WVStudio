@@ -1,7 +1,8 @@
 //! The player's local API (docs/data.md, docs/sources.md), for the studio, which proxies it to the
-//! browser: the values, filling in text, trying a source out, and the catalog. On 127.0.0.1 only, and
-//! only answering requests addressed to 127.0.0.1 or localhost, so a web page can't reach it through a
-//! DNS name pointed here.
+//! browser: the values, filling in text, trying a source out, the catalog, and PawnIO's state. On
+//! 127.0.0.1 only, and only answering requests addressed to 127.0.0.1 or localhost, so a web page can't
+//! reach it through a DNS name pointed here; and only acting on a POST that carries `X-WV: 1`, which no
+//! web page can send here, so one can't have it act either.
 
 use std::io::Read;
 use std::sync::Arc;
@@ -13,6 +14,7 @@ use serde_json::{Value as Json, json};
 use tiny_http::{Header, Method, Request, Response, Server};
 
 use crate::data::{self, Hub, Source, iso, store};
+use crate::pawnio;
 use crate::player::log;
 use crate::sources::Polled;
 
@@ -25,6 +27,8 @@ pub fn serve(hub: Arc<Hub>) {
             Ok(server) => {
                 failed = None;
                 log(format_args!("data: API on http://127.0.0.1:{port}"));
+                // a second player, which never gets the port, never asks for administrator rights
+                pawnio::api_bound();
                 let server = Arc::new(server);
                 *hub.server.lock().unwrap() = Some(server.clone());
                 for request in server.incoming_requests() {
@@ -32,6 +36,8 @@ pub fn serve(hub: Arc<Hub>) {
                 }
             }
             Err(e) => {
+                // a player that gets its port only later, when the other has gone, doesn't ask by itself
+                pawnio::api_bind_failed();
                 // most likely another player still has the port: keep trying, but say so once
                 if failed != Some(port) {
                     log(format_args!("data: no API on port {port} yet: {e}"));
@@ -57,6 +63,13 @@ fn local_host(host: Option<&str>) -> bool {
     name == "127.0.0.1" || name == "localhost"
 }
 
+/// Whether a request carries `X-WV: 1`. A web page can have the browser POST here, but not with a header
+/// of its own: that needs the browser to ask first (a CORS preflight, OPTIONS), which this API never
+/// allows. The studio and `wvplay render` send it.
+fn wv_header(request: &Request) -> bool {
+    request.headers().iter().any(|h| h.field.equiv("X-WV") && h.value.as_str().trim() == "1")
+}
+
 fn respond(request: Request, status: u16, body: Json) {
     let header = Header::from_bytes("Content-Type", "application/json").unwrap();
     let _ = request.respond(Response::from_string(body.to_string()).with_status_code(status).with_header(header));
@@ -66,13 +79,21 @@ fn handle(hub: &Arc<Hub>, mut request: Request) {
     if !local(&request) {
         return respond(request, 403, json!({ "error": "only for 127.0.0.1 or localhost" }));
     }
+    // every POST (anything but a GET), before its body is read. A studio older than this player doesn't
+    // send the header: the error says what to do
+    if *request.method() != Method::Get && !wv_header(&request) {
+        return respond(request, 403, json!({ "error": "this player needs the X-WV header: restart the studio" }));
+    }
     let mut body = String::new();
     let _ = request.as_reader().take(1 << 20).read_to_string(&mut body);
     let body: Json = serde_json::from_str(&body).unwrap_or(Json::Null);
     let path = request.url().split('?').next().unwrap_or("").to_string();
     match (request.method(), path.as_str()) {
-        // what this build can do: the studio asks to tell a running player built before widgets
-        (Method::Get, "/info") => respond(request, 200, json!({ "widgets": 1 })),
+        // what this build can do: the studio asks to tell a running player built before widgets, or before
+        // PawnIO (no `pawnio`); and whether it runs as administrator, when the studio can't stop it
+        (Method::Get, "/info") => {
+            respond(request, 200, json!({ "widgets": 1, "elevated": pawnio::is_elevated(), "pawnio": pawnio::info() }))
+        }
         (Method::Get, "/values") => respond(request, 200, values()),
         (Method::Get, "/catalog") => respond(request, 200, hub.catalog()),
         (Method::Post, "/catalog/rescan") => {
@@ -105,6 +126,8 @@ fn handle(hub: &Arc<Hub>, mut request: Request) {
             }
             Err(_) => respond(request, 400, json!({ "error": "expected {\"source\": {...}}" })),
         },
+        // the studio's Ask now, Ask again or Check again: PawnIO's state after, as /info gives it
+        (Method::Post, "/pawnio/ask") => respond(request, 200, pawnio::ask()),
         _ => respond(request, 404, json!({ "error": "not found" })),
     }
 }
@@ -177,12 +200,20 @@ mod tests {
             }
             panic!("no API on {port}");
         };
+        // as the studio posts: with X-WV
         let post = |path: &str, body: Json| -> Json {
-            let mut r = agent.post(url(path)).send(body.to_string()).unwrap();
+            let mut r = agent.post(url(path)).header("X-WV", "1").send(body.to_string()).unwrap();
             serde_json::from_str(&r.body_mut().read_to_string().unwrap()).unwrap()
         };
-        // GET /info says this player draws widgets (an older one answers 404)
-        assert_eq!(get("/info"), json!({ "widgets": 1 }));
+        // GET /info says this player draws widgets (an older one answers 404), whether it runs as
+        // administrator, and PawnIO's state (whichever other tests have left it in: its three fields)
+        let info = get("/info");
+        let pawnio_state = |state: &Json| {
+            state.as_object().is_some_and(|o| o.len() == 3)
+                && state["state"].is_string() && state["message"].is_string() && state["can_ask"].is_boolean()
+        };
+        assert_eq!((info["widgets"].clone(), info.as_object().unwrap().len()), (json!(1), 3), "{info}");
+        assert!(info["elevated"].is_boolean() && pawnio_state(&info["pawnio"]), "{info}");
         let catalog = get("/catalog");
         let sources = catalog["sources"].as_array().unwrap();
         let ids: Vec<&str> = sources.iter().map(|s| s["id"].as_str().unwrap()).collect();
@@ -196,11 +227,32 @@ mod tests {
         assert_eq!(sources[0]["status"], json!({ "enabled": false, "ok": false, "error": null, "notes": [], "updated_at": null }));
         assert_eq!(sources[3]["status"]["enabled"], json!(true));
         assert_eq!(get("/values")["one.n"]["value"], json!(1.0));
+        // `wvplay render` fills its text in through /resolve, as the studio does
+        assert_eq!(data::ask_player(&playlist, &["n = {one.n}".to_string()]), Some(vec!["n = 1".to_string()]));
         // a new plugin shows up on rescan; a broken one is reported
         plugin("two", "@echo {\"values\": {\"two.n\": 2, \"one.n\": 9}}
 ");
         std::fs::create_dir_all(plugins.join("bad")).unwrap();
         std::fs::write(plugins.join("bad").join("plugin.json"), "{").unwrap();
+        // ...but not on a POST without X-WV, as a web page would send: no POST does anything without it
+        let raw: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(10)))
+            .http_status_as_error(false).build().into();
+        for path in ["/catalog/rescan", "/resolve", "/test", "/pawnio/ask", "/nope"] {
+            for header in [None, Some("0"), Some(""), Some("yes")] {
+                let mut request = raw.post(url(path)).header("Content-Type", "text/plain");
+                if let Some(value) = header {
+                    request = request.header("X-WV", value);
+                }
+                let mut r = request.send(r#"{ "texts": ["{one.n}"], "source": { "type": "one" } }"#).unwrap();
+                let body: Json = serde_json::from_str(&r.body_mut().read_to_string().unwrap()).unwrap();
+                assert_eq!((r.status().as_u16(), body), (403, json!({ "error": "this player needs the X-WV header: restart the studio" })),
+                           "{path} {header:?}");
+            }
+        }
+        assert_eq!(get("/catalog")["sources"].as_array().unwrap().len(), 5);
+        // the studio's Ask now: PawnIO's state after, as /info has it
+        let asked = post("/pawnio/ask", Json::Null);
+        assert!(pawnio_state(&asked), "{asked}");
         let scanned = post("/catalog/rescan", Json::Null);
         assert_eq!(scanned["plugins"], json!(2));
         assert_eq!(scanned["problems"].as_array().unwrap().len(), 1);

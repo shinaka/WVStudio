@@ -135,7 +135,11 @@
                gap: 5px; justify-content: center; font-size: 12px; }
   #playerBox .row { margin: 0; }
   #playerState { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #rivals:empty { display: none; }
+  #rivals:empty, #playerElevated:empty, #pawnioState:empty { display: none; }
+  /* PawnIO's state in the player box: one line, all of it in its title, and the player's button beside it */
+  #pawnioState { display: flex; gap: 6px; align-items: center; min-width: 0; }
+  #pawnioState .text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #pawnioState button, #srcForm .pawnio-line button { flex: none; padding: 1px 8px; }
   /* the sources window and autocomplete, as before */
   .test-out:empty { display: none; }
   .test-out { margin: 6px 0; }
@@ -184,6 +188,10 @@
   #srcForm .setting > .label { color: var(--muted); padding-top: 5px; width: auto; }
   #srcForm input[type=text], #srcForm input[type=password], #srcForm select, #srcForm textarea { width: 100%; }
   #srcForm .help { grid-column: 2; }
+  #srcForm .pawnio-line:empty { display: none; }
+  #srcForm .pawnio-line .text { margin-right: 6px; }
+  #srcForm .pawnio-line a { color: var(--info); }
+  #srcForm .pawnio-line code { white-space: nowrap; }
   table.provides { border-collapse: collapse; width: 100%; font-size: 12px; }
   table.provides td, table.provides th { text-align: left; padding: 3px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
   table.provides th { color: var(--muted); font-weight: 650; font-size: 11px; }
@@ -602,6 +610,8 @@
       <button id="openSources">Data sources…</button>
     </div>
     <div id="playerState" class="muted"></div>
+    <div id="playerElevated" class="warn"></div>
+    <div id="pawnioState"></div>
     <div class="row"><label title="Plays the playlist after you log in, without opening the studio">
       <input id="autostart" type="checkbox"> Start with Windows</label><span id="dataStatus" class="muted"></span></div>
     <div id="rivals" class="warn"></div>
