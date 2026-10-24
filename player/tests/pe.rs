@@ -88,3 +88,23 @@ fn wvplay_loads_dlls_from_system32_only() {
 fn wvplayw_loads_dlls_from_system32_only() {
     check(env!("CARGO_BIN_EXE_wvplayw"));
 }
+
+/// wvsensors.exe runs as administrator, so it's held hardest: the System32-only rules of `check`, and on
+/// top, every DLL it imports is one of Windows' own (a System32 DLL or an API set), never a third party's.
+#[test]
+fn wvsensors_loads_dlls_from_system32_only() {
+    let exe = env!("CARGO_BIN_EXE_wvsensors");
+    check(exe);
+    let file = std::fs::read(exe).unwrap();
+    let found = imports(&file).unwrap();
+    // Windows' own DLLs the reader may import; anything else, or a path, would be a planted dependency
+    let system = [
+        "kernel32.dll", "advapi32.dll", "ntdll.dll", "bcrypt.dll", "bcryptprimitives.dll", "ws2_32.dll", "ole32.dll",
+        "shell32.dll", "user32.dll", "sechost.dll", "rpcrt4.dll", "kernelbase.dll",
+    ];
+    for dll in &found.dlls {
+        let dll = dll.to_ascii_lowercase();
+        let ok = dll.starts_with("api-ms-win-") || system.contains(&dll.as_str());
+        assert!(ok, "{exe} imports {dll}, which isn't one of Windows' own");
+    }
+}
