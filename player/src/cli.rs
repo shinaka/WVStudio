@@ -33,6 +33,12 @@ wvplay: drives the Thermalright Wonder Vision 360 screen directly, without TRCC.
                               poll each source in the data.json beside the playlist once, and print the
                               values. --serve: carry on polling, and serve the local API, as `play` does
   wvplay features             print what this build can do (`widgets 1`: it draws widgets)
+  wvplay pawnio [--stage cpu|all] [--samples N] [--every MS] [--compare-lhm URL] [--out FILE]
+                              in an administrator terminal: read the sensors through PawnIO N times, MS
+                              apart (default 3 times for cpu, 60 for all, 1000 ms apart), and print every
+                              raw and decoded reading as JSON (into FILE with --out). cpu reads the CPU
+                              only; all also the motherboard's sensor chips. --compare-lhm: beside Libre
+                              Hardware Monitor's, from its web server at URL (http://127.0.0.1:8085)
   wvplay info                 handshake and print what the panel reports
   wvplay send <file.jpg> <width> <height> [--repeat N] [--seconds S] [--fps F]
                               send a ready-made JPEG (for testing the panel)
@@ -126,6 +132,11 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
             print!("{}", features());
             Ok(())
         }
+        Some("pawnio") => match crate::pawnio::probe::main(&args[1..], &mut std::io::stdout()) {
+            0 => Ok(()),
+            // what went wrong is in the JSON it printed
+            code => std::process::exit(code),
+        },
         Some("info") => {
             let panel = Panel::open()?;
             let i = &panel.info;
@@ -170,5 +181,14 @@ mod tests {
     fn features_says_widgets() {
         assert!(features().lines().any(|l| l == "widgets 1"));
         assert!(USAGE.contains("wvplay features"));
+    }
+
+    /// The hardware probe is in the usage, with every option it takes.
+    #[test]
+    fn usage_has_the_probe() {
+        let line = USAGE.lines().find(|l| l.trim_start().starts_with("wvplay pawnio")).unwrap();
+        for option in ["--stage cpu|all", "--samples N", "--every MS", "--compare-lhm URL", "--out FILE"] {
+            assert!(line.contains(option), "{option}");
+        }
     }
 }

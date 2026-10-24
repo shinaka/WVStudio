@@ -14,10 +14,10 @@ use super::reader::{Poll, io_text};
 use super::{Exec, IoError, Lock};
 
 /// Where Tctl is, and where the CCDs' temperatures start (`ccd_slots` gives the offset from it).
-const TCTL: u32 = 0x0005_9800;
+pub(crate) const TCTL: u32 = 0x0005_9800;
 /// The energy counter's unit, and the package's energy counter (its low 32 bits count).
-const PWR_UNIT: u32 = 0xC001_0299;
-const PKG_ENERGY: u32 = 0xC001_029B;
+pub(crate) const PWR_UNIT: u32 = 0xC001_0299;
+pub(crate) const PKG_ENERGY: u32 = 0xC001_029B;
 
 /// Tctl's flags that say it reads 49 °C high: RANGE_SEL, or both TJ_SEL bits.
 const RANGE_SEL: u32 = 0x8_0000;
@@ -40,7 +40,7 @@ const LONGEST: Duration = Duration::from_secs(120);
 const REPROBE: Duration = Duration::from_secs(60);
 
 /// The lock's wait, as the other programs that share it wait.
-const LOCK_MS: u32 = 10;
+pub(crate) const LOCK_MS: u32 = 10;
 /// Skips in a row, for the lock, before a note.
 const BUSY_NOTE: u32 = 3;
 

@@ -67,8 +67,8 @@ const KEYS: [[u8; 4]; 2] = [[0x87, 0x01, 0x55, 0x55], [0x87, 0x01, 0x55, 0xAA]];
 
 /// Configuration registers: chip ID (two bytes), logical device, base (two bytes), and the one that ends
 /// configuration mode.
-const CHIP_ID: u8 = 0x20;
-const LDN: u8 = 0x07;
+pub(crate) const CHIP_ID: u8 = 0x20;
+pub(crate) const LDN: u8 = 0x07;
 const BASE: u8 = 0x60;
 const CONFIG_CONTROL: u8 = 0x02;
 /// The environment controller's logical device.
@@ -76,19 +76,19 @@ const HWM: u8 = 0x04;
 
 /// Environment controller registers: configuration (bit 4 always set), bank (bits 6:5), fans 4-6 on (bits
 /// 4, 5, 2), fans 1-3 on (bits 4-6), vendor (0x90 or 0x7F), the first temperature, and each fan's count.
-const CONFIGURATION: u8 = 0x00;
-const BANK: u8 = 0x06;
-const FANS_4_TO_6: u8 = 0x0C;
-const FANS_1_TO_3: u8 = 0x13;
-const VENDOR: u8 = 0x58;
+pub(crate) const CONFIGURATION: u8 = 0x00;
+pub(crate) const BANK: u8 = 0x06;
+pub(crate) const FANS_4_TO_6: u8 = 0x0C;
+pub(crate) const FANS_1_TO_3: u8 = 0x13;
+pub(crate) const VENDOR: u8 = 0x58;
 const VENDORS: [u8; 2] = [0x90, 0x7F];
-const TEMPERATURE: u8 = 0x29;
-const FAN_LOW: [u8; 6] = [0x0D, 0x0E, 0x0F, 0x80, 0x82, 0x4C];
-const FAN_HIGH: [u8; 6] = [0x18, 0x19, 0x1A, 0x81, 0x83, 0x4D];
+pub(crate) const TEMPERATURE: u8 = 0x29;
+pub(crate) const FAN_LOW: [u8; 6] = [0x0D, 0x0E, 0x0F, 0x80, 0x82, 0x4C];
+pub(crate) const FAN_HIGH: [u8; 6] = [0x18, 0x19, 0x1A, 0x81, 0x83, 0x4D];
 
 /// The shared lock's wait: for one detection attempt, and for one chip's poll.
-const DETECT_MS: u32 = 100;
-const POLL_MS: u32 = 10;
+pub(crate) const DETECT_MS: u32 = 100;
+pub(crate) const POLL_MS: u32 = 10;
 /// When a slot is tried again: after nothing answered once, and after each of the 3 retries.
 const ABSENT_AGAIN: Duration = Duration::from_secs(2);
 const RETRY_AFTER: [Duration; 3] = [Duration::from_secs(2), Duration::from_secs(10), Duration::from_secs(60)];

@@ -100,7 +100,7 @@ pub fn generic(sensor: &Sensor) -> String {
     }
 }
 
-mod win {
+pub(crate) mod win {
     use std::ptr::null_mut;
 
     use windows_sys::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW};

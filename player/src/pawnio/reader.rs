@@ -243,6 +243,11 @@ impl Reader {
         &self.superio
     }
 
+    /// The Super I/O chips, for the probe to read more of their registers.
+    pub fn superio_mut(&mut self) -> &mut SuperIo {
+        &mut self.superio
+    }
+
     /// The CPU's reader, when the CPU is read, for the probe.
     pub fn amd(&self) -> Option<&Amd> {
         self.amd.as_ref().ok()
