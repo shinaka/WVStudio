@@ -37,7 +37,7 @@ player polls them and draws the text.
   "api_port": 8139,
   "sources": [
     { "type": "claude", "enabled": true, "interval": 300 },
-    { "type": "pc", "enabled": true, "interval": 60, "hwinfo": false,
+    { "type": "pc", "enabled": true, "interval": 60, "hwinfo": false, "pawnio": true,
       "lhm": true, "lhm_url": "http://127.0.0.1:8085",
       "lhm_user": "cooler", "lhm_password": "<LHM password>" },
     { "type": "homeassistant", "enabled": true, "interval": 60,
@@ -82,6 +82,9 @@ player polls them and draws the text.
 - **pc:**
   - **Settings:**
     - `hwinfo` (default `false`): read HWiNFO too.
+    - `pawnio` (default `false`): read the CPU, fan, pump and motherboard sensors straight from the hardware,
+      through the PawnIO driver. Windows asks for administrator rights for Wonder Vision's sensor reader when
+      you turn it on and each time the player starts (see [Setting up PawnIO](#setting-up-pawnio)).
     - `lhm` (default `false`): read Libre Hardware Monitor (LHM) too.
     - `lhm_url` (default `http://127.0.0.1:8085`): where LHM's web server answers. Blank means the default,
       and `http://` is assumed when no scheme is given. A trailing `/data.json` (the address a browser
@@ -179,9 +182,19 @@ player polls them and draws the text.
         whenever LHM restarts: type it there again".
       - **One LHM could never accept** (see above) is refused with why: "... it can't check a user name
         with a ':' in it, or any character outside Latin-1 (like €), so choose others ...".
-  - **`pc.cpu.temp`** is the CPU die temperature:
-    - **HWiNFO's**, when HWiNFO is on and gave one: the reading labelled like "CPU (Tctl/Tdie)", else the
-      first CPU temperature.
+  - **From PawnIO**, with `"pawnio": true`, while the player plays, once PawnIO is installed and you've let
+    Wonder Vision's sensor reader run as administrator ([Setting up PawnIO](#setting-up-pawnio)):
+    - The CPU's temperatures and package power, as `pawnio.cpu.<type>.<sensor>`, and the motherboard sensor
+      chip's fans, pump and temperatures, as `pawnio.<chip>.<type>.<sensor>`. The keys, their names and when
+      a channel is left out are in [From PawnIO](#from-pawnio).
+    - Problems are notes, as with LHM: the rest of the pc values come through, and the pc source doesn't
+      fail or back off.
+  - **`pc.cpu.temp`** is the CPU die temperature, from the first of these that gave one:
+    - **PawnIO's**, when PawnIO is on and reading: `pawnio.cpu.temperature.tdie` where the CPU has one apart
+      from Tctl, else `pawnio.cpu.temperature.tctl`. It's read straight from the CPU, with no other program
+      running.
+    - **Else HWiNFO's**, when HWiNFO is on and gave one: the reading labelled like "CPU (Tctl/Tdie)", else
+      the first CPU temperature.
     - **Else LHM's**, from the CPU hardware (a `HardwareId` or `SensorId` like `/amdcpu/0` or
       `/intelcpu/0`):
       - "Core (Tctl/Tdie)" on AMD. Where LHM shows them apart: "Core (Tdie)", then "Core (Tctl)".
@@ -195,6 +208,272 @@ player polls them and draws the text.
     - `ha.<entity_id>.unit`: from `unit_of_measurement`;
     - `ha.<entity_id>.<attribute>`: one per attribute that is a plain value.
 - **time:** `time` is the current local time.
+
+### From PawnIO
+
+With `"pawnio": true`, This PC reads two things straight from the hardware, with no other program running:
+
+- **The CPU:** temperatures and package power, on AMD Ryzen (families 17h to 1Ah: Zen 1 to Zen 5). Intel CPUs
+  aren't read yet: they get the note "PawnIO CPU readings aren't supported on Intel CPUs yet.", and the
+  motherboard's chip still comes through.
+- **The motherboard's sensor chip:** fan and pump speeds, and board temperatures. Only ITE chips are read so
+  far:
+  - the IT8696E and the IT87952E, this PC's, checked on its hardware;
+  - the IT8689E, IT8688E, IT8686E and IT8792E, which are **untested**. They're read with Libre Hardware
+    Monitor's register layout for the same chips, but nobody here has run them on one. Any other chip gets a
+    note naming its ID.
+
+There are no voltages, fan duty or clocks.
+
+**CPU keys** are our own short names. All are numbers:
+
+| key | name | unit | when it's there |
+|---|---|---|---|
+| `pawnio.cpu.temperature.tctl` | CPU Tctl | °C | AMD family 17h to 1Ah. Tctl is the temperature the CPU sets its fans by |
+| `pawnio.cpu.temperature.tdie` | CPU Tdie | °C | only on the family 17h CPUs that read Tctl with an offset (the Ryzen 7 1800X reads 20 °C high, say). Elsewhere Tdie is Tctl, and there's no `tdie` |
+| `pawnio.cpu.temperature.ccd<n>`: `ccd1`, `ccd2`, ... | CPU CCD1, CPU CCD2, ... | °C | each CCD (core die) whose reading says it's valid at this poll, counted from 1 |
+| `pawnio.cpu.temperature.ccd_max`, `pawnio.cpu.temperature.ccd_average` | CPU CCDs max, CPU CCDs average | °C | with two or more CCDs read at this poll: the hottest and the average of those |
+| `pawnio.cpu.power.package` | CPU package power | W | worked out from the CPU's energy counter between two reads 0.2 s to 2 minutes apart |
+
+- A temperature outside −20 to 130 °C, or a power outside 0 to 1000 W, is left out.
+- CPU power needs the pc interval at 2 minutes or less. Longer, and the note says "Set the pc interval to 2
+  minutes or less for CPU power." After the PC sleeps, the next read only starts counting again.
+- A CCD that isn't found at the first read is looked for again every minute.
+- This PC's Ryzen 9 9950X3D gives `tctl`, `ccd1`, `ccd2`, `ccd_max`, `ccd_average` and `package`. It has no
+  `tdie`: its Tctl is the die's temperature.
+
+**Chip keys** are `pawnio.<chip>.<type>.<sensor>`:
+
+- `<chip>` is `ite_` and the chip's name, like `ite_it8696e`. A second chip with the same name is `<name>_2`.
+- `<type>` is `temperature` or `fan`.
+- `<sensor>` is `temperature_<n>` or `fan_<n>`, counted from 1.
+
+These are the keys Libre Hardware Monitor gives on a board it has no map for, with `pawnio.` in place of
+`lhm.`. This board is one, so here they're your `lhm.` keys: `lhm.ite_it87952e.fan.fan_2` is
+`pawnio.ite_it87952e.fan.fan_2`. On a board LHM has a map for, LHM's keys use the header names
+(`lhm.ite_it87952e.fan.system_fan_6_pump`). PawnIO's don't: the header names are labels, never keys.
+
+On this PC (Gigabyte X870E AORUS ELITE X3D ICE), with the names the Provides table shows and what the hardware
+probe read:
+
+| key | name on this board | at the probe |
+|---|---|---|
+| `pawnio.ite_it8696e.temperature.temperature_1` | System #1 | 37 °C |
+| `pawnio.ite_it8696e.temperature.temperature_2` | PCH | 48 °C |
+| `pawnio.ite_it8696e.temperature.temperature_3` | CPU | 74 °C (it follows Tctl) |
+| `pawnio.ite_it8696e.temperature.temperature_4` | PCIe x16 | 44 °C |
+| `pawnio.ite_it8696e.temperature.temperature_5` | VRM MOS | 51 °C |
+| `pawnio.ite_it8696e.fan.fan_1` | CPU Fan | 2377 RPM |
+| `pawnio.ite_it8696e.fan.fan_2` | System Fan #1 | 1221 RPM |
+| `pawnio.ite_it8696e.fan.fan_3` | System Fan #2 | 1180 RPM |
+| `pawnio.ite_it8696e.fan.fan_4` | System Fan #3 | 1168 RPM |
+| `pawnio.ite_it8696e.fan.fan_5` | CPU Optional Fan | 0 RPM |
+| `pawnio.ite_it87952e.temperature.temperature_1` | PCIe x4 | 41 °C |
+| `pawnio.ite_it87952e.temperature.temperature_3` | System #2 | 41 °C |
+| `pawnio.ite_it87952e.fan.fan_1` | System Fan #5 / Pump | 0 RPM |
+| `pawnio.ite_it87952e.fan.fan_2` | System Fan #6 / Pump | 6250 RPM: **the pump** |
+| `pawnio.ite_it87952e.fan.fan_3` | System Fan #4 | 0 RPM |
+
+The IT8696E's temperature 6 ("External #1") and fan 6, and the IT87952E's temperature 2 ("External #2"), are
+left out here, by the rules below.
+
+**When a channel is left out.** A channel that's left out has no key at that poll.
+
+- **Temperatures** show only when they read 1 to 126 °C. That's how the IT8696E's temperature 6 and the
+  IT87952E's temperature 2 drop out on this PC, as they do in LHM.
+- **Fans:** a fan whose counter reads all ones shows as **0 RPM**. That means stopped or nothing connected:
+  the two can't be told apart, and a stopped pump must show. A count of 0x3F or less is left out.
+- **A fan input the chip has switched off** is left out, with no name. The IT8696E's fan 6 is off on this PC.
+- **A read that fails its check is skipped for that poll**, and the last value stays until it goes stale
+  (3 × the interval). The checks: the chip must echo back the register asked for, its register bank must
+  still be bank 0, and the shared lock must be free (see
+  [Running alongside other programs](#running-alongside-other-programs)). No read is retried within a poll.
+- There's no setting to hide a channel: widgets show only the keys they name.
+
+Units: °C, RPM and W. A fan reading is the motherboard header's tach: the same reading the BIOS and LHM show.
+
+**Names.** The Provides table in the Data sources window lists each `pawnio.*` key that has had a reading
+since PawnIO was turned on, with its name and unit, under the `pawnio.*` row, and autocomplete shows the same
+names. The list only grows while PawnIO is on (a channel that's missing for one poll keeps its row), and it's
+cleared when PawnIO is turned off.
+
+- **A board with a map** shows its header names. These boards share one map, Libre Hardware Monitor's for the
+  X870E AORUS PRO: Gigabyte's X870E AORUS PRO, PRO ICE, XTREME AI TOP, MASTER X3D, MASTER X3D ICE and ELITE X3D
+  ICE. The board's name comes from Windows (`HKLM\HARDWARE\DESCRIPTION\System\BIOS`), matched exactly but for
+  letter case and spaces at either end.
+- **This PC's ELITE X3D ICE** has no map in LHM. It gets its sibling boards' names because the hardware probe
+  showed the two channels that tell this wiring apart are where the map says: the IT8696E's temperature 3
+  follows the CPU's Tctl, and the pump, at about 6300 RPM, is the IT87952E's fan 2. The other headers haven't
+  been checked in the BIOS. They're names only: a wrong one never changes a key.
+- **Any other board** gets generic names: "ITE IT8696E temperature 3", "ITE IT87952E fan 2".
+- The CPU's names are the same on every board: "CPU Tctl", "CPU Tdie", "CPU CCD1", "CPU CCDs max", "CPU CCDs
+  average", "CPU package power".
+
+**How often.** PawnIO is read at each pc poll, and a whole read takes about 1 ms on this PC. For live fan
+readings, set This PC's interval to 5 s. A change to PawnIO's state (turned on, allowed, declined) has the pc
+source polled at once, so its values and notes follow within about a second.
+
+**Notes** from the reader say what was skipped and why, under This PC's other values:
+
+| note | what to do |
+|---|---|
+| "Another program kept the motherboard sensor chip busy, so some readings were skipped." (or "...the CPU's temperature sensors busy...") | nothing: another monitoring program held the shared lock. It's said after 3 skips in a row |
+| "Another program switched the motherboard sensor chip's register bank, so its readings were skipped this time." | nothing, unless it stays: then look for a fan program that keeps the chip's other bank selected |
+| "The motherboard sensor chip at 0x2E didn't answer as expected, so its fans and temperatures are missing until the player restarts." | restart the player. Each reader tries three more times (after 2, 10 and 60 s) before saying this |
+| "The motherboard sensor chip stopped answering, so fan and board readings are off until the player restarts." | restart the player |
+| "No supported motherboard sensor chip was found (only ITE chips are read so far), so there are no fan or board readings." | none yet: the board's chip isn't one PawnIO reads here |
+| "The PawnIO module files beside the player are damaged or from another version: rebuild or reinstall the player." | rebuild the player (`cargo build --release`). If that doesn't help, turn PawnIO off, remove the reader ([below](#setting-up-pawnio)) and turn PawnIO on again, so it's set up afresh |
+| "PawnIO is too old for its modules: update it from pawnio.eu." | update PawnIO |
+
+### Setting up PawnIO
+
+PawnIO is a free driver (<https://pawnio.eu>) that lets a program read the CPU's and the motherboard's
+sensors. Libre Hardware Monitor's newer versions use it too. Reading through it needs administrator rights,
+but **the player doesn't get them**: only Wonder Vision's small **sensor reader**, `wvsensors.exe`, runs as
+administrator, from `C:\Program Files\Wonder Vision\`, and only while the player plays with PawnIO on.
+
+- The player, its plugins, ffmpeg and its web API still run as you, and the studio's Stop still works.
+- The reader reads none of your files, starts no other program, loads only the two PawnIO module files whose
+  SHA-256 values are pinned in its code, and answers only the player that started it. That player can ask it
+  for readings, or tell it to quit: nothing else.
+
+1. **Install PawnIO:** from <https://pawnio.eu>, or `winget install namazso.PawnIO`. If Libre Hardware
+   Monitor already offered to install it, it's there. It adds a driver service, `PawnIO`, that starts with
+   Windows. The Data sources window says whether it's installed.
+2. **Build the player** (`cargo build --release` in `player\`), which builds `wvsensors.exe` beside
+   `wvplay.exe`. Stop the player before building, then restart the studio and press **Play on cooler**:
+   the new player takes requests only from a studio that sends the `X-WV` header ([The player](#the-player)).
+   A player built before PawnIO can't read it, and the studio says "Rebuild the player (cargo build
+   --release) to read PawnIO sensors."
+3. **Turn it on:** in the Data sources window, on This PC, tick **Read sensors through PawnIO (asks for
+   administrator rights)**. With the player playing, the studio asks it, and Windows asks you about Wonder
+   Vision's sensor reader. Choose **Yes**. The readings show within about 2 s. With no player playing, the
+   studio says "Saved. Windows asks for administrator rights when the player starts."
+4. **The first time**, the prompt is for the reader in the player's build folder,
+   `C:\Git\CoolerVideo\player\target\release\wvsensors.exe`. It copies itself and the PawnIO module files, with
+   their licence and source, into `C:\Program Files\Wonder Vision\`, where only an administrator can change
+   them, then reads from there. That one prompt covers both.
+5. **For live fan readings,** set This PC's interval to 5 s.
+
+**Which path each prompt should name.** Windows' prompt shows the program's path under **Show more details**.
+A routine prompt names `C:\Program Files\Wonder Vision\wvsensors.exe`. A prompt naming another path should only
+appear right after you choose Ask now or press Play after an update. The reader isn't signed, so the prompt
+shows no verified publisher, and any program can raise one that looks the same: answer **No** to a prompt you
+didn't expect.
+
+**Each player start, and each logon.** With PawnIO on, Windows asks each time the player starts: when you press
+Play, and after you log in when **Start with Windows** is ticked, so once per logon.
+
+- The player has no window, so the prompt may show only as a flashing shield on the taskbar: click it.
+- The prompt waits until you answer. The panel plays meanwhile, without PawnIO's readings.
+- Nothing can raise the prompt again, or take it back, while it's up.
+
+**After a rebuild** that changed `wvsensors.exe`, the player doesn't ask when it starts. The studio says "The
+sensor reader in Program Files is from another build of Wonder Vision: choose Ask now to update it (Windows asks
+for administrator rights)." Press Play in the studio, which then asks, or choose **Ask now**. The prompt names the
+build folder's reader again, and it updates the copy in Program Files. Until the reader is set up or updated,
+a logon brings no prompt.
+
+**From another device** (over Tailscale, say), Ask now works, but Windows asks on the PC's own screen: only
+someone sitting at it can answer. The studio adds "Windows asks on the PC itself: only someone there can
+answer." The player raises at most one prompt every 10 s, and never a second while one is up.
+
+**Declining.** Choose **No**, and the panel plays on without PawnIO. The studio says "Administrator rights were
+declined, so PawnIO sensors are off: choose Ask again, or restart the player." Nothing asks again until you
+choose **Ask again**, turn PawnIO off and on, or the player restarts. Until then the `pawnio.*` values go stale
+after 3 × the interval.
+
+**Check again.** When PawnIO isn't installed, or its driver isn't running, the studio says so, with **Check
+again**. Install PawnIO, or restart Windows, then choose it.
+
+**Turning it off.** Untick the checkbox. The reader exits at once, so nothing stays running as administrator,
+and the `pawnio.*` rows leave the Provides table. **Stop** does the same: the reader notices its player is gone,
+finishes the step it was on with the chip, putting back what it changed, and exits within about 100 ms.
+
+**Removing the reader.** Turn PawnIO off, or stop the player, then delete `C:\Program Files\Wonder Vision` as
+administrator. There's no uninstall command. PawnIO itself is removed in Windows' Settings > Apps > Installed
+apps.
+
+**Each reader start looks for the chips once.** Turning PawnIO on, Ask again and each player start begin a new
+reader, and each looks for the motherboard's sensor chips once: about 60 ms per chip on this PC. That's the
+only time it uses the chips' configuration registers.
+
+- It reads each chip's ID first, and sends the "enter configuration" key only to a chip that doesn't answer.
+- It leaves each chip as it found it: a chip it put in configuration mode is taken out again, unless it's one
+  of the few chips that must never be sent that.
+- Polls after that read only the sensor registers.
+- A chip that stops answering is only re-read, less and less often, then looked for again at most twice per
+  reader.
+
+#### Running alongside other programs
+
+- **Libre Hardware Monitor and HWiNFO** can keep running. They share two named locks with the reader:
+  `Global\Access_PCI` for the CPU's temperature registers, and `Global\Access_ISABUS.HTP.Method` for the
+  motherboard's chip. So their reads and the reader's never interleave. The reader waits at most 10 ms for a
+  lock at a poll (100 ms while it looks for a chip); when another program holds it, that part is skipped this
+  time, and after 3 skips in a row a note says so. With PawnIO reading the same channels, LHM isn't needed for
+  them.
+- **Gigabyte Control Center, EasyTune and the BIOS's own ACPI code** use the same chip without any lock shared
+  with ours (this PC's ACPI code uses the chip at 0x2E under a lock of its own). Their access can interleave with
+  the reader's:
+  - That can give a wrong reading now and then. The echo check, the bank check and the range checks catch
+    most.
+  - In the worst case, their write could land on a register the reader had just selected.
+  - The CPU is the same: PawnIO's module leaves the CPU's register index pointing at a temperature register,
+    so another program's write there that doesn't take the `Access_PCI` lock could land on a temperature
+    register.
+  - Libre Hardware Monitor reads the same way, so it has the same exposure today. The reader keeps each access
+    short and only ever reads.
+- **A second player** you start by hand while one plays never asks: it can't take the API's port, and only a
+  player that has it asks.
+- **A prompt you approve after Stop** does nothing: the reader finds its player gone and exits.
+
+#### What the studio shows
+
+The player says how PawnIO stands, and the studio shows its sentence as given: in the player box under Play,
+and under the PawnIO checkbox in the Data sources window. The same sentence is This PC's note, except while
+it's reading, when the note holds only the reader's own notes.
+
+| state | the studio says | button |
+|---|---|---|
+| off | nothing | |
+| not installed | "PawnIO isn't installed: get it from pawnio.eu (or run `winget install namazso.PawnIO`), then choose Check again." | **Check again** |
+| driver not running | "PawnIO is installed but its driver isn't running: restart Windows (or reinstall PawnIO), then choose Check again." | **Check again** |
+| not asked yet | "PawnIO is on: choose Ask now, and Windows asks for administrator rights for its sensor reader." Or the reader needs setting up ("...choose Ask now to install Wonder Vision's sensor reader in Program Files...") or updating ("The sensor reader in Program Files is from another build of Wonder Vision...") | **Ask now** |
+| asking | "Waiting for you to allow administrator rights on this PC for PawnIO's sensor reader (look for the Windows prompt, or a flashing shield on the taskbar)." | |
+| declined | "Administrator rights were declined, so PawnIO sensors are off: choose Ask again, or restart the player." | **Ask again** |
+| failed | why, as below | **Ask again** |
+| reading | "Reading PawnIO sensors (Wonder Vision's sensor reader runs as administrator)." | |
+| standard account | "PawnIO needs administrator rights, and this Windows account isn't an administrator." A standard account gets no prompt | |
+| not the player | "PawnIO sensors are read only by the player while it plays (wvplay play)." `wvplay data`, `render` and the others never ask | |
+
+Why it failed:
+
+- "wvsensors.exe isn't beside the player: rebuild the player (cargo build --release)."
+- "The sensor reader's folder in Program Files can be changed without administrator rights, so it isn't started:
+  delete C:\Program Files\Wonder Vision (as administrator) and choose Ask again." The reader is started only
+  when its folder, the exe and its module files can be changed by administrators alone.
+- "Another copy of the sensor reader is running, so it couldn't be updated: stop the other player and choose Ask
+  again."
+- "wvsensors.exe is from another build: choose Ask again to update it."
+- "PawnIO's sensor reader didn't answer: choose Ask again, or restart the player."
+- "PawnIO's sensor reader stopped (code N): choose Ask again, or restart the player." A failed reader is never
+  started again by itself.
+- "Couldn't start PawnIO's sensor reader: (Windows' reason)."
+- The damaged-files note above.
+
+**Test** in the Data sources window uses the playing player's reader, and never asks. With the PawnIO box ticked
+but not saved yet, it says "PawnIO isn't on yet: save to turn it on."
+
+**A player you run as administrator yourself** (with UAC off, or with Run as administrator) starts the reader
+with no prompt. Its plugins and ffmpeg then run as administrator too, because of how it was started, and the
+studio can't stop it. The player box says "The player runs as administrator: the studio can't stop it. Close it
+in Task Manager, or start it normally."
+
+**Checking the hardware.** `wvplay pawnio`, in a terminal opened with Run as administrator, prints every raw
+and decoded reading as JSON: `--stage cpu` (the default) reads the CPU only, `--stage all` the chips too, and
+`--compare-lhm http://127.0.0.1:8085` compares each channel with a running LHM. It's how this PC's channels
+were checked. Without administrator rights it prints `{"error":"needs-admin"}`.
 
 ### Setting up Libre Hardware Monitor
 
@@ -288,6 +567,24 @@ hours.
 - **Local API**, on `127.0.0.1:<api_port>`:
   - It only answers when the Host header is `127.0.0.1` or `localhost`. It's for the studio, which
     proxies it to the browser.
+  - **Every POST needs the header `X-WV: 1`.** A web page can make the browser POST here, but it can't add
+    that header, so no page you visit can make the player act. Without it the answer is 403
+    `{"error": "this player needs the X-WV header: restart the studio"}`: a studio started before the player
+    was updated doesn't send it yet. The studio sends it on every request, and so does `wvplay render`.
+  - `GET /info` returns `{"widgets": 1, "elevated": false, "pawnio": {"state": "ok", "message": "...",
+    "can_ask": false}}`:
+    - `widgets`: this player draws widgets. A player from before widgets answers 404.
+    - `elevated`: whether the player itself runs as administrator, which the studio can't stop.
+    - `pawnio`: PawnIO's state (`off`, `not-installed`, `not-running`, `unavailable`, `needs-admin`,
+      `not-asked`, `asking`, `declined`, `failed` or `ok`), its sentence as the studio shows it, and whether
+      the studio offers a button for it. See [What the studio shows](#what-the-studio-shows). A player from
+      before PawnIO has no `pawnio`, and the studio then shows nothing about it.
+  - `POST /pawnio/ask {}` is the studio's Ask now, Ask again and Check again. It returns PawnIO's state
+    afterwards, as `/info` gives it.
+    - It acts only in `wvplay play`, with PawnIO on, and from `not-installed`, `not-running`, `not-asked`,
+      `declined` or `failed`. It checks again, and may raise Windows' prompt.
+    - It raises at most one prompt every 10 s, and none while one is up. Otherwise it returns the state as it
+      is.
   - `GET /values` returns `{"<key>": {"value": ..., "at": "<iso time>", "stale": bool, "source": "claude"}}`.
     Times are ISO strings.
   - `POST /resolve {"texts": ["CPU {pc.cpu.load:d}%", ...]}` returns `{"texts": [...]}`, filled with the
@@ -312,7 +609,7 @@ hours.
 ## The studio
 
 - **A "Data" section:**
-  - A card per source type, with enable, interval and the type's fields (pc: HWiNFO, Libre Hardware
+  - A card per source type, with enable, interval and the type's fields (pc: HWiNFO, PawnIO, Libre Hardware
     Monitor and its address, user name and password; HA: URL, token, entities).
   - The HA token and LHM password boxes are write-only: they show "set" and let you replace it.
   - A saved password only ever goes back to where it was typed for. Changing any text setting of its
@@ -328,9 +625,29 @@ hours.
   inserts `{key}` into the selected text object's text at the cursor.
 - **Preview:** text objects show their resolved text, via the player's `/resolve`. It refreshes when the text
   changes and about every 10 s. If the player isn't running, the raw placeholders show, and a note says so.
+- **PawnIO** ([Setting up PawnIO](#setting-up-pawnio)):
+  - The player box under Play has a line with the running player's PawnIO sentence, and **Ask now**, **Ask
+    again** or **Check again** when it can ask. The answer shows in the same line.
+  - In the Data sources window, under This PC's PawnIO checkbox, the same line, kept up to date while the window
+    is open, and above it an install line: that PawnIO isn't installed, with a link to pawnio.eu and the winget
+    command; or, while no player runs, which version is installed and what Windows will ask; or that the
+    player must be rebuilt to read PawnIO.
+  - After a save that turns PawnIO on, and after Play with it on, the studio reads the player's state every
+    500 ms for up to 6 s, and asks only when the player is ready to (`not-asked`). So Windows' prompt follows
+    your own click: a change to data.json alone never raises one. What it finds is said in the Data sources
+    window while it's open, else at the top of the page.
+  - The **Start with Windows** checkbox's tooltip adds that Windows asks after you log in, once the player
+    reads PawnIO.
+  - The studio never runs anything as administrator, never starts the sensor reader, and never makes a
+    scheduled task.
 - **Endpoints:**
   - `GET/POST /api/data/config`: the GET leaves each password out (`token`, `lhm_password`) and gives
     `token_set`, `lhm_password_set` instead; the POST keeps the saved one unless a new one is given, as
     long as the source's text settings are unchanged.
   - `GET /api/data/values`, `POST /api/data/resolve` and `POST /api/data/test`: proxies to the player API.
     They answer `{"player": false}` when it's down.
+  - `GET /api/pawnio`: `{"installed", "version", "service", "reader_built", "reader_installed"}`, the
+    studio's own look at this PC, for the install line. `service` is `running`, `stopped`, `missing` or
+    `unknown`. It only reads: the registry, and the service manager asked for the state alone.
+  - `POST /api/pawnio/ask`: the player's `POST /pawnio/ask`, with `"remote": true` added when the page isn't
+    on this PC. `{"player": false}` when it's down.

@@ -44,8 +44,9 @@ python wv.py studio "D:\gifs\cat.gif"
    studio. Reorder, retime or remove pieces in the list at any time: the player picks changes up within a
    second.
 5. **Start playing when Windows starts** (the checkbox under Play) adds the player to your startup apps, so
-   the playlist comes back after a reboot without opening the studio. It's per-user, needs no admin, and
-   shows in Task Manager's Startup apps.
+   the playlist comes back after a reboot without opening the studio. It's per-user and shows in Task
+   Manager's Startup apps. It needs no admin, except that with PawnIO sensors on, Windows asks for admin
+   rights for the sensor reader after you log in.
 
 **Click a piece in the playlist** to change it: its original and layout come back, and the button becomes
 "Update in playlist", which replaces it in place. (The originals are kept in `playlist/sources/`.)
@@ -71,10 +72,16 @@ each one provides, with live values (click a key to insert it):
   Claude Code's `/usage` uses. It reads Claude Code's own login each time and never refreshes or stores
   it, so the values go stale if Claude Code hasn't run for a while.
 - **PC sensors:** CPU load, RAM, and NVIDIA GPU temperature, load, power and memory. CPU temperature and
-  every other sensor need HWiNFO running with **Shared Memory Support** on, or Libre Hardware Monitor (free
-  and open source) running as administrator with its **Remote Web Server** on, ideally with its
-  **Authentication** (a user name and password, which the player sends). To set that up, see
-  [Setting up Libre Hardware Monitor](docs/data.md#setting-up-libre-hardware-monitor).
+  every other sensor need one of these:
+  - **PawnIO**, a free driver, which reads the CPU's temperatures and power, the fan and pump speeds and the
+    motherboard temperatures straight from the hardware, with no other program running. Windows asks for
+    admin rights for Wonder Vision's small sensor reader, which is installed once in
+    `C:\Program Files\Wonder Vision`, when you turn it on and each time the player starts. The player itself
+    stays as you. See [Setting up PawnIO](docs/data.md#setting-up-pawnio).
+  - HWiNFO running with **Shared Memory Support** on.
+  - Libre Hardware Monitor (free and open source) running as administrator with its **Remote Web Server** on,
+    ideally with its **Authentication** (a user name and password, which the player sends). To set that up,
+    see [Setting up Libre Hardware Monitor](docs/data.md#setting-up-libre-hardware-monitor).
 - **Home Assistant:** any entities, via your HA address and a long-lived token. The token only ever goes
   to the address it was entered with.
 
@@ -130,6 +137,11 @@ wvplay info                           # what the screen reports about itself
   the panel resets.
 - `wvplayw.exe` is the same program without a console window. The studio and the startup entry use it, logging
   to `.cache\wvplay.log`. Video pieces need ffmpeg, which they pass it (`--ffmpeg`).
+- `wvsensors.exe` is the small sensor reader that runs as administrator while the player reads PawnIO's
+  sensors ([Setting up PawnIO](docs/data.md#setting-up-pawnio)). `wvplay pawnio`, in an administrator
+  terminal, prints every raw PawnIO reading as JSON, to check a board's channels.
+- The player's local API takes a POST only with the header `X-WV: 1`, which the studio sends. After updating
+  the player, restart the studio too.
 
 How the screen works (from the InfoPanel fork by emaspa and the TRCC decompile in
 Lexonight1/thermalright-trcc-linux):

@@ -224,7 +224,7 @@ That's a working plugin. The rest of this guide explains each part in detail.
 - **Ids are unique.** The player refuses a plugin whose id is:
   - a built-in source's: `claude`, `pc`, `homeassistant` or `time`;
   - the first part of the keys a built-in sets, whose values the two would overwrite: `ha` (Home Assistant's
-    `ha.*`), and `hwinfo` and `lhm` (the PC source's sensors);
+    `ha.*`), and `hwinfo`, `lhm` and `pawnio` (the PC source's sensors);
   - another plugin's. The folder whose name sorts first keeps the id.
 
 ### Starting the program
@@ -323,7 +323,7 @@ temporary name and rename it, so a stop never leaves half a file.
 
 | field | type | required | default | rules |
 |---|---|---|---|---|
-| `id` | text | yes | | lowercase `a`–`z`, digits, `_` and `-`. Not `claude`, `pc`, `homeassistant`, `time`, `ha`, `hwinfo` or `lhm`, and not another plugin's ([why](#finding-plugins)). It starts every key you set, and it's the `type` in `data.json` |
+| `id` | text | yes | | lowercase `a`–`z`, digits, `_` and `-`. Not `claude`, `pc`, `homeassistant`, `time`, `ha`, `hwinfo`, `lhm` or `pawnio`, and not another plugin's ([why](#finding-plugins)). It starts every key you set, and it's the `type` in `data.json` |
 | `name` | text | yes | | not blank. Shown in the sources list |
 | `description` | text | no | `""` | shown above the settings |
 | `interval` | object | no | `{"default": 60, "min": 5}` | [below](#interval) |
@@ -929,8 +929,12 @@ To use packages without installing them for everyone, give the plugin its own vi
 
 ## Security
 
-- **No sandbox:** a plugin is a program that runs as you, with your files, your network and your environment.
-  Only install plugins you trust. Read `plugin.json`'s `command` and the code first.
+- **No sandbox:** a plugin is a program with your files, your network and your environment. Only install
+  plugins you trust. Read `plugin.json`'s `command` and the code first.
+- **Plugins run with the player's rights:** as you, unless you start the player itself as administrator.
+  PawnIO never does that; only its small sensor reader runs as administrator (data.md, "Setting up PawnIO").
+  A player you run as administrator yourself runs its plugins as administrator too; the studio's player box
+  says when the player runs as administrator.
 - **The studio can't add programs:** it can switch plugins on and off and change their settings, but it can't
   create a plugin or change its command. So reaching the studio, even over Tailscale, never means running a
   new program.
@@ -949,7 +953,8 @@ To use packages without installing them for everyone, give the plugin its own vi
 - [ ] A folder in `plugins\`, with a `plugin.json` that's valid JSON in UTF-8 without a byte-order mark.
 - [ ] `id`:
   - lowercase letters, digits, `_` or `-`;
-  - not a built-in's (`claude`, `pc`, `homeassistant`, `time`, `ha`, `hwinfo`, `lhm`) or another plugin's;
+  - not a built-in's (`claude`, `pc`, `homeassistant`, `time`, `ha`, `hwinfo`, `lhm`, `pawnio`) or another
+    plugin's;
   - the start of every `provides` key and every key you print.
 - [ ] `name` is set, every setting has `key`, `label` and `type`, and every `choice` has `choices`.
 - [ ] No setting called `type`, `enabled` or `interval`, or ending in `_set`, and no key used twice.
@@ -987,7 +992,7 @@ These go to the player's log and the **Rescan** note, as `<folder>: <problem>`.
 | `plugin.json isn't valid: trailing comma at line 5 column 3`, `key must be a string at ...`, or another JSON error | a JSON syntax error at that position, such as a trailing comma or a missing quote |
 | `the id "My Plugin" should be lowercase letters, digits, _ or -` | fix the `id` |
 | `the id "pc" is the built-in This PC source's: choose another` | the id is a built-in's: choose another |
-| `the id "ha" is taken: the built-in Home Assistant source sets keys starting with "ha."` | the id is the start of a built-in's keys (`ha`, `hwinfo`, `lhm`): choose another |
+| `the id "ha" is taken: the built-in Home Assistant source sets keys starting with "ha."` | the id is the start of a built-in's keys (`ha`, `hwinfo`, `lhm`, `pawnio`): choose another |
 | `the plugin in C:\...\plugins\other already has the id "myplugin"` | two plugins have the same id: change one |
 | `the manifest has no name` | give it a `name` |
 | `plugin.json has no "run" section` / `"run" has no command` | add `"run": {"command": [...]}` |
