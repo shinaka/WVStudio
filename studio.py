@@ -10,9 +10,11 @@ import base64
 import contextlib
 import copy
 import csv
+import ctypes
 import errno
 import hashlib
 import io
+import ipaddress
 import json
 import math
 import os
@@ -232,6 +234,10 @@ PLAYER = wv.ROOT / "player" / "target" / "release" / "wvplayw.exe"  # the one wi
 PLAYER_LOG = wv.ROOT / ".cache" / "wvplay.log"
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"  # per-user startup apps
 RUN_NAME = "Wonder Vision player"
+# PawnIO's uninstall entry, which has a DisplayVersion once it's installed, and the key that says where Program Files
+# is: both read in HKLM's 64-bit view, as the player reads them
+PAWNIO_KEY = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\PawnIO"
+WINDOWS_KEY = r"SOFTWARE\Microsoft\Windows\CurrentVersion"
 RIVALS = re.compile(r"TRCC|InfoPanel|USBLCD", re.I)  # other programs that drive the cooler
 rivals_seen = (0.0, [])
 DEFAULT_SECONDS = 30
@@ -885,6 +891,74 @@ def set_autostart(on):
     return player_state()
 
 
+def hklm_value(path, name):
+    """A value under HKLM, read in its 64-bit view, or None when the key or the value isn't there."""
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, path, 0, winreg.KEY_READ | winreg.KEY_WOW64_64KEY) as key:
+            return winreg.QueryValueEx(key, name)[0]
+    except OSError:
+        return None
+
+
+def pawnio_service():
+    """The state of PawnIO's driver service, as Windows' service manager gives it to a caller that may only ask:
+    "running", "stopped" (starting, stopping or paused too: not running, as the player counts it), "missing" (no
+    such service) or "unknown" (the manager didn't say)."""
+    try:
+        advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    except OSError:
+        return "unknown"
+    handle = ctypes.c_void_p
+    advapi.OpenSCManagerW.restype = advapi.OpenServiceW.restype = handle
+    advapi.OpenSCManagerW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
+    advapi.OpenServiceW.argtypes = [handle, ctypes.c_wchar_p, ctypes.c_uint32]
+    advapi.QueryServiceStatus.argtypes = [handle, ctypes.c_void_p]
+    advapi.CloseServiceHandle.argtypes = [handle]
+    status = (ctypes.c_uint32 * 7)()  # SERVICE_STATUS, whose second field is the state
+    manager = advapi.OpenSCManagerW(None, None, 1)  # SC_MANAGER_CONNECT
+    if not manager:
+        return "unknown"
+    try:
+        service = advapi.OpenServiceW(manager, "PawnIO", 4)  # SERVICE_QUERY_STATUS
+        if not service:
+            return "missing" if ctypes.get_last_error() == 1060 else "unknown"  # ERROR_SERVICE_DOES_NOT_EXIST
+        try:
+            if not advapi.QueryServiceStatus(service, status):
+                return "unknown"
+        finally:
+            advapi.CloseServiceHandle(service)
+    finally:
+        advapi.CloseServiceHandle(manager)
+    return "running" if status[1] == 4 else "stopped"  # SERVICE_RUNNING
+
+
+def pawnio_status():
+    """What the studio sees of PawnIO itself, for the install line in the Data sources window (the player's own
+    state comes from its /info): whether PawnIO is installed (its uninstall entry has a DisplayVersion, the player's
+    test) and which version, its driver service's state, and whether the sensor reader is built beside the player
+    and installed in Program Files. It only reads."""
+    version, programs = hklm_value(PAWNIO_KEY, "DisplayVersion"), hklm_value(WINDOWS_KEY, "ProgramFilesDir")
+    return {"installed": version is not None, "version": None if version is None else str(version),
+            "service": pawnio_service(), "reader_built": PLAYER.with_name("wvsensors.exe").exists(),
+            "reader_installed": isinstance(programs, str) and bool(programs)
+                                and Path(programs, "Wonder Vision", "wvsensors.exe").exists()}
+
+
+def pawnio_ask(client):
+    """The page's Ask now, Ask again or Check again, passed on to the player, which answers with PawnIO's state
+    after. Asked from another PC (over Tailscale, say), the answer also says "remote": Windows asks on this PC's
+    own screen, so only someone sitting at it can answer."""
+    out = player_api("/pawnio/ask", {})
+    try:
+        address = ipaddress.ip_address(client)
+        remote = not (getattr(address, "ipv4_mapped", None) or address).is_loopback
+    except ValueError:
+        remote = True
+    if remote and isinstance(out, dict):
+        out["remote"] = True
+    return out
+
+
 def rivals():
     """Other cooler software set to start with Windows: it would take the cooler before the player can."""
     global rivals_seen
@@ -933,16 +1007,18 @@ def player_state():
 
 
 player_widgets = None  # what player_features() found: /api/config's player_widgets
+player_pawnio = None  # and whether that build reads PawnIO (`pawnio 1`): /api/config's player_pawnio
 player_stamp = None  # wvplay.exe's (path, size, mtime) when player_features() last asked it
 
 
 def player_features():
     """Whether the built player (the wvplay.exe beside PLAYER, which Play and Export PNG use) draws widgets: True
     when `wvplay.exe features` prints `widgets 1`, False when it runs and doesn't (built before widgets), None when
-    it isn't built or gives no answer. Run when the studio starts, and asked again by /api/config only once
-    wvplay.exe has changed (rebuilt while the studio runs); /api/config tells the page."""
-    global player_widgets, player_stamp
-    exe, found = PLAYER.with_name("wvplay.exe"), None
+    it isn't built or gives no answer. player_pawnio says the same of `pawnio 1` (built before PawnIO). Run when
+    the studio starts, and asked again by /api/config only once wvplay.exe has changed (rebuilt while the studio
+    runs); /api/config tells the page."""
+    global player_widgets, player_pawnio, player_stamp
+    exe, found, pawnio = PLAYER.with_name("wvplay.exe"), None, None
     try:
         st = exe.stat()
         stamp = (str(exe), st.st_size, st.st_mtime_ns)
@@ -954,11 +1030,12 @@ def player_features():
         try:
             out = subprocess.run([str(exe), "features"], capture_output=True, text=True, errors="replace", timeout=5,
                                  stdin=subprocess.DEVNULL, creationflags=NO_WINDOW).stdout
-            found = "widgets 1" in (line.strip() for line in out.splitlines())
+            lines = {line.strip() for line in out.splitlines()}
+            found, pawnio = "widgets 1" in lines, "pawnio 1" in lines
         except (OSError, subprocess.SubprocessError):
-            found = None
+            found = pawnio = None
     player_stamp = stamp
-    player_widgets = found
+    player_widgets, player_pawnio = found, pawnio
     return found
 
 
@@ -3406,7 +3483,8 @@ class Handler(BaseHTTPRequestHandler):
             # "widgets": 1 tells a newer page this server has the widget routes (an older one has no such key)
             self.json({"screen": [wv.SCREEN_W, wv.SCREEN_H], "safe": wv.SAFE, "camera": wv.CAMERA_HOLE,
                        "font": str(DEFAULT_FONT), "initial": initial, "widgets": 1,
-                       "widgets_folder": str(widgets_dir().absolute()), "player_widgets": player_features()})
+                       "widgets_folder": str(widgets_dir().absolute()), "player_widgets": player_features(),
+                       "player_pawnio": player_pawnio})  # as player_features() just found it
         elif (m := re.fullmatch(r"/api/frame/(\w+)/(\d+)\.png", url.path)) and (src := source_by_id(m[1])):
             i = int(m[2])
             if i < len(src.frames):
@@ -3425,6 +3503,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.json({"error": str(e)}, 500)
         elif url.path == "/api/player":
             self.json(player_state())
+        elif url.path == "/api/pawnio":
+            self.answer(pawnio_status)
         elif url.path == "/studio.js":
             self.send(200, SCRIPT.read_bytes(), "text/javascript; charset=utf-8")
         elif url.path[1:] in WIDGET_SCRIPTS:
@@ -3534,6 +3614,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.answer(stop_player)  # a player it can't stop: 400 and the sentence, as it is
             elif url.path == "/api/autostart":
                 self.json(set_autostart(bool(json.loads(body)["on"])))
+            elif url.path == "/api/pawnio/ask":
+                self.json(pawnio_ask(self.client_address[0]))
             elif url.path == "/api/data/config":
                 self.json(save_data_config(json.loads(body)))
             elif url.path == "/api/data/resolve":
