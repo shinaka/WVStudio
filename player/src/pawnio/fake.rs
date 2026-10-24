@@ -36,12 +36,31 @@ struct AmdState {
 }
 
 impl FakeAmd {
+    /// This PC's Ryzen 9 9950X3D as the hardware probe found it (its first sample, probe-all.json
+    /// `cpu_raw.samples[0]`): Tctl 72.125 °C (it reads 49 °C high, both flags set), CCDs at 39 and 63 °C in
+    /// slots 0 and 1, the other six of the 8 slots reading 0, and the energy counter's unit (16) and count.
+    pub fn this_pc() -> FakeAmd {
+        let amd = FakeAmd::default();
+        amd.set_smn(0x5_9800, 0x793B_0000);
+        for (slot, raw) in [0xAC0, 0xB80, 0, 0, 0, 0, 0, 0].into_iter().enumerate() {
+            amd.set_smn(0x5_9B08 + 4 * slot as u32, raw);
+        }
+        amd.set_msr(0xC001_0299, 0x000A_1000);
+        amd.set_msr(0xC001_029B, 0x78_B3A0_434E);
+        amd
+    }
+
     pub fn set_smn(&self, address: u32, value: u32) {
         self.0.lock().unwrap().smn.insert(address, value);
     }
 
     pub fn set_msr(&self, msr: u32, value: u64) {
         self.0.lock().unwrap().msr.insert(msr, value);
+    }
+
+    /// An MSR as set (0 where not).
+    pub fn msr(&self, msr: u32) -> u64 {
+        self.0.lock().unwrap().msr.get(&msr).copied().unwrap_or(0)
     }
 
     /// Every SMN read fails with this from now on (None: they work).
@@ -252,6 +271,28 @@ impl Bus {
     }
 }
 
+/// This PC's IT8696E, every register the hardware probe read in its first sample (probe-all.json,
+/// `chips[0].regs[0]`): fans 1-3 on (0x13 = 0x77), 4 and 5 on and 6 off (0x0C = 0x30), bank 0, temperatures
+/// 37, 47, 72, 44 and 51 °C with the 6th absent (0xC9), and fan counts 285, 553, 570 and 577, with fan 5
+/// stopped (0xFFFF).
+const IT8696E_REGS: [(u8, u8); 45] = [
+    (0x00, 0x19), (0x06, 0x00), (0x0C, 0x30), (0x0D, 0x1D), (0x0E, 0x29), (0x0F, 0x3A), (0x13, 0x77), (0x15, 0xD0),
+    (0x16, 0xC0), (0x17, 0xC0), (0x18, 0x01), (0x19, 0x02), (0x1A, 0x02), (0x20, 0x71), (0x21, 0xAC), (0x22, 0xA9),
+    (0x23, 0xAB), (0x24, 0x69), (0x25, 0x60), (0x26, 0x78), (0x27, 0x8A), (0x28, 0x84), (0x29, 0x25), (0x2A, 0x2F),
+    (0x2B, 0x48), (0x2C, 0x2C), (0x2D, 0x33), (0x2E, 0xC9), (0x2F, 0x80), (0x4C, 0x00), (0x4D, 0x00), (0x58, 0x90),
+    (0x63, 0x42), (0x6B, 0x3F), (0x73, 0x3F), (0x7B, 0x3F), (0x7F, 0xC0), (0x80, 0x41), (0x81, 0x02), (0x82, 0xFF),
+    (0x83, 0xFF), (0xA3, 0x42), (0xA7, 0xD0), (0xAB, 0x80), (0xAF, 0x98),
+];
+
+/// This PC's IT87952E, the same way (`chips[1].regs[0]`): temperatures 40 and 41 °C with the 2nd absent
+/// (0xC9), and fan 2, the pump, at count 0x6C (6250 RPM), with fans 1 and 3 stopped.
+const IT87952E_REGS: [(u8, u8); 30] = [
+    (0x00, 0x19), (0x06, 0x00), (0x0C, 0x00), (0x0D, 0xFF), (0x0E, 0x6C), (0x0F, 0xFF), (0x13, 0x77), (0x15, 0x00),
+    (0x16, 0x00), (0x17, 0x02), (0x18, 0xFF), (0x19, 0x00), (0x1A, 0xFF), (0x20, 0xA3), (0x21, 0xFF), (0x22, 0xA5),
+    (0x23, 0x09), (0x24, 0xFF), (0x25, 0xB3), (0x26, 0x84), (0x27, 0x99), (0x28, 0x90), (0x29, 0x28), (0x2A, 0xC9),
+    (0x2B, 0x29), (0x2F, 0x99), (0x58, 0x90), (0x63, 0xFF), (0x6B, 0xFF), (0x73, 0xA3),
+];
+
 /// The LpcIO module over a fake bus. Clones share the bus; each `open` is a module handle of its own,
 /// with its own slot and allowed ports, as with the real driver.
 #[derive(Clone)]
@@ -263,31 +304,24 @@ impl FakeLpc {
                                          fail: None, opens: 0 })))
     }
 
-    /// This PC as the spec expects it: an IT8696E at 0x2E (keyed by us, base 0xA40) and an IT87952E at 0x4E
-    /// that the BIOS left in configuration mode (base 0xA60), with the readings LHM shows.
+    /// This PC as the hardware probe found it (its first sample): an IT8696E at 0x2E, which we key, with its
+    /// environment controller at 0xA40, and an IT87952E at 0x4E, already in configuration mode as LHM
+    /// leaves it, at 0xA60; each with every register the probe read, as it read them.
     pub fn this_pc() -> FakeLpc {
         let mut it8696 = FakeHwm::new(0xA40);
-        it8696.regs[0x58] = 0x90;
-        it8696.regs[0x00] = 0x10;
-        it8696.regs[0x13] = 0x70; // fans 1-3 on
-        it8696.regs[0x0C] = 0x30; // fans 4 and 5 on, fan 6 off
-        it8696.regs[0x29..0x2F].copy_from_slice(&[37, 47, 70, 45, 52, 0x80]);
-        for (i, count) in [285u16, 551, 574, 580, 0xFFFF, 0xFFFF].into_iter().enumerate() {
-            it8696.regs[[0x0D, 0x0E, 0x0F, 0x80, 0x82, 0x4C][i]] = count as u8;
-            it8696.regs[[0x18, 0x19, 0x1A, 0x81, 0x83, 0x4D][i]] = (count >> 8) as u8;
+        for (reg, value) in IT8696E_REGS {
+            it8696.regs[reg as usize] = value;
         }
         let mut it87952 = FakeHwm::new(0xA60);
-        it87952.regs[0x58] = 0x90;
-        it87952.regs[0x00] = 0x10;
-        it87952.regs[0x13] = 0x70;
-        it87952.regs[0x29..0x2C].copy_from_slice(&[41, 0x80, 41]);
-        for (i, count) in [0xFFFFu16, 107, 0xFFFF].into_iter().enumerate() {
-            it87952.regs[[0x0D, 0x0E, 0x0F][i]] = count as u8;
-            it87952.regs[[0x18, 0x19, 0x1A][i]] = (count >> 8) as u8;
+        for (reg, value) in IT87952E_REGS {
+            it87952.regs[reg as usize] = value;
         }
+        let mut first = FakeChip::new(0x2E, 0x8696, 0xA40);
+        first.ldn = 0x07;
         let mut second = FakeChip::new(0x4E, 0x8695, 0xA60);
         second.configured = true;
-        FakeLpc::new(vec![FakeChip::new(0x2E, 0x8696, 0xA40), second], vec![it8696, it87952])
+        second.ldn = 0x0F;
+        FakeLpc::new(vec![first, second], vec![it8696, it87952])
     }
 
     /// The bus, to look at or change.

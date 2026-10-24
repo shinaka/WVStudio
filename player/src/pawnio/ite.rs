@@ -32,7 +32,8 @@ pub struct ChipSpec {
     pub fans: usize,
     pub pwms: usize,
     /// Its registers 0x10-0xAF are banked, and other programs switch the bank (Linux's FEAT_BANK_SEL): it's
-    /// read only in bank 0, and never switched.
+    /// read only in bank 0, and never switched. The hardware probe never found this PC's switched, but
+    /// Gigabyte's software may switch it at other times, and the check is one register read.
     pub bank_guard: bool,
     /// Doesn't read its index back: every read is taken as valid (LHM).
     pub readback_exempt: bool,
@@ -485,7 +486,8 @@ impl Chip {
         if !VENDORS.contains(&vendor) || configuration & 0x10 == 0 {
             return Ok(Some(Why::Vendor));
         }
-        // read once here and never written: a fan input that's off can hold an old count
+        // read once here and never written: a fan input that's off can hold an old count. LHM doesn't look at
+        // fans 1-3's bits (Linux does); on this PC they hide no fan LHM shows (0x77, the hardware probe)
         let Some(main) = self.read_reg(FANS_1_TO_3)? else { return Ok(Some(Why::ReadBack)) };
         for (i, on) in self.fans.iter_mut().enumerate().take(self.spec.fans.min(3)) {
             *on = main & (1 << (4 + i)) != 0;
@@ -500,7 +502,9 @@ impl Chip {
     }
 
     /// One poll's readings: in bank 0 (checked before and after), with the vendor check first. A register
-    /// whose index didn't read back is left out.
+    /// whose index didn't read back is left out. Readings aren't held back to filter out spikes: the hardware
+    /// probe saw none (no read-back failure, bank switch or vendor miss in 60 polls), and a filter would delay
+    /// real changes by a poll.
     fn sample(&mut self, hw: &HwLock) -> Result<Sample, IoError> {
         if let Some(why) = self.bank_guard()? {
             return Ok(Sample::guarded(why));
@@ -878,6 +882,9 @@ mod tests {
         }
         assert_eq!(temperature(0x7E), Some(126.0));
         assert_eq!(temperature(0x01), Some(1.0));
+        // as the hardware probe read them: the pump's count, and an absent sensor's register
+        assert_eq!(fan_rpm(0x6C), Some(6250.0));
+        assert_eq!(temperature(0xC9), None);
     }
 
     /// The chip table, and the chips never sent the exit.
@@ -897,9 +904,10 @@ mod tests {
         }
     }
 
-    /// This PC: both chips found, read with the spec's values, and each left as found: the IT87952E at
-    /// 0x4E (left in configuration mode by the BIOS) with no key and no exit and its logical device put
-    /// back; the IT8696E at 0x2E keyed and exited.
+    /// This PC, as the hardware probe found it: both chips found, read as the probe read them, and each
+    /// left as found: the IT87952E at 0x4E (already in configuration mode) with no key and no exit and its
+    /// logical device put back; the IT8696E at 0x2E keyed and exited. The IT8696E's 6th temperature (0xC9)
+    /// and its fan 6 (off) aren't published, nor the IT87952E's 2nd temperature.
     #[test]
     fn this_pc() {
         let mut rig = Rig::new(FakeLpc::this_pc());
@@ -908,26 +916,31 @@ mod tests {
         let rounded: Vec<(&str, f64)> = values.iter().map(|(k, v)| (k.as_str(), v.round())).collect();
         assert_eq!(rounded, [
             ("pawnio.ite_it8696e.temperature.temperature_1", 37.0), ("pawnio.ite_it8696e.temperature.temperature_2", 47.0),
-            ("pawnio.ite_it8696e.temperature.temperature_3", 70.0), ("pawnio.ite_it8696e.temperature.temperature_4", 45.0),
-            ("pawnio.ite_it8696e.temperature.temperature_5", 52.0), ("pawnio.ite_it8696e.fan.fan_1", 2368.0),
-            ("pawnio.ite_it8696e.fan.fan_2", 1225.0), ("pawnio.ite_it8696e.fan.fan_3", 1176.0),
-            ("pawnio.ite_it8696e.fan.fan_4", 1164.0), ("pawnio.ite_it8696e.fan.fan_5", 0.0),
-            ("pawnio.ite_it87952e.temperature.temperature_1", 41.0), ("pawnio.ite_it87952e.temperature.temperature_3", 41.0),
-            ("pawnio.ite_it87952e.fan.fan_1", 0.0), ("pawnio.ite_it87952e.fan.fan_2", 6308.0),
+            ("pawnio.ite_it8696e.temperature.temperature_3", 72.0), ("pawnio.ite_it8696e.temperature.temperature_4", 44.0),
+            ("pawnio.ite_it8696e.temperature.temperature_5", 51.0), ("pawnio.ite_it8696e.fan.fan_1", 2368.0),
+            ("pawnio.ite_it8696e.fan.fan_2", 1221.0), ("pawnio.ite_it8696e.fan.fan_3", 1184.0),
+            ("pawnio.ite_it8696e.fan.fan_4", 1170.0), ("pawnio.ite_it8696e.fan.fan_5", 0.0),
+            ("pawnio.ite_it87952e.temperature.temperature_1", 40.0), ("pawnio.ite_it87952e.temperature.temperature_3", 41.0),
+            ("pawnio.ite_it87952e.fan.fan_1", 0.0), ("pawnio.ite_it87952e.fan.fan_2", 6250.0),
             ("pawnio.ite_it87952e.fan.fan_3", 0.0),
         ]);
+        assert_eq!(values.iter().find(|(k, _)| k == "pawnio.ite_it87952e.fan.fan_2").unwrap().1, 6250.0);
         let writes = rig.lpc.writes();
         assert_eq!(keys_and_exits(&writes, 0x4E), (0, 0));
         assert_eq!(keys_and_exits(&writes, 0x2E), (1, 1));
         let mut bus = rig.lpc.bus();
-        assert!(bus.chip(0x4E).configured && bus.chip(0x4E).ldn == 0x0A);
+        assert!(bus.chip(0x4E).configured && bus.chip(0x4E).ldn == 0x0F);
         assert!(!bus.chip(0x2E).configured);
         drop(bus);
         let polls_from = writes.len();
         assert_eq!(rig.outcomes(), ["found IT87952E at 0xA60", "found IT8696E at 0xA40"]);
         let a = &rig.superio.attempts;
-        assert!(!a[0].key_sent && a[0].ldn_restored && !a[0].exit_sent && a[0].id_before == Some(0x8695));
-        assert!(a[1].key_sent && !a[1].ldn_restored && a[1].exit_sent && a[1].id_before == Some(0xFFFF) && a[1].id_after == Some(0x8696));
+        assert!(!a[0].key_sent && a[0].ldn_restored && !a[0].exit_sent && a[0].id_before == Some(0x8695) && a[0].ldn_before == Some(0x0F));
+        assert!(a[1].key_sent && !a[1].ldn_restored && a[1].exit_sent && a[1].id_before == Some(0xFFFF) && a[1].id_after == Some(0x8696)
+                && a[1].ldn_before == Some(0x07));
+        // the fans on, from regs 0x13 and 0x0C as read at detection: the IT8696E's 1-5, the IT87952E's 1-3
+        let fans: Vec<[bool; 6]> = rig.superio.chips().map(|c| c.fans).collect();
+        assert_eq!(fans, [[true, true, true, true, true, false], [true, true, true, false, false, false]]);
         // a second read: no configuration access at all
         rig.later(60).read();
         let writes = rig.lpc.writes();

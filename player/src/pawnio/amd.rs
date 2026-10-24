@@ -316,13 +316,17 @@ mod tests {
     impl Rig {
         fn new(cpu: Cpuid) -> Rig {
             let fake = FakeAmd::default();
-            fake.set_msr(PWR_UNIT, 0x0000_1000);
+            fake.set_msr(PWR_UNIT, 0x000A_1000); // this PC's: 2^-16 J
+            Rig::on(fake, cpu)
+        }
+
+        fn on(fake: FakeAmd, cpu: Cpuid) -> Rig {
             Rig { amd: Amd::new(Box::new(fake.clone()), cpu), fake, lock: FakeLock::default(), clock: FakeClock::default(),
                   hw: HwLock::default(), resumed_at: None }
         }
 
         fn ryzen() -> Rig {
-            Rig::new(Cpuid { vendor: "AuthenticAMD".into(), family: 0x1A, model: 0x44, brand: "AMD Ryzen 9 9950X3D 16-Core Processor".into() })
+            Rig::new(ryzen_9950x3d())
         }
 
         fn read(&mut self) -> (Vec<(Cpu, f64)>, Vec<String>) {
@@ -345,6 +349,10 @@ mod tests {
         }
     }
 
+    fn ryzen_9950x3d() -> Cpuid {
+        Cpuid { vendor: "AuthenticAMD".into(), family: 0x1A, model: 0x44, brand: "AMD Ryzen 9 9950X3D 16-Core Processor".into() }
+    }
+
     /// Tctl's vectors from k10temp and LHM: the 49 °C flags, a failed read, and what can't be a temperature.
     #[test]
     fn tctl_decodes() {
@@ -358,6 +366,7 @@ mod tests {
         assert_eq!(tctl(224 << 21 | RANGE_SEL), None); // -21 °C
         assert_eq!(tctl(232 << 21 | RANGE_SEL), Some(-20.0));
         assert_eq!(tctl(1040 << 21), Some(130.0));
+        assert_eq!(tctl(0x793B_0000), Some(72.125)); // this PC's, as the hardware probe read it: both flags set
     }
 
     /// A CCD's register: valid only with its bit set and a read that worked.
@@ -369,6 +378,25 @@ mod tests {
         assert_eq!(ccd(0), None);
         assert_eq!(ccd(0x800), None); // -49 °C, valid or not
         assert!(ccd_valid(0x800) && !ccd_valid(0xFFFF_FFFF) && !ccd_valid(0x7FF));
+        // this PC's two CCDs, as the hardware probe read them
+        assert_eq!((ccd(0xAC0), ccd(0xB80)), (Some(39.0), Some(63.0)));
+    }
+
+    /// This PC, as the hardware probe found it: Tctl, the CCDs in slots 0 and 1 (the other six read 0, so
+    /// they're not kept), their max and average, and power from the second read on.
+    #[test]
+    fn this_pc() {
+        let mut rig = Rig::on(FakeAmd::this_pc(), ryzen_9950x3d());
+        assert_eq!(rig.read(), (vec![(Cpu::Tctl, 72.125), (Cpu::Ccd(0), 39.0), (Cpu::Ccd(1), 63.0), (Cpu::CcdMax, 63.0),
+                                     (Cpu::CcdAverage, 51.0)], vec![]));
+        assert_eq!(rig.amd.ccds(), [0, 1]);
+        let smn = |rig: &Rig| rig.fake.calls().iter().filter(|(f, _)| f == "ioctl_read_smn").count();
+        assert_eq!(smn(&rig), 1 + 8);
+        // 130 W over a second
+        rig.clock.advance(Duration::from_secs(1));
+        rig.fake.set_msr(PKG_ENERGY, rig.fake.msr(PKG_ENERGY) + 8_519_680);
+        assert_eq!(rig.power(), Some(130.0));
+        assert_eq!(smn(&rig), 1 + 8 + 3);
     }
 
     /// Tdie only for the family 17h parts in k10temp's table; Tctl is the die's temperature on the rest.
@@ -508,6 +536,7 @@ mod tests {
     fn power() {
         assert_eq!(energy_unit(0x0000_1000), 1.0 / 65_536.0);
         assert_eq!(energy_unit(0x000A_0E03), 1.0 / 16_384.0);
+        assert_eq!(energy_unit(0x000A_1000), 1.0 / 65_536.0); // this PC's
         let mut rig = Rig::ryzen();
         rig.fake.set_msr(PKG_ENERGY, 0xFFFF_FFFF_0000_0000);
         assert_eq!(rig.power(), None); // the first read only starts the count

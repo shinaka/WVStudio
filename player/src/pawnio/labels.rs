@@ -3,8 +3,8 @@
 //!
 //! A board is known by the names Windows keeps for it (`Board::current`), matched exactly but for case. Its
 //! map names what each chip channel is wired to, as on the board ("System Fan #6 / Pump"), copied from Libre
-//! Hardware Monitor's maps for the same boards. A board gets a map only once its channels are known to be
-//! the same as the map's: a wrong name is worse than a generic one.
+//! Hardware Monitor's maps for the same boards, or for its siblings. A board gets a map only once its
+//! channels are known to be the same as the map's: a wrong name is worse than a generic one.
 
 use super::keys::{Channel, Cpu, Sensor};
 
@@ -43,12 +43,18 @@ const GIGABYTE_X870E_ITE: &[ChipMap] = &[
 
 /// The boards with a map: manufacturer, product, map. LHM applies the same maps to the PRO, PRO ICE and
 /// XTREME AI TOP, and its pull request 2587 to the MASTER X3D and MASTER X3D ICE.
+///
+/// LHM has no map for the ELITE X3D ICE. Its names here are those sibling boards' (from LHM's maps), given
+/// because the hardware probe showed the two things that tell this wiring apart hold on it: IT8696E
+/// temperature 3 follows Tctl, and the pump, at about 6300 RPM, is IT87952E fan 2. They are names only,
+/// never keys, and its headers weren't checked in the BIOS.
 const BOARDS: &[(&str, &str, &[ChipMap])] = &[
     ("Gigabyte Technology Co., Ltd.", "X870E AORUS PRO", GIGABYTE_X870E_ITE),
     ("Gigabyte Technology Co., Ltd.", "X870E AORUS PRO ICE", GIGABYTE_X870E_ITE),
     ("Gigabyte Technology Co., Ltd.", "X870E AORUS XTREME AI TOP", GIGABYTE_X870E_ITE),
     ("Gigabyte Technology Co., Ltd.", "X870E AORUS MASTER X3D", GIGABYTE_X870E_ITE),
     ("Gigabyte Technology Co., Ltd.", "X870E AORUS MASTER X3D ICE", GIGABYTE_X870E_ITE),
+    ("Gigabyte Technology Co., Ltd.", "X870E AORUS ELITE X3D ICE", GIGABYTE_X870E_ITE),
 ];
 
 /// The names for one board's readings.
@@ -158,19 +164,38 @@ mod tests {
             .collect();
         assert_eq!(labels, ["CPU", "CPU Fan", "System Fan #6 / Pump", "System Fan #4", "ITE IT8696E fan 6",
                             "ITE IT8689E fan 1", "CPU Tctl"]);
-        // the MASTER X3D boards have the same maps, from LHM's pull request
-        for product in ["X870E AORUS PRO ICE", "X870E AORUS XTREME AI TOP", "X870E AORUS MASTER X3D", "X870E AORUS MASTER X3D ICE"] {
+        // the MASTER X3D boards have the same maps, from LHM's pull request, and this PC's ELITE X3D ICE
+        for product in ["X870E AORUS PRO ICE", "X870E AORUS XTREME AI TOP", "X870E AORUS MASTER X3D", "X870E AORUS MASTER X3D ICE",
+                        "X870E AORUS ELITE X3D ICE"] {
             let names = Names::for_board(&board("Gigabyte Technology Co., Ltd.", product));
             assert_eq!(names.label(&chip("IT87952E", Channel::Fan(1))), "System Fan #6 / Pump", "{product}");
         }
     }
 
-    /// Only the exact board names have a map, though case and spaces at the ends don't count. This PC's
-    /// board (ELITE X3D ICE) has none until the hardware probe shows its channels are the PRO's.
+    /// This PC's board, the ELITE X3D ICE: every channel the hardware probe found has the PRO's name, and
+    /// the channels it didn't find (absent, or a fan that's off) have theirs too, should they appear.
+    #[test]
+    fn elite_x3d_ice_names() {
+        let names = Names::for_board(&board("Gigabyte Technology Co., Ltd.", "X870E AORUS ELITE X3D ICE"));
+        assert!(names.mapped());
+        let labels = |name: &'static str, temperatures: usize, fans: usize| -> Vec<String> {
+            (0..temperatures).map(Channel::Temperature).chain((0..fans).map(Channel::Fan)).map(|c| names.label(&chip(name, c))).collect()
+        };
+        assert_eq!(labels("IT8696E", 6, 6), ["System #1", "PCH", "CPU", "PCIe x16", "VRM MOS", "External #1", "CPU Fan",
+                                             "System Fan #1", "System Fan #2", "System Fan #3", "CPU Optional Fan", "ITE IT8696E fan 6"]);
+        assert_eq!(labels("IT87952E", 3, 3), ["PCIe x4", "External #2", "System #2", "System Fan #5 / Pump", "System Fan #6 / Pump",
+                                              "System Fan #4"]);
+        // the CPU's are generic, as on every board
+        assert_eq!(names.label(&Sensor::Cpu(Cpu::Tctl)), "CPU Tctl");
+    }
+
+    /// Only the exact board names have a map, though case and spaces at the ends don't count.
     #[test]
     fn only_exact_boards_are_mapped() {
         assert!(Names::for_board(&board("GIGABYTE TECHNOLOGY CO., LTD. ", " x870e aorus pro ice")).mapped());
-        for (maker, product) in [("Gigabyte Technology Co., Ltd.", "X870E AORUS ELITE X3D ICE"),
+        assert!(Names::for_board(&board("Gigabyte Technology Co., Ltd.", "x870e aorus elite x3d ice ")).mapped());
+        for (maker, product) in [("Gigabyte Technology Co., Ltd.", "X870E AORUS ELITE X3D"),
+                                 ("Gigabyte Technology Co., Ltd.", "X870E AORUS ELITE WIFI7 ICE"),
                                  ("Gigabyte Technology Co., Ltd.", "X870E AORUS PRO WIFI"),
                                  ("Gigabyte Technology Co., Ltd.", "X870E AORUS"), ("Gigabyte", "X870E AORUS PRO"),
                                  ("ASUSTeK COMPUTER INC.", "X870E AORUS PRO"), ("", "")] {

@@ -278,15 +278,16 @@ mod tests {
     }
 
     impl Rig {
-        /// This PC: a Ryzen 9 9950X3D at 70.375 °C with CCDs at 49.625 and 60 °C, and its two ITE chips.
+        /// This PC, as the hardware probe found it: a Ryzen 9 9950X3D at 72.125 °C with CCDs at 39 and 63 °C,
+        /// and its two ITE chips.
         fn new() -> Rig {
-            let amd = FakeAmd::default();
-            amd.set_smn(0x59800, 0x4660_0000);
-            amd.set_smn(0x59B08, 0xB15);
-            amd.set_smn(0x59B0C, 0x800 | 872);
-            amd.set_msr(0xC001_0299, 0x0000_1000);
-            Rig { amd, lpc: FakeLpc::this_pc(), pci: FakeLock::default(), isa: FakeLock::default(), clock: FakeClock::default(),
-                  hw: Arc::default() }
+            Rig { amd: FakeAmd::this_pc(), lpc: FakeLpc::this_pc(), pci: FakeLock::default(), isa: FakeLock::default(),
+                  clock: FakeClock::default(), hw: Arc::default() }
+        }
+
+        /// The energy counter moves on by `counts` (2^-16 J each, this PC's unit).
+        fn energy(&self, counts: u64) {
+            self.amd.set_msr(0xC001_029B, self.amd.msr(0xC001_029B) + counts);
         }
 
         fn reader(&self, cpu: Cpuid, board: (&str, &str)) -> Reader {
@@ -309,8 +310,8 @@ mod tests {
         readings.values.iter().map(|(k, _)| k.as_str()).collect()
     }
 
-    /// This PC as the spec expects it: the CPU's keys, then each chip's, with generic labels, as LHM has no
-    /// map for this board yet. Power comes from the second read on.
+    /// This PC, as the hardware probe found it: the CPU's keys, then each chip's, with the board's names
+    /// (the ELITE X3D ICE's map, labels.rs). Power comes from the second read on.
     #[test]
     fn this_pc_reads() {
         let rig = Rig::new();
@@ -327,24 +328,60 @@ mod tests {
             "pawnio.ite_it87952e.temperature.temperature_1", "pawnio.ite_it87952e.temperature.temperature_3",
             "pawnio.ite_it87952e.fan.fan_1", "pawnio.ite_it87952e.fan.fan_2", "pawnio.ite_it87952e.fan.fan_3",
         ]);
-        assert_eq!(first.cpu_temp, Some(70.375));
-        assert_eq!(value(&first, "pawnio.cpu.temperature.ccd2"), Some(60.0));
-        assert_eq!(value(&first, "pawnio.cpu.temperature.ccd_average"), Some((49.625 + 60.0) / 2.0));
-        assert_eq!(value(&first, "pawnio.ite_it8696e.temperature.temperature_3"), Some(70.0));
+        assert_eq!(first.cpu_temp, Some(72.125));
+        assert_eq!(value(&first, "pawnio.cpu.temperature.ccd2"), Some(63.0));
+        assert_eq!(value(&first, "pawnio.cpu.temperature.ccd_average"), Some((39.0 + 63.0) / 2.0));
+        assert_eq!(value(&first, "pawnio.ite_it8696e.temperature.temperature_3"), Some(72.0));
         assert_eq!(value(&first, "pawnio.ite_it8696e.fan.fan_5"), Some(0.0));
-        assert!((value(&first, "pawnio.ite_it87952e.fan.fan_2").unwrap() - 6308.41).abs() < 0.01);
+        assert_eq!(value(&first, "pawnio.ite_it87952e.fan.fan_2"), Some(6250.0));
         assert_eq!(first.labels.len(), first.values.len());
         let label = |key: &str| first.labels.iter().find(|l| l.key == key).map(|l| (l.label.as_str(), l.unit.as_str()));
-        assert_eq!(label("pawnio.ite_it87952e.fan.fan_2"), Some(("ITE IT87952E fan 2", "RPM")));
+        assert_eq!(label("pawnio.ite_it87952e.fan.fan_2"), Some(("System Fan #6 / Pump", "RPM")));
         assert_eq!(label("pawnio.cpu.temperature.tctl"), Some(("CPU Tctl", "°C")));
 
         // 1 s after the first read (which took 2 ms, waiting while it found the chips): 8 519 680 counts
         rig.clock.advance(Duration::from_secs(1) - rig.clock.since_boot());
-        rig.amd.set_msr(0xC001_029B, 8_519_680);
+        rig.energy(8_519_680);
         let second = reader.read();
         assert_eq!(value(&second, "pawnio.cpu.power.package"), Some(130.0));
         let label = second.labels.iter().find(|l| l.key == "pawnio.cpu.power.package").unwrap();
         assert_eq!((label.label.as_str(), label.unit.as_str()), ("CPU package power", "W"));
+    }
+
+    /// This PC's board, the ELITE X3D ICE, has the X870E AORUS PRO's names (labels.rs): every label of a
+    /// whole read, in order. The keys are the same as on a board with no map: names are never in keys.
+    #[test]
+    fn elite_x3d_ice_labels() {
+        let rig = Rig::new();
+        let mut reader = rig.reader(ryzen(), ELITE);
+        reader.read();
+        rig.clock.advance(Duration::from_secs(1));
+        rig.energy(65_536);
+        let read = reader.read();
+        let labels: Vec<(&str, &str, &str)> = read.labels.iter().map(|l| (l.key.as_str(), l.label.as_str(), l.unit.as_str())).collect();
+        assert_eq!(labels, [
+            ("pawnio.cpu.temperature.tctl", "CPU Tctl", "°C"), ("pawnio.cpu.temperature.ccd1", "CPU CCD1", "°C"),
+            ("pawnio.cpu.temperature.ccd2", "CPU CCD2", "°C"), ("pawnio.cpu.temperature.ccd_max", "CPU CCDs max", "°C"),
+            ("pawnio.cpu.temperature.ccd_average", "CPU CCDs average", "°C"), ("pawnio.cpu.power.package", "CPU package power", "W"),
+            ("pawnio.ite_it8696e.temperature.temperature_1", "System #1", "°C"), ("pawnio.ite_it8696e.temperature.temperature_2", "PCH", "°C"),
+            ("pawnio.ite_it8696e.temperature.temperature_3", "CPU", "°C"), ("pawnio.ite_it8696e.temperature.temperature_4", "PCIe x16", "°C"),
+            ("pawnio.ite_it8696e.temperature.temperature_5", "VRM MOS", "°C"), ("pawnio.ite_it8696e.fan.fan_1", "CPU Fan", "RPM"),
+            ("pawnio.ite_it8696e.fan.fan_2", "System Fan #1", "RPM"), ("pawnio.ite_it8696e.fan.fan_3", "System Fan #2", "RPM"),
+            ("pawnio.ite_it8696e.fan.fan_4", "System Fan #3", "RPM"), ("pawnio.ite_it8696e.fan.fan_5", "CPU Optional Fan", "RPM"),
+            ("pawnio.ite_it87952e.temperature.temperature_1", "PCIe x4", "°C"),
+            ("pawnio.ite_it87952e.temperature.temperature_3", "System #2", "°C"),
+            ("pawnio.ite_it87952e.fan.fan_1", "System Fan #5 / Pump", "RPM"), ("pawnio.ite_it87952e.fan.fan_2", "System Fan #6 / Pump", "RPM"),
+            ("pawnio.ite_it87952e.fan.fan_3", "System Fan #4", "RPM"),
+        ]);
+        // the same keys as on a board with no map, with generic names
+        let generic = Rig::new();
+        let mut unmapped = generic.reader(ryzen(), ("Gigabyte Technology Co., Ltd.", "X870E AORUS ELITE X3D"));
+        unmapped.read();
+        generic.clock.advance(Duration::from_secs(1));
+        generic.energy(65_536);
+        let other = unmapped.read();
+        assert_eq!(keys(&other), keys(&read));
+        assert_eq!(other.labels.iter().find(|l| l.key == "pawnio.ite_it87952e.fan.fan_2").unwrap().label, "ITE IT87952E fan 2");
     }
 
     /// A board with a map gets its names.
@@ -398,7 +435,7 @@ mod tests {
                                       &Board::default(), Box::new(rig.clock.clone()), rig.hw.clone());
         let read = reader.read();
         assert_eq!(read.notes, ["PawnIO's LpcIO module doesn't support this PC, so there are no fan or board readings."]);
-        assert_eq!(read.cpu_temp, Some(70.375));
+        assert_eq!(read.cpu_temp, Some(72.125));
     }
 
     /// A lock that can't be shared with other programs turns off what it guards, with a note; the energy
@@ -413,7 +450,7 @@ mod tests {
         assert_eq!(read.notes, [Bus::Pci.unshared(), Bus::Isa.unshared()]);
         assert!(read.values.is_empty());
         rig.clock.advance(Duration::from_secs(1));
-        rig.amd.set_msr(0xC001_029B, 65_536);
+        rig.energy(65_536);
         assert_eq!(value(&reader.read(), "pawnio.cpu.power.package"), Some(1.0));
         assert!(rig.lpc.calls().is_empty() && rig.amd.calls().iter().all(|(f, _)| f == "ioctl_read_msr"));
     }

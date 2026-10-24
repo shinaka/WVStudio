@@ -1213,8 +1213,9 @@ mod tests {
         Options::parse(&args(list)).unwrap()
     }
 
-    /// This PC's sensors as LHM shows them: the chips' channels under LHM's generic names (it has no map for
-    /// the board), and the CPU's.
+    /// This PC's sensors as LHM shows them, at the hardware probe's first sample: the chips' channels under
+    /// LHM's generic names (it has no map for the board), and the CPU's. Its pump reads a tach count off ours
+    /// (6308 RPM for 6250), as it did in the probe.
     fn lhm_tree() -> Json {
         let sensor = |id: String, name: String, kind: &str, value: String| {
             json!({ "Text": name, "SensorId": id, "Type": kind, "Value": value, "Children": [] })
@@ -1235,22 +1236,22 @@ mod tests {
         json!({ "Text": "Sensor", "Children": [{ "Text": "DESKTOP", "Children": [
             { "Text": "X870E AORUS ELITE X3D ICE", "HardwareId": "/motherboard", "Children": [
                 { "Text": "ITE IT8696E", "HardwareId": "/lpc/it8696e/0", "Children": [
-                    temperatures("it8696e", &[(0, 37), (1, 47), (2, 70), (3, 45), (4, 52)]),
-                    fans("it8696e", &[2368, 1225, 1176, 1164, 0]) ]},
+                    temperatures("it8696e", &[(0, 37), (1, 47), (2, 72), (3, 44), (4, 51)]),
+                    fans("it8696e", &[2368, 1221, 1184, 1170, 0]) ]},
                 { "Text": "ITE IT87952E", "HardwareId": "/lpc/it87952e/0", "Children": [
-                    temperatures("it87952e", &[(0, 41), (2, 41)]),
+                    temperatures("it87952e", &[(0, 40), (2, 41)]),
                     fans("it87952e", &[0, 6308, 0]),
                     { "Text": "Controls", "Children": [
                         sensor("/lpc/it87952e/0/control/1".into(), "Fan #2".into(), "Control", "100.0 %".into())] } ]}]},
             { "Text": "AMD Ryzen 9 9950X3D", "HardwareId": "/amdcpu/0", "Children": [
-                { "Text": "Temperatures", "Children": [cpu(2, "Core (Tctl/Tdie)", "70.4 °C"), cpu(3, "CCD1 (Tdie)", "49.6 °C"),
-                                                       cpu(4, "CCD2 (Tdie)", "60.0 °C"), cpu(5, "CCDs Max (Tdie)", "60.0 °C"),
-                                                       cpu(6, "CCDs Average (Tdie)", "54.8 °C")] },
+                { "Text": "Temperatures", "Children": [cpu(2, "Core (Tctl/Tdie)", "72.1 °C"), cpu(3, "CCD1 (Tdie)", "39.0 °C"),
+                                                       cpu(4, "CCD2 (Tdie)", "63.0 °C"), cpu(5, "CCDs Max (Tdie)", "63.0 °C"),
+                                                       cpu(6, "CCDs Average (Tdie)", "51.0 °C")] },
                 { "Text": "Powers", "Children": [sensor("/amdcpu/0/power/0".into(), "Package".into(), "Power", "101.0 W".into())] } ]}]}]})
     }
 
-    /// This PC on fakes, as the reader's tests have it: a Ryzen 9 9950X3D at 70.375 °C with CCDs at 49.625 and
-    /// 60 °C, and its two ITE chips; the test keeps the parts to look at.
+    /// This PC on fakes, as the hardware probe found it and as the reader's tests have it: a Ryzen 9 9950X3D at
+    /// 72.125 °C with CCDs at 39 and 63 °C, and its two ITE chips; the test keeps the parts to look at.
     struct Rig {
         amd: FakeAmd,
         lpc: FakeLpc,
@@ -1262,20 +1263,15 @@ mod tests {
 
     impl Rig {
         fn new() -> Rig {
-            let amd = FakeAmd::default();
-            amd.set_smn(0x59800, 0x4660_0000);
-            amd.set_smn(0x59B08, 0xB15);
-            amd.set_smn(0x59B0C, 0x800 | 872);
-            amd.set_msr(amd::PWR_UNIT, 0x0000_1000);
-            Rig { amd, lpc: FakeLpc::this_pc(), pci: FakeLock::default(), isa: FakeLock::default(), clock: FakeClock::default(),
-                  hw: Arc::default() }
+            Rig { amd: FakeAmd::this_pc(), lpc: FakeLpc::this_pc(), pci: FakeLock::default(), isa: FakeLock::default(),
+                  clock: FakeClock::default(), hw: Arc::default() }
         }
 
         /// The machine on these parts. Its LHM answers with `lhm_tree`, and moves the energy counter on by
         /// 100 J each time it's asked, so a sample a second after one that asked reads 100 W.
         fn machine(&self) -> Machine {
             let (amd, lpc, pci, isa) = (self.amd.clone(), self.lpc.clone(), self.pci.clone(), self.isa.clone());
-            let (energy, asked) = (self.amd.clone(), Cell::new(0u64));
+            let (energy, asked, start) = (self.amd.clone(), Cell::new(0u64), self.amd.msr(amd::PKG_ENERGY));
             let bios = [("BaseBoardManufacturer", "Gigabyte Technology Co., Ltd."), ("BaseBoardProduct", "X870E AORUS ELITE X3D ICE"),
                         ("BIOSVersion", "F6")];
             Machine {
@@ -1288,7 +1284,7 @@ mod tests {
                 clock: Arc::new(self.clock.clone()),
                 lhm: Box::new(move |_| {
                     asked.set(asked.get() + 1);
-                    energy.set_msr(amd::PKG_ENERGY, asked.get() * 100 * 65_536);
+                    energy.set_msr(amd::PKG_ENERGY, start + asked.get() * 100 * 65_536);
                     Ok(lhm_tree())
                 }),
             }
@@ -1368,7 +1364,7 @@ mod tests {
         }
         assert_eq!(report["samples"], json!({ "asked": 3, "done": 3, "every_ms": 1000 }));
         assert_eq!((&report["stage"], &report["stopped"], &report["notes"]), (&json!("all"), &json!(false), &json!([])));
-        assert_eq!((&report["board"]["BaseBoardProduct"], &report["board"]["mapped"]), (&json!("X870E AORUS ELITE X3D ICE"), &json!(false)));
+        assert_eq!((&report["board"]["BaseBoardProduct"], &report["board"]["mapped"]), (&json!("X870E AORUS ELITE X3D ICE"), &json!(true)));
         assert_eq!((&report["cpu"]["family"], &report["cpu"]["model"], &report["cpu"]["read"]), (&json!("0x1A"), &json!("0x44"), &json!(true)));
         assert_eq!(report["cpu"]["ccd_slots"], json!({ "offset": "0x308", "count": 8 }));
         assert_eq!(report["pawnio"]["driver_version"], "2.1.0");
@@ -1395,16 +1391,16 @@ mod tests {
 
         // the CPU's registers: Tctl and all 8 slots in each sample, of which slots 0 and 1 are CCDs
         let cpu_raw = &report["cpu_raw"];
-        assert_eq!((&cpu_raw["pwr_unit"], &cpu_raw["kept_ccds"]), (&json!({ "raw": "0x00001000", "joules": 1.0 / 65_536.0 }), &json!([0, 1])));
+        assert_eq!((&cpu_raw["pwr_unit"], &cpu_raw["kept_ccds"]), (&json!({ "raw": "0x000A1000", "joules": 1.0 / 65_536.0 }), &json!([0, 1])));
         let samples = cpu_raw["samples"].as_array().unwrap();
         assert_eq!(samples.len(), 3);
         for sample in samples {
-            assert_eq!(sample["tctl"], json!({ "raw": "0x46600000", "c": 70.375 }));
+            assert_eq!(sample["tctl"], json!({ "raw": "0x793B0000", "c": 72.125 }));
             let ccds = sample["ccds"].as_array().unwrap();
             assert_eq!(ccds.len(), 8);
-            assert_eq!(ccds[0], json!({ "slot": 0, "raw": "0x00000B15", "valid": true, "c": 49.625 }));
-            assert_eq!(ccds[1]["c"], 60.0);
-            assert_eq!(ccds[2], json!({ "slot": 2, "raw": "0xFFFFFFFF", "valid": false, "c": null }));
+            assert_eq!(ccds[0], json!({ "slot": 0, "raw": "0x00000AC0", "valid": true, "c": 39.0 }));
+            assert_eq!(ccds[1]["c"], 63.0);
+            assert_eq!(ccds[2], json!({ "slot": 2, "raw": "0x00000000", "valid": false, "c": null }));
         }
         // LHM's answers moved the energy counter on by 100 J a second
         assert_eq!(samples.iter().map(|s| s["energy"]["w"].clone()).collect::<Vec<_>>(), [json!(null), json!(100.0), json!(100.0)]);
@@ -1414,7 +1410,7 @@ mod tests {
         assert_eq!(superio.iter().map(|s| s["port"].as_str().unwrap()).collect::<Vec<_>>(), ["0x4E", "0x2E"]);
         let (at_4e, at_2e) = (&superio[0]["attempts"][0], &superio[1]["attempts"][0]);
         assert_eq!(*at_4e, json!({ "t_ms": 0, "id_before": "0x8695", "key_sent": false, "id_after": null, "chip": "IT87952E",
-                                   "ldn_before": "0x0A", "find_bars": "ok", "base": ["0x0A60", "0x0A60"], "ldn_restored": true,
+                                   "ldn_before": "0x0F", "find_bars": "ok", "base": ["0x0A60", "0x0A60"], "ldn_restored": true,
                                    "exit_sent": false, "left_keyed": false, "outcome": "found IT87952E at 0xA60" }));
         assert_eq!((&at_2e["id_before"], &at_2e["key_sent"], &at_2e["id_after"], &at_2e["exit_sent"], &at_2e["outcome"]),
                    (&json!("0xFFFF"), &json!(true), &json!("0x8696"), &json!(true), &json!("found IT8696E at 0xA40")));
@@ -1430,10 +1426,10 @@ mod tests {
         let first = &chips[0]["regs"][0];
         assert_eq!(chips[0]["regs"].as_array().unwrap().len(), 3);
         assert_eq!(first["regs"].as_object().unwrap().len(), 45);
-        assert_eq!((&first["regs"]["0x58"], &first["regs"]["0x13"], &first["regs"]["0x2B"]), (&json!("0x90"), &json!("0x70"), &json!("0x46")));
-        assert_eq!((&first["bank"], &first["temperatures"]), (&json!([0, 0]), &json!([37.0, 47.0, 70.0, 45.0, 52.0, null])));
-        assert_eq!(first["fans"][1], json!({ "fan": 2, "read": true, "count": "0x0227", "rpm": 1.35e6 / (2.0 * 551.0) }));
-        assert_eq!(first["fans"][5], json!({ "fan": 6, "read": false, "count": "0xFFFF", "rpm": 0.0 }));
+        assert_eq!((&first["regs"]["0x58"], &first["regs"]["0x13"], &first["regs"]["0x2B"]), (&json!("0x90"), &json!("0x77"), &json!("0x48")));
+        assert_eq!((&first["bank"], &first["temperatures"]), (&json!([0, 0]), &json!([37.0, 47.0, 72.0, 44.0, 51.0, null])));
+        assert_eq!(first["fans"][1], json!({ "fan": 2, "read": true, "count": "0x0229", "rpm": 1.35e6 / (2.0 * 553.0) }));
+        assert_eq!(first["fans"][5], json!({ "fan": 6, "read": false, "count": "0x0000", "rpm": null }));
         // the IT87952E's PWM registers are its own 3 channels'
         let regs = chips[1]["regs"][0]["regs"].as_object().unwrap();
         assert!(regs.len() == 30 && regs.contains_key("0x63") && regs.contains_key("0x17"));
@@ -1446,15 +1442,19 @@ mod tests {
 
         // both chips left as found
         assert_eq!(report["after"], json!([
-            { "port": "0x4E", "found": { "id": "0x8695", "ldn": "0x0A" }, "id": "0x8695", "ldn": "0x0A", "as_found": true, "expected": true },
-            { "port": "0x2E", "found": { "id": "0xFFFF", "ldn": "0x0A" }, "id": "0xFFFF", "ldn": null, "as_found": true, "expected": true },
+            { "port": "0x4E", "found": { "id": "0x8695", "ldn": "0x0F" }, "id": "0x8695", "ldn": "0x0F", "as_found": true, "expected": true },
+            { "port": "0x2E", "found": { "id": "0xFFFF", "ldn": "0x07" }, "id": "0xFFFF", "ldn": null, "as_found": true, "expected": true },
         ]));
 
         // what the pc source would publish, power from the second read on
         let keys = report["keys"].as_object().unwrap();
         assert_eq!((keys.len(), report["labels"].as_array().unwrap().len()), (21, 21));
-        assert_eq!((&keys["pawnio.cpu.power.package"], &report["cpu_temp"]), (&json!(100.0), &json!(70.375)));
-        assert!((keys["pawnio.ite_it87952e.fan.fan_2"].as_f64().unwrap() - 6308.4).abs() < 0.05);
+        assert_eq!((&keys["pawnio.cpu.power.package"], &report["cpu_temp"]), (&json!(100.0), &json!(72.125)));
+        assert_eq!(keys["pawnio.ite_it87952e.fan.fan_2"], 6250.0);
+        // named from the board's map
+        let label = |key: &str| report["labels"].as_array().unwrap().iter().find(|l| l["key"] == key).unwrap()["label"].clone();
+        assert_eq!((label("pawnio.ite_it87952e.fan.fan_2"), label("pawnio.ite_it8696e.temperature.temperature_3")),
+                   (json!("System Fan #6 / Pump"), json!("CPU")));
         assert!(!report["readings"][0]["values"].as_object().unwrap().contains_key("pawnio.cpu.power.package"));
 
         // beside LHM's, by chip and channel: all agree
@@ -1468,7 +1468,7 @@ mod tests {
         assert_eq!((&pump["lhm"], &pump["samples"]), (&json!(6308.0), &json!(3)));
         assert_eq!(row("pawnio.cpu.temperature.tctl")["lhm_key"], "lhm.amd_ryzen_9_9950x3d.temperature.core_tctl_tdie");
         assert_eq!(row("pawnio.cpu.power.package")["samples"], 2);
-        let nearest = json!({ "key": "pawnio.ite_it8696e.temperature.temperature_3", "median_diff": -0.375, "samples": 3 });
+        let nearest = json!({ "key": "pawnio.ite_it8696e.temperature.temperature_3", "median_diff": -0.125, "samples": 3 });
         assert_eq!(report["tctl_vs_chips"][0], nearest);
 
         let timing = &report["timing"];
@@ -1557,9 +1557,9 @@ mod tests {
         }
         probe.check_after();
         assert_eq!(probe.after, Some(vec![
-            json!({ "port": "0x4E", "found": { "id": "0x8695", "ldn": "0x0A" }, "id": "0x8695", "ldn": "0x07", "as_found": false,
+            json!({ "port": "0x4E", "found": { "id": "0x8695", "ldn": "0x0F" }, "id": "0x8695", "ldn": "0x07", "as_found": false,
                     "expected": false }),
-            json!({ "port": "0x2E", "found": { "id": "0xFFFF", "ldn": "0x0A" }, "id": "0x8696", "ldn": "0x04", "as_found": false,
+            json!({ "port": "0x2E", "found": { "id": "0xFFFF", "ldn": "0x07" }, "id": "0x8696", "ldn": "0x04", "as_found": false,
                     "expected": false }),
         ]));
     }
@@ -1578,8 +1578,8 @@ mod tests {
         assert!(attempt.key_sent && !attempt.exit_sent && attempt.id_after == Some(0x8695));
         probe.check_after();
         let by_design = "left in configuration mode: the chip mustn't be sent the exit (NOCONF)";
-        assert_eq!(probe.after.as_ref().unwrap()[0], json!({ "port": "0x4E", "found": { "id": "0xFFFF", "ldn": "0x0A" }, "id": "0x8695",
-                                                             "ldn": "0x0A", "as_found": false, "expected": true, "by_design": by_design }));
+        assert_eq!(probe.after.as_ref().unwrap()[0], json!({ "port": "0x4E", "found": { "id": "0xFFFF", "ldn": "0x0F" }, "id": "0x8695",
+                                                             "ldn": "0x0F", "as_found": false, "expected": true, "by_design": by_design }));
         rig.lpc.bus().chip(0x4E).ldn = 0x07;
         probe.check_after();
         let row = &probe.after.as_ref().unwrap()[0];
