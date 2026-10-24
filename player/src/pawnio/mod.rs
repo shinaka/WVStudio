@@ -9,16 +9,22 @@
 //!   motherboard's sensor chips, and naming what was read;
 //! - probe.rs: `wvplay pawnio`, which prints every reading, to check against Libre Hardware Monitor.
 //!
-//! Not finished in this build: `read` only says so, and the state stays off.
+//! The functions below are all the player calls; `control.rs` keeps the one state behind them, and
+//! `elevation.rs`, `install.rs`, `helper.rs` (the reader, wvsensors.exe) and `client.rs` carry the rest.
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Value as Json, json};
+use serde_json::Value as Json;
 
 pub mod amd;
 pub mod blobs;
+pub mod client;
+pub mod control;
 pub mod driver;
+pub mod elevation;
 #[cfg(test)]
 pub mod fake;
+pub mod helper;
+pub mod install;
 pub mod ite;
 pub mod keys;
 pub mod labels;
@@ -26,9 +32,6 @@ pub mod mutex;
 pub mod probe;
 pub mod reader;
 pub mod sha256;
-
-/// What `read` says while this build can't read PawnIO.
-const UNFINISHED: &str = "PawnIO support isn't finished in this build.";
 
 /// A key's name for people, which the studio shows beside it, and its unit: °C, RPM or W.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -149,67 +152,67 @@ pub trait Lock: Send {
     fn acquire(&self, timeout_ms: u32) -> Option<Held<'_>>;
 }
 
-/// The sensors, for the pc poll and /test. Never asks for administrator rights. When PawnIO can't be
-/// read, a note says why.
+/// The sensors, for the pc poll and /test. Never asks for administrator rights, and never reads the
+/// hardware in this process: it reads the elevated reader over its pipe (control.rs, client.rs). When
+/// there's nothing to read, a note says why.
 pub fn read() -> Readings {
     called("read");
-    Readings { notes: vec![UNFINISHED.to_string()], ..Readings::default() }
+    control::read()
 }
 
 /// Whether an enabled pc source has `pawnio` on. data.rs says so first in every `apply`, before any
 /// source starts, so the pc source's first poll already sees it. Turning it on this way never asks for
-/// administrator rights by itself; turning it off stops reading at once.
+/// administrator rights by itself; turning it off stops the reader at once.
 pub fn set_wanted(on: bool) {
     called(&format!("set_wanted({on})"));
+    control::set_wanted(on);
 }
 
 /// This process is `wvplay play`, the one command that may ask for administrator rights: player.rs says
 /// so before `data::start`.
 pub fn allow_elevation() {
     called("allow_elevation");
+    control::allow_elevation();
 }
 
 /// The API has its port (api.rs, after each bind; only the first counts). A player that never gets it,
 /// like a second one, never asks for administrator rights.
 pub fn api_bound() {
     called("api_bound");
+    control::api_bound();
 }
 
 /// What to call after every change of state, with no lock held: data.rs has the pc source poll at once
 /// (`Hub::poll_now`), so the readings and the note follow.
 pub fn set_notify(f: Box<dyn Fn() + Send + Sync>) {
     called("set_notify");
-    drop(f);
+    control::set_notify(f);
 }
 
 /// The studio's Ask now, Ask again or Check again (POST /pawnio/ask): asks or checks again when the state
 /// allows it, and gives the state after, as `info` does.
 pub fn ask() -> Json {
     called("ask");
-    off()
+    control::ask()
 }
 
 /// The state for /info's `pawnio`: `{"state", "message", "can_ask"}` (docs/data.md).
 pub fn info() -> Json {
     called("info");
-    off()
+    control::info()
 }
 
 /// Whether this process runs as administrator, for /info's `elevated`.
 pub fn is_elevated() -> bool {
     called("is_elevated");
-    false
+    control::is_elevated()
 }
 
 /// A label for every key read since PawnIO was last turned on, sorted by key: the pc manifest's live rows
 /// (`Hub::catalog`).
 pub fn labels() -> Vec<Label> {
     called("labels");
-    Vec::new()
-}
-
-fn off() -> Json {
-    json!({ "state": "off", "message": "", "can_ask": false })
+    control::labels()
 }
 
 /// Notes a call, for tests (`calls`); nothing outside them.
@@ -252,24 +255,20 @@ pub mod calls {
 mod tests {
     use super::*;
 
-    /// Until the reader is in, PawnIO is off, and reading only says so.
+    /// Each call is noted for the ordering test, then delegated. The state and its fields are control.rs's;
+    /// here only that the shapes come through (the process-wide control is shared by parallel tests, so the
+    /// exact state isn't asserted).
     #[test]
-    fn unfinished() {
-        let read = read();
-        assert_eq!(read.notes, [UNFINISHED]);
-        assert!(read.notes[0].starts_with("PawnIO"));
-        assert!(read.values.is_empty() && read.labels.is_empty() && read.cpu_temp.is_none());
-        for state in [info(), ask()] {
-            assert_eq!(state, json!({ "state": "off", "message": "", "can_ask": false }));
-        }
-        assert!(!is_elevated() && labels().is_empty());
-        set_wanted(true);
-        allow_elevation();
-        set_notify(Box::new(|| {}));
-        set_wanted(false);
-        assert_eq!(calls::take(), ["read", "info", "ask", "is_elevated", "labels", "set_wanted(true)", "allow_elevation",
-                                   "set_notify", "set_wanted(false)"]);
-        assert!(calls::take().is_empty());
+    fn calls_are_noted_and_delegated() {
+        calls::take();
+        let state = info();
+        assert!(state["state"].is_string() && state["message"].is_string() && state["can_ask"].is_boolean(), "{state}");
+        let asked = ask();
+        assert!(asked["state"].is_string(), "{asked}");
+        let _ = is_elevated();
+        let _ = labels();
+        let _ = read();
+        assert_eq!(calls::take(), ["info", "ask", "is_elevated", "labels", "read"]);
     }
 
     /// Readings cross processes as JSON and come back the same.

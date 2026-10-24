@@ -18,17 +18,15 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
-use std::mem::size_of;
 use std::path::PathBuf;
-use std::ptr::{null, null_mut};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value as Json, json};
-use windows_sys::Win32::Foundation::{CloseHandle, ERROR_SERVICE_DOES_NOT_EXIST, GetLastError};
 
 use super::amd::{self, Cpuid};
 use super::driver::Device;
+use super::elevation;
 use super::ite::{self, Attempt, CHIPS, Chip, ChipSpec, Counts, PORTS};
 use super::keys::hardware;
 use super::labels::{Board, Names, win};
@@ -80,7 +78,7 @@ const AFTER: &str = "after";
 
 /// `wvplay pawnio <args>`, writing to `out` (the console): its exit code.
 pub fn main(args: &[String], out: &mut dyn Write) -> i32 {
-    let code = main_as(args, out, elevated());
+    let code = main_as(args, out, elevation::is_elevated());
     let _ = out.flush();
     code
 }
@@ -176,24 +174,6 @@ fn fake(_: &Options) -> Option<Machine> {
     None
 }
 
-/// Whether this process runs as administrator: its token is elevated.
-fn elevated() -> bool {
-    use windows_sys::Win32::Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation};
-    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
-    unsafe {
-        let mut token = null_mut();
-        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
-            return false;
-        }
-        let mut elevation = TOKEN_ELEVATION::default();
-        let mut size = 0u32;
-        let asked = GetTokenInformation(token, TokenElevation, (&raw mut elevation).cast(), size_of::<TOKEN_ELEVATION>() as u32,
-                                        &mut size);
-        CloseHandle(token);
-        asked != 0 && elevation.TokenIsElevated != 0
-    }
-}
-
 /// The process's hardware lock, for Ctrl+C.
 static HW: OnceLock<Arc<HwLock>> = OnceLock::new();
 
@@ -267,7 +247,7 @@ impl Machine {
 /// PawnIO as installed (its uninstall entry's version), its driver's service, whether the device opens, and
 /// the driver's version, which it gives with no module loaded.
 fn driver_state() -> Json {
-    let installed = win::machine_string(r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\PawnIO", "DisplayVersion");
+    let installed = elevation::installed_version();
     let (open, version) = match Device::open() {
         Ok(device) => {
             let version = device.version().map(|v| format!("{}.{}.{}", v >> 16, (v >> 8) & 0xFF, v & 0xFF));
@@ -275,48 +255,7 @@ fn driver_state() -> Json {
         }
         Err(e) => (format!("{e:?}"), None),
     };
-    json!({ "installed": installed, "service": service("PawnIO"), "open": open, "driver_version": version })
-}
-
-/// A service's state: "running", "stopped"..., "not installed", or the error asking gave.
-fn service(name: &str) -> String {
-    use windows_sys::Win32::System::Services::{
-        CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceStatus, SC_MANAGER_CONNECT, SERVICE_QUERY_STATUS,
-        SERVICE_STATUS,
-    };
-    let name: Vec<u16> = name.encode_utf16().chain([0]).collect();
-    unsafe {
-        let manager = OpenSCManagerW(null(), null(), SC_MANAGER_CONNECT);
-        if manager.is_null() {
-            return format!("error {}", GetLastError());
-        }
-        let service = OpenServiceW(manager, name.as_ptr(), SERVICE_QUERY_STATUS);
-        let state = if service.is_null() {
-            match GetLastError() {
-                ERROR_SERVICE_DOES_NOT_EXIST => "not installed".to_string(),
-                code => format!("error {code}"),
-            }
-        } else {
-            let mut status: SERVICE_STATUS = std::mem::zeroed();
-            let state = match QueryServiceStatus(service, &mut status) {
-                0 => format!("error {}", GetLastError()),
-                _ => match status.dwCurrentState {
-                    1 => "stopped".to_string(),
-                    2 => "start pending".to_string(),
-                    3 => "stop pending".to_string(),
-                    4 => "running".to_string(),
-                    5 => "continue pending".to_string(),
-                    6 => "pause pending".to_string(),
-                    7 => "paused".to_string(),
-                    other => format!("state {other}"),
-                },
-            };
-            CloseServiceHandle(service);
-            state
-        };
-        CloseServiceHandle(manager);
-        state
-    }
+    json!({ "installed": installed, "service": elevation::service_state("PawnIO"), "open": open, "driver_version": version })
 }
 
 /// Libre Hardware Monitor's data.json at `url` (its Remote Web Server's address), straight from it, never
@@ -1832,8 +1771,8 @@ mod tests {
         let state = driver_state();
         assert_eq!((&state["open"], &state["driver_version"]), (&json!("Other(0)"), &Json::Null));
         assert!(state["service"].is_string() && (state["installed"].is_string() || state["installed"].is_null()), "{state}");
-        assert_eq!(service("WvNoSuchServiceHere"), "not installed");
-        assert!(!elevated(), "tests run without administrator rights (spec §6.1)");
+        assert_eq!(elevation::service_state("WvNoSuchServiceHere"), "not installed");
+        assert!(!elevation::is_elevated(), "tests run without administrator rights (spec §6.1)");
     }
 
     /// The JSON's numbers: hex text with at least the digits asked for, times to the microsecond, and stats.
