@@ -182,7 +182,8 @@ impl Amd {
         &self.kept
     }
 
-    /// One SMN register.
+    /// One SMN register. The module writes the address to PCI 0:0.0 reg 0x60 and leaves it there, so an
+    /// SMN write by another program that doesn't take `Access_PCI` could land on Tctl's or a CCD's register.
     pub fn smn(&self, address: u32) -> Result<u32, IoError> {
         let mut out = [0u64];
         self.exec.execute("ioctl_read_smn", &[address as u64], &mut out)?;
@@ -215,10 +216,7 @@ impl Amd {
             return;
         };
         self.busy = 0;
-        let _hw = poll.hw.hold();
-        if poll.hw.stopping() {
-            return;
-        }
+        let Some(_hw) = poll.hw.hold() else { return };
         let failed = |e: IoError| format!("Reading the CPU's temperatures through PawnIO failed ({}), so they were skipped this time.", io_text(e));
         match self.smn(TCTL) {
             Ok(raw) => {

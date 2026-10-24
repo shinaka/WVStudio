@@ -205,6 +205,9 @@ pub struct Bus {
     pub spans: Vec<std::ops::Range<usize>>,
     /// What to do after the write with this number (from 1): ask the process to stop, in a test.
     pub after_write: Option<(usize, Box<dyn FnMut() + Send>)>,
+    /// What the driver says to a module function once it has run, given its name and arguments: Some(error)
+    /// fails it, though its port reads and writes were done.
+    pub fail: Option<Box<dyn FnMut(&str, &[u64]) -> Option<IoError> + Send>>,
     /// Module handles opened.
     pub opens: usize,
 }
@@ -257,7 +260,7 @@ pub struct FakeLpc(Arc<Mutex<Bus>>);
 impl FakeLpc {
     pub fn new(chips: Vec<FakeChip>, hwms: Vec<FakeHwm>) -> FakeLpc {
         FakeLpc(Arc::new(Mutex::new(Bus { chips, hwms, writes: Vec::new(), calls: Vec::new(), spans: Vec::new(), after_write: None,
-                                         opens: 0 })))
+                                         fail: None, opens: 0 })))
     }
 
     /// This PC as the spec expects it: an IT8696E at 0x2E (keyed by us, base 0xA40) and an IT87952E at 0x4E
@@ -377,7 +380,10 @@ impl Exec for LpcHandle {
         let result = self.run(&mut bus, function, input, out);
         let after = bus.writes.len();
         bus.spans.push(before..after);
-        result
+        match bus.fail.as_mut().and_then(|fail| fail(function, input)) {
+            Some(e) => Err(e),
+            None => result,
+        }
     }
 }
 

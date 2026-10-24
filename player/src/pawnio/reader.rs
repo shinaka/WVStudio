@@ -55,9 +55,10 @@ impl Clock for SystemClock {
 }
 
 /// The lock in the process around every hardware sequence (the CPU's SMN reads, one chip detection, one
-/// chip's poll), and the flag that asks them to stop. Whoever ends the process calls `stop` and exits while
-/// holding what it returns: the sequence running then has finished by that time, and has put the chip back
-/// as it found it (ite.rs). A process has one, shared by its reader and whatever ends the process.
+/// chip's poll), and the flag that asks them to stop. Whoever ends the process calls `stop`: the sequence
+/// running has then finished, and has put the chip back as it found it (ite.rs). No sequence starts after
+/// that, as `hold` gives nothing once stopping, so what `stop` returns may be let go before the process ends
+/// (the probe does, to write what it has). A process has one, shared by its reader and whatever ends it.
 #[derive(Default)]
 pub struct HwLock {
     stopping: AtomicBool,
@@ -65,9 +66,14 @@ pub struct HwLock {
 }
 
 impl HwLock {
-    /// Held around one hardware sequence. Inside the shared lock (`Lock`) for the same hardware, never
-    /// around it.
-    pub fn hold(&self) -> MutexGuard<'_, ()> {
+    /// Held around one hardware sequence; None once the process is ending, when the sequence mustn't start.
+    /// Inside the shared lock (`Lock`) for the same hardware, never around it.
+    pub fn hold(&self) -> Option<MutexGuard<'_, ()>> {
+        let held = self.lock();
+        (!self.stopping()).then_some(held)
+    }
+
+    fn lock(&self) -> MutexGuard<'_, ()> {
         self.lock.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -82,10 +88,10 @@ impl HwLock {
         self.stopping.store(true, Ordering::SeqCst);
     }
 
-    /// Asks the sequences to stop, and waits until the one running has finished: exit while holding this.
+    /// Asks the sequences to stop, and waits until the one running has finished.
     pub fn stop(&self) -> MutexGuard<'_, ()> {
         self.ask_to_stop();
-        self.hold()
+        self.lock()
     }
 }
 
@@ -490,7 +496,7 @@ mod tests {
     #[test]
     fn stop_waits_for_the_sequence() {
         let hw = Arc::new(HwLock::default());
-        let held = hw.hold();
+        let held = hw.hold().unwrap();
         let (sent, got) = std::sync::mpsc::channel();
         let stopper = hw.clone();
         let thread = std::thread::spawn(move || {
@@ -504,6 +510,22 @@ mod tests {
         drop(held);
         got.recv_timeout(Duration::from_secs(5)).unwrap();
         thread.join().unwrap();
+    }
+
+    /// Once stopping, no sequence starts: `hold` gives nothing, also to one that was waiting for the lock as
+    /// the process began to end, and after whoever ends it has let go (as the probe does, to write what it
+    /// has). So a sequence never runs while the process may end under it.
+    #[test]
+    fn nothing_starts_once_stopping() {
+        let hw = Arc::new(HwLock::default());
+        let held = hw.hold().unwrap();
+        let waiter = hw.clone();
+        let thread = std::thread::spawn(move || waiter.hold().is_some());
+        hw.ask_to_stop();
+        drop(held);
+        assert!(!thread.join().unwrap());
+        drop(hw.stop());
+        assert!(hw.hold().is_none());
     }
 
     /// A reader can be handed to the thread that serves it, and its hardware lock shared with the one that

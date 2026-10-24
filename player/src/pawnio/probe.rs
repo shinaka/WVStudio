@@ -45,6 +45,11 @@ const USAGE: &str = "wvplay pawnio [--stage cpu|all] [--samples N] [--every MS] 
 const CPU_SAMPLES: usize = 3;
 const ALL_SAMPLES: usize = 60;
 const EVERY: Duration = Duration::from_millis(1000);
+/// The most samples, and the least time between them, for the CPU and with the chips: each sample with the
+/// chips is a few hundred port reads and writes, which other programs on the same bus wait for.
+const MOST_SAMPLES: u64 = 600;
+const LEAST_CPU: Duration = Duration::from_millis(500);
+const LEAST_ALL: Duration = Duration::from_millis(1000);
 /// How long a wait between samples goes before it looks for Ctrl+C again.
 const STEP: Duration = Duration::from_millis(50);
 
@@ -108,6 +113,7 @@ fn error(out: &mut dyn Write, what: &str) -> i32 {
 struct Options {
     /// Also find and read the motherboard's sensor chips (`--stage all`), not just the CPU.
     all: bool,
+    /// How many samples, how far apart: brought within `MOST_SAMPLES` and `LEAST_CPU`/`LEAST_ALL`.
     samples: usize,
     every: Duration,
     /// Libre Hardware Monitor's address, to compare with.
@@ -136,7 +142,7 @@ impl Options {
                         other => return Err(format!("--stage is cpu or all, not {other}")),
                     }
                 }
-                "--samples" => samples = Some(number(value()?)?.max(1) as usize),
+                "--samples" => samples = Some(number(value()?)?.clamp(1, MOST_SAMPLES) as usize),
                 "--every" => every = Duration::from_millis(number(value()?)?),
                 "--compare-lhm" => lhm = Some(value()?.clone()),
                 "--out" => out = Some(PathBuf::from(value()?)),
@@ -146,6 +152,7 @@ impl Options {
             }
         }
         let samples = samples.unwrap_or(if all { ALL_SAMPLES } else { CPU_SAMPLES });
+        let every = every.max(if all { LEAST_ALL } else { LEAST_CPU });
         Ok(Options {
             all,
             samples,
@@ -199,8 +206,10 @@ fn on_ctrl_c(hw: Arc<HwLock>) {
 }
 
 /// Asks the hardware sequences to stop, and waits for the one running to finish, putting back what it
-/// changed: none touches the hardware after that, as each looks once it holds the lock. The probe then
-/// writes what it has and ends; if it hasn't within `WRITE_WAIT` (say it's waiting for LHM), this ends it.
+/// changed. It then lets go of the lock (where the spec, §3.8, has it held until the process ends), so the
+/// probe can still write what it has: no sequence starts after this, as `HwLock::hold` gives nothing once
+/// stopping, so none can be under way when the process ends. If the probe hasn't ended within `WRITE_WAIT`
+/// (say it's waiting for LHM), this ends it.
 unsafe extern "system" fn ctrl_c(_event: u32) -> windows_sys::core::BOOL {
     if let Some(hw) = HW.get() {
         drop(hw.stop());
@@ -465,10 +474,11 @@ impl ChipDump {
 
     /// One sample of the chip's registers (`registers`), read as the reader reads them, then its
     /// temperatures and every fan's count decoded as the reader decodes them, with whether the reader reads
-    /// that fan at all (regs 0x13 and 0x0C). The bank is read first and again last.
+    /// that fan at all (regs 0x13 and 0x0C). The bank is read first and again last; a chip with banks is
+    /// read no further than the first unless it's in bank 0, as the reader reads it.
     fn dump(&mut self, chip: &mut Chip, hw: &HwLock, at: Duration) -> Json {
         let list = registers(chip.spec);
-        let (mut regs, mut values, mut end_bank, mut error) = (Map::new(), HashMap::new(), None, None);
+        let (mut regs, mut values, mut end_bank, mut error, mut skipped) = (Map::new(), HashMap::new(), None, None, None);
         for (n, &reg) in list.iter().chain(&[ite::BANK]).enumerate() {
             if hw.stopping() {
                 break;
@@ -483,6 +493,12 @@ impl ChipDump {
                         regs.insert(hex(reg, 2), json!(value.map(|v| hex(v, 2))));
                         values.extend(value.map(|v| (reg, v)));
                     }
+                    // in another bank, its registers 0x10-0xAF are something else; and a bank that didn't
+                    // read back can't be told
+                    if n == 0 && chip.spec.bank_guard && value.map(bank) != Some(0) {
+                        skipped = Some(if value.is_some() { "bank" } else { "read_back" });
+                        break;
+                    }
                 }
                 Err(e) => {
                     error = Some(io_text(e));
@@ -491,6 +507,9 @@ impl ChipDump {
             }
         }
         let get = |reg: u8| values.get(&reg).copied();
+        if let Some(skipped) = skipped {
+            return json!({ "t_ms": ms(at), "bank": [get(ite::BANK).map(bank), Json::Null], "regs": regs, "skipped": skipped });
+        }
         let temperatures: Vec<Option<f64>> =
             (0..chip.spec.temperatures).map(|i| get(ite::TEMPERATURE + i as u8).and_then(ite::temperature)).collect();
         let fans: Vec<Json> = (0..chip.spec.fans)
@@ -606,13 +625,18 @@ impl<'a> Probe<'a> {
         }
     }
 
-    /// `options.samples` samples, `options.every` apart, until Ctrl+C.
+    /// `options.samples` samples, `options.every` apart, until Ctrl+C. One that ends late (say LHM took long
+    /// to answer) isn't caught up on: the next is a whole `every` after it ended, never straight after.
     fn sample_all(&mut self) {
-        for i in 0..self.options.samples {
-            if !self.wait_until(self.start + self.options.every * i as u32) {
+        let every = self.options.every;
+        let mut due = self.start;
+        for _ in 0..self.options.samples {
+            if !self.wait_until(due) {
                 break;
             }
             self.sample();
+            let (next, now) = (due.saturating_add(every), self.machine.clock.since_boot());
+            due = if now >= next { now.saturating_add(every) } else { next };
         }
     }
 
@@ -673,10 +697,7 @@ impl<'a> Probe<'a> {
             None => {}
             Some(None) => sample["busy"] = json!(true),
             Some(Some(_shared)) => {
-                let _hw = self.hw.hold();
-                if self.hw.stopping() {
-                    return;
-                }
+                let Some(_hw) = self.hw.hold() else { return };
                 sample["tctl"] = match cpu.smn(amd::TCTL) {
                     Ok(raw) => json!({ "raw": hex(raw, 8), "c": amd::tctl(raw) }),
                     Err(e) => json!({ "error": io_text(e) }),
@@ -713,7 +734,8 @@ impl<'a> Probe<'a> {
         self.cpu_raw.push(sample);
     }
 
-    /// Each chip's registers, under the ISA lock as the reader reads them.
+    /// Each chip's registers, under the ISA lock as the reader reads them; not those of a chip the reader
+    /// found missing, which it leaves alone but for a try now and then (ite.rs).
     fn dump_chips(&mut self, at: Duration) {
         let names: Vec<&str> = self.reader.superio().chips().map(|chip| chip.spec.name).collect();
         for (chip, key) in self.reader.superio_mut().chips_mut().zip(hardware(&names)) {
@@ -724,16 +746,17 @@ impl<'a> Probe<'a> {
                     self.chips.last_mut().unwrap()
                 }
             };
-            let sample = match self.isa.as_ref().map(|isa| isa.acquire(ite::POLL_MS)) {
-                // without the lock the reader reads no chip either, and says so
-                None => continue,
-                Some(None) => json!({ "t_ms": ms(at), "busy": true }),
-                Some(Some(_shared)) => {
-                    let _hw = self.hw.hold();
-                    if self.hw.stopping() {
-                        return;
+            let sample = if chip.is_missing() {
+                json!({ "t_ms": ms(at), "missing": true })
+            } else {
+                match self.isa.as_ref().map(|isa| isa.acquire(ite::POLL_MS)) {
+                    // without the lock the reader reads no chip either, and says so
+                    None => continue,
+                    Some(None) => json!({ "t_ms": ms(at), "busy": true }),
+                    Some(Some(_shared)) => {
+                        let Some(_hw) = self.hw.hold() else { return };
+                        dump.dump(chip, &self.hw, at)
                     }
-                    dump.dump(chip, &self.hw, at)
                 }
             };
             dump.counts = chip.counts;
@@ -744,7 +767,9 @@ impl<'a> Probe<'a> {
     /// Reads each configuration port as the probe leaves it, without a key, and the logical device where a
     /// chip answers: a chip that left configuration mode reads 0xFFFF, as one that was never in it; one that
     /// was in it reads its ID, with the logical device it had. Beside each, what the first detection attempt
-    /// there found before it changed anything.
+    /// there found before it changed anything, and whether what's read now is what's expected: as found, or,
+    /// for a chip we put in configuration mode that mustn't be sent the exit (spec D13), still in it with the
+    /// logical device it had.
     fn check_after(&mut self) {
         if self.hw.stopping() {
             return;
@@ -755,18 +780,17 @@ impl<'a> Probe<'a> {
         // 0x4E first, as detection goes
         for slot in [1, 0] {
             let port = PORTS[slot];
-            let found = self.reader.superio().attempts.iter().find(|a| a.port == port && a.id_before.is_some());
+            let attempts: Vec<&Attempt> = self.reader.superio().attempts.iter().filter(|a| a.port == port).collect();
+            let found = attempts.iter().find(|a| a.id_before.is_some());
             let (id_before, ldn_before) = (found.and_then(|a| a.id_before), found.and_then(|a| a.ldn_before));
+            let left_in = attempts.iter().find(|a| a.key_sent && !a.exit_sent && a.id_after.is_some_and(ite::noconf_family));
             let read = match (&self.isa, open(ModuleId::LpcIo)) {
                 (_, Err(e)) => Err(format!("{e:?}")),
                 (None, _) => Err("no lock".to_string()),
                 (Some(isa), Ok(h)) => match isa.acquire(ite::DETECT_MS) {
                     None => Err("busy".to_string()),
                     Some(_shared) => {
-                        let _hw = self.hw.hold();
-                        if self.hw.stopping() {
-                            break;
-                        }
+                        let Some(_hw) = self.hw.hold() else { break };
                         read_port(&*h, slot).map_err(io_text)
                     }
                 },
@@ -779,6 +803,11 @@ impl<'a> Probe<'a> {
                     row["ldn"] = json!(ldn.map(|l| hex(l, 2)));
                     let as_found = id_before.map(|before| id == before && (before == 0xFFFF || ldn_before.is_none() || ldn == ldn_before));
                     row["as_found"] = json!(as_found);
+                    let by_design = left_in.is_some_and(|a| a.id_after == Some(id) && (a.ldn_before.is_none() || ldn == a.ldn_before));
+                    row["expected"] = json!(if by_design { Some(true) } else { as_found });
+                    if by_design {
+                        row["by_design"] = json!("left in configuration mode: the chip mustn't be sent the exit (NOCONF)");
+                    }
                 }
                 Err(e) => row["error"] = json!(e),
             }
@@ -925,7 +954,7 @@ fn attempt(a: &Attempt, start_ms: u64) -> Json {
     json!({ "t_ms": a.at_ms.saturating_sub(start_ms), "id_before": a.id_before.map(|id| hex(id, 4)), "key_sent": a.key_sent,
             "id_after": a.id_after.map(|id| hex(id, 4)), "chip": a.chip, "ldn_before": a.ldn_before.map(|l| hex(l, 2)),
             "find_bars": a.find_bars, "base": a.base.iter().map(|&b| hex(b, 4)).collect::<Vec<_>>(), "ldn_restored": a.ldn_restored,
-            "exit_sent": a.exit_sent, "outcome": a.outcome })
+            "exit_sent": a.exit_sent, "left_keyed": a.left_keyed, "outcome": a.outcome })
 }
 
 /// The time each module function took (µs), each detection attempt held the ISA lock (ms), each chip's poll
@@ -1275,18 +1304,24 @@ mod tests {
         Rig::new().machine()
     }
 
-    /// The options, and their defaults: 3 samples for the CPU, 60 with the chips, a second apart.
+    /// The options, and their defaults: 3 samples for the CPU, 60 with the chips, a second apart. At most
+    /// 600 samples, at least half a second apart for the CPU, and a second with the chips.
     #[test]
     fn options_parse() {
         let cpu = options(&[]);
         assert_eq!((cpu.all, cpu.samples, cpu.every, cpu.lhm, cpu.out, cpu.fake), (false, 3, Duration::from_secs(1), None, None, false));
         let all = options(&["--stage", "all"]);
         assert_eq!((all.all, all.samples), (true, 60));
-        let set = options(&["--stage", "all", "--samples", "5", "--every", "250", "--compare-lhm", "http://127.0.0.1:8085", "--out",
+        let set = options(&["--stage", "all", "--samples", "5", "--every", "2500", "--compare-lhm", "http://127.0.0.1:8085", "--out",
                             r"C:\x\probe.json", "--fake"]);
-        assert_eq!(set, Options { all: true, samples: 5, every: Duration::from_millis(250), lhm: Some("http://127.0.0.1:8085".into()),
+        assert_eq!(set, Options { all: true, samples: 5, every: Duration::from_millis(2500), lhm: Some("http://127.0.0.1:8085".into()),
                                   out: Some(PathBuf::from(r"C:\x\probe.json")), fake: true });
         assert_eq!(options(&["--stage", "cpu", "--samples", "0"]).samples, 1);
+        assert_eq!(options(&["--samples", "100000"]).samples, 600);
+        let every = |list: &[&str]| options(list).every.as_millis();
+        assert_eq!((every(&["--every", "0"]), every(&["--every", "750"])), (500, 750));
+        assert_eq!((every(&["--every", "0", "--stage", "all"]), every(&["--stage", "all", "--every", "250"])), (1000, 1000));
+        assert_eq!(every(&["--every", "18446744073709551615"]), u64::MAX as u128);
         let wrong: [(&[&str], &str); 4] = [(&["--stage", "gpu"], "--stage is cpu or all, not gpu"),
                                            (&["--samples"], "--samples needs a value: wvplay pawnio ["),
                                            (&["--every", "soon"], "--every needs a number, not soon"),
@@ -1380,7 +1415,7 @@ mod tests {
         let (at_4e, at_2e) = (&superio[0]["attempts"][0], &superio[1]["attempts"][0]);
         assert_eq!(*at_4e, json!({ "t_ms": 0, "id_before": "0x8695", "key_sent": false, "id_after": null, "chip": "IT87952E",
                                    "ldn_before": "0x0A", "find_bars": "ok", "base": ["0x0A60", "0x0A60"], "ldn_restored": true,
-                                   "exit_sent": false, "outcome": "found IT87952E at 0xA60" }));
+                                   "exit_sent": false, "left_keyed": false, "outcome": "found IT87952E at 0xA60" }));
         assert_eq!((&at_2e["id_before"], &at_2e["key_sent"], &at_2e["id_after"], &at_2e["exit_sent"], &at_2e["outcome"]),
                    (&json!("0xFFFF"), &json!(true), &json!("0x8696"), &json!(true), &json!("found IT8696E at 0xA40")));
 
@@ -1411,8 +1446,8 @@ mod tests {
 
         // both chips left as found
         assert_eq!(report["after"], json!([
-            { "port": "0x4E", "found": { "id": "0x8695", "ldn": "0x0A" }, "id": "0x8695", "ldn": "0x0A", "as_found": true },
-            { "port": "0x2E", "found": { "id": "0xFFFF", "ldn": "0x0A" }, "id": "0xFFFF", "ldn": null, "as_found": true },
+            { "port": "0x4E", "found": { "id": "0x8695", "ldn": "0x0A" }, "id": "0x8695", "ldn": "0x0A", "as_found": true, "expected": true },
+            { "port": "0x2E", "found": { "id": "0xFFFF", "ldn": "0x0A" }, "id": "0xFFFF", "ldn": null, "as_found": true, "expected": true },
         ]));
 
         // what the pc source would publish, power from the second read on
@@ -1522,9 +1557,33 @@ mod tests {
         }
         probe.check_after();
         assert_eq!(probe.after, Some(vec![
-            json!({ "port": "0x4E", "found": { "id": "0x8695", "ldn": "0x0A" }, "id": "0x8695", "ldn": "0x07", "as_found": false }),
-            json!({ "port": "0x2E", "found": { "id": "0xFFFF", "ldn": "0x0A" }, "id": "0x8696", "ldn": "0x04", "as_found": false }),
+            json!({ "port": "0x4E", "found": { "id": "0x8695", "ldn": "0x0A" }, "id": "0x8695", "ldn": "0x07", "as_found": false,
+                    "expected": false }),
+            json!({ "port": "0x2E", "found": { "id": "0xFFFF", "ldn": "0x0A" }, "id": "0x8696", "ldn": "0x04", "as_found": false,
+                    "expected": false }),
         ]));
+    }
+
+    /// A chip we put in configuration mode that mustn't be sent the exit (here the IT87952E at 0x4E, when
+    /// the BIOS had left it out of that mode) isn't as found, by design: still in it, with the logical device
+    /// it had, is what's expected. Another logical device isn't.
+    #[test]
+    fn after_noconf_is_by_design() {
+        let rig = Rig::new();
+        rig.lpc.bus().chip(0x4E).configured = false;
+        let options = options(&["--stage", "all", "--samples", "1"]);
+        let mut probe = rig.probe(&options);
+        probe.sample_all();
+        let attempt = &probe.reader.superio().attempts[0];
+        assert!(attempt.key_sent && !attempt.exit_sent && attempt.id_after == Some(0x8695));
+        probe.check_after();
+        let by_design = "left in configuration mode: the chip mustn't be sent the exit (NOCONF)";
+        assert_eq!(probe.after.as_ref().unwrap()[0], json!({ "port": "0x4E", "found": { "id": "0xFFFF", "ldn": "0x0A" }, "id": "0x8695",
+                                                             "ldn": "0x0A", "as_found": false, "expected": true, "by_design": by_design }));
+        rig.lpc.bus().chip(0x4E).ldn = 0x07;
+        probe.check_after();
+        let row = &probe.after.as_ref().unwrap()[0];
+        assert_eq!((&row["as_found"], &row["expected"], &row["by_design"]), (&json!(false), &json!(false), &Json::Null));
     }
 
     /// Ctrl+C in the middle of a chip's dump (the process's `HwLock` asked to stop): the register being read
@@ -1555,6 +1614,104 @@ mod tests {
         // LHM was asked after the first sample only
         let tctl = report["compare"].as_array().unwrap().iter().find(|row| row["pawnio_key"] == "pawnio.cpu.temperature.tctl").unwrap();
         assert_eq!(tctl["samples"], 1);
+    }
+
+    /// Ctrl+C's handler lets go of the hardware lock as soon as the sequence under way has finished, so the
+    /// probe can still write what it has (`ctrl_c`): nothing touches the hardware after that, not even a
+    /// sequence started past the probe's own checks, as `HwLock::hold` gives nothing once stopping.
+    #[test]
+    fn nothing_after_ctrl_c_lets_go() {
+        let rig = Rig::new();
+        let options = options(&["--stage", "all", "--samples", "3"]);
+        let mut probe = rig.probe(&options);
+        probe.sample();
+        let calls = || (rig.amd.calls().len(), rig.lpc.calls().len());
+        let before = calls();
+        drop(rig.hw.stop());
+        probe.sample();
+        probe.dump_cpu(Duration::ZERO);
+        probe.dump_chips(Duration::ZERO);
+        probe.check_after();
+        assert_eq!(calls(), before);
+        assert_eq!((probe.samples.len(), probe.cpu_raw.len(), probe.chips[0].samples.len(), &probe.after), (2, 1, 1, &None));
+    }
+
+    /// Samples keep to their times; one that ends late (here LHM takes 5 s to answer) isn't caught up on:
+    /// the next comes a whole `every` after it ended, never straight after.
+    #[test]
+    fn late_samples_are_not_caught_up() {
+        let rig = Rig::new();
+        let options = options(&["--samples", "4", "--compare-lhm", "http://lhm.invalid"]);
+        let mut machine = rig.machine();
+        let (clock, asked) = (rig.clock.clone(), Cell::new(0));
+        machine.lhm = Box::new(move |_| {
+            asked.set(asked.get() + 1);
+            if asked.get() == 2 {
+                clock.advance(Duration::from_secs(5));
+            }
+            Err("timed out".into())
+        });
+        let mut probe = Probe::new(&options, machine, rig.hw.clone());
+        probe.run();
+        let times: Vec<u128> = probe.samples.iter().map(|s| s.at.as_millis()).collect();
+        assert_eq!(times, [0, 1000, 7000, 8000]);
+    }
+
+    /// A chip the reader found missing (its registers stopped answering) isn't dumped, but says so: its
+    /// registers are left to the reader's tries, now and then (ite.rs).
+    #[test]
+    fn missing_chips_are_not_dumped() {
+        let rig = Rig::new();
+        let options = options(&["--stage", "all", "--samples", "5"]);
+        let mut probe = rig.probe(&options);
+        probe.sample();
+        rig.lpc.bus().hwm(0xA40).regs[0x58] = 0;
+        // three misses, the last of which makes it missing
+        for _ in 0..3 {
+            probe.sample();
+        }
+        // not tried by the reader this time, and not dumped
+        let writes = rig.lpc.writes().len();
+        probe.sample();
+        assert!(rig.lpc.writes()[writes..].iter().all(|&(port, _)| port == 0xA65));
+        let samples = &probe.chips[0].samples;
+        assert_eq!((probe.chips[0].spec.name, samples.len()), ("IT8696E", 5));
+        assert!(samples[..3].iter().all(|s| s["regs"].as_object().unwrap().len() == 45));
+        assert!(samples[3..].iter().all(|s| s["missing"] == true && s.as_object().unwrap().len() == 2), "{samples:#?}");
+        assert_eq!(probe.chips[1].samples.len(), 5);
+    }
+
+    /// A chip with banks is dumped only in bank 0, as the reader reads it: in another (another program
+    /// switched it), the dump reads the bank and no further, and says so; also when the bank doesn't read
+    /// back, which the reader then counts as a miss, not a switched bank.
+    #[test]
+    fn dumps_keep_to_bank_zero() {
+        let rig = Rig::new();
+        let options = options(&["--stage", "all", "--samples", "3"]);
+        let mut probe = rig.probe(&options);
+        probe.sample();
+        rig.lpc.bus().hwm(0xA40).regs[0x06] = 0x20;
+        let writes = rig.lpc.writes().len();
+        probe.sample();
+        // the reader's bank read, and the dump's
+        let indexes: Vec<u8> = rig.lpc.writes()[writes..].iter().filter(|(port, _)| *port == 0xA45).map(|(_, reg)| *reg).collect();
+        assert_eq!(indexes, [0x06, 0x06]);
+        let skipped = &probe.chips[0].samples[1];
+        assert_eq!((&skipped["bank"], &skipped["regs"], &skipped["skipped"]), (&json!([1, null]), &json!({ "0x06": "0x20" }), &json!("bank")));
+        assert!(skipped["temperatures"].is_null() && skipped["fans"].is_null());
+        // the IT87952E has no banks
+        assert_eq!(probe.chips[1].samples[1]["regs"].as_object().unwrap().len(), 30);
+
+        {
+            let mut bus = rig.lpc.bus();
+            bus.hwm(0xA40).regs[0x06] = 0;
+            bus.hwm(0xA40).bad_readback = [0x06].into();
+        }
+        probe.sample();
+        let skipped = &probe.chips[0].samples[2];
+        assert_eq!((&skipped["bank"], &skipped["regs"], &skipped["skipped"]), (&json!([null, null]), &json!({ "0x06": null }), &json!("read_back")));
+        // (the dump's read-back failures count among the chip's too)
+        assert_eq!(probe.chips[0].counts, Counts { read_backs: 2, bank_trips: 1, misses: 1 });
     }
 
     /// Rows pair ours and LHM's by chip and channel, though LHM names channels from a board's map; each kind

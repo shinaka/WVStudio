@@ -117,6 +117,16 @@ fn gave_up(port: u16) -> String {
 pub(crate) const STOPPED_ANSWERING: &str =
     "The motherboard sensor chip stopped answering, so fan and board readings are off until the player restarts.";
 
+/// The note for a slot whose chip was sent the key, then couldn't be asked its ID (so it isn't sent the exit,
+/// as it may be one that mustn't be).
+fn left_keyed(port: u16) -> String {
+    format!("The motherboard sensor chip at 0x{port:02X} didn't answer after it was put in configuration mode, so it may \
+             stay in that mode until the PC restarts.")
+}
+
+/// How many times the ID is read after the key, before giving up on it.
+const ID_TRIES: u32 = 3;
+
 /// A fan's count: low byte | high byte << 8, in RPM. None when no fan is there (0x3F or less); 0 when it's
 /// stopped or not connected (0xFFFF), which can't be told apart, and a stopped pump must show.
 pub fn fan_rpm(count: u16) -> Option<f64> {
@@ -228,6 +238,9 @@ pub struct Attempt {
     pub base: Vec<u16>,
     pub ldn_restored: bool,
     pub exit_sent: bool,
+    /// The key was sent but the ID couldn't be read after it, even on a second and third try: the chip may
+    /// still be in configuration mode, as it isn't sent the exit without knowing what it is.
+    pub left_keyed: bool,
     pub outcome: String,
 }
 
@@ -286,17 +299,28 @@ fn configure(h: &dyn Exec, slot: usize, poll: &Poll, record: &RefCell<Attempt>) 
     }
     let mut session = Session { h, port, keyed: false, answered: None, ldn: None, ldn_changed: false, record };
     if id == 0xFFFF {
-        // the key, then the ID straight after, whatever happens: once keyed, whether to leave depends on it
+        // the key, then the ID straight after, whatever happens (a key byte that failed may still have gone
+        // through): once keyed, whether to leave depends on it
         session.keyed = true;
-        for byte in KEYS[slot] {
-            pio_outb(h, port, byte).map_err(io)?;
-        }
-        record.borrow_mut().key_sent = true;
-        id = superio_inw(h, CHIP_ID).map_err(io)?;
+        let key = KEYS[slot].into_iter().try_for_each(|byte| pio_outb(h, port, byte));
+        record.borrow_mut().key_sent = key.is_ok();
+        id = match id_after_key(h, poll) {
+            Ok(id) => id,
+            // it can't be sent the exit without knowing what it is, as it may be one that mustn't be
+            Err(e) => {
+                record.borrow_mut().left_keyed = true;
+                return Err(io(e));
+            }
+        };
         record.borrow_mut().id_after = Some(id);
         if id == 0xFFFF {
+            key.map_err(io)?;
             return Err(Outcome::Absent);
         }
+        if id != 0 {
+            session.answered = Some(id);
+        }
+        key.map_err(io)?;
     }
     if id == 0 {
         return Err(Outcome::Absent);
@@ -330,6 +354,21 @@ fn configure(h: &dyn Exec, slot: usize, poll: &Poll, record: &RefCell<Attempt>) 
         return Err(Outcome::Retry(Why::Base));
     }
     Ok((spec, base))
+}
+
+/// The chip ID, just after the key: read again, a millisecond apart, if it can't be read, as a chip left in
+/// configuration mode can be sent the exit only once it's known not to be one that mustn't be.
+fn id_after_key(h: &dyn Exec, poll: &Poll) -> Result<u16, IoError> {
+    let mut tries = 1;
+    loop {
+        match superio_inw(h, CHIP_ID) {
+            Err(_) if tries < ID_TRIES => {
+                tries += 1;
+                poll.clock.sleep(Duration::from_millis(1));
+            }
+            read => return read,
+        }
+    }
 }
 
 /// One detection attempt at `slot`, on a module handle of its own: through the configuration space, then
@@ -380,14 +419,27 @@ pub struct Chip {
 /// One poll's reading of a chip.
 enum Sample {
     Read(Vec<(Channel, f64)>),
-    /// The vendor check failed.
+    /// The vendor check failed, or the bank couldn't be read: its registers don't answer as ITE's do.
     Miss,
     /// Another program had the bank switched.
     Bank,
     Stopped,
 }
 
+impl Sample {
+    /// A sample the bank guard stopped: skipped for a switched bank; a miss when the bank didn't read back.
+    fn guarded(why: Why) -> Sample {
+        if why == Why::Bank { Sample::Bank } else { Sample::Miss }
+    }
+}
+
 impl Chip {
+    /// Whether its registers stopped answering (`poll_chip`): they're then tried only now and then, and
+    /// nothing else should read them.
+    pub fn is_missing(&self) -> bool {
+        self.missing.is_some()
+    }
+
     /// One environment controller register, or None when its index didn't read back (another program's
     /// index got in between).
     pub fn read_reg(&mut self, reg: u8) -> Result<Option<u8>, IoError> {
@@ -407,16 +459,25 @@ impl Chip {
         Ok(self.read_reg(BANK)?.map(|v| (v >> 5) & 3))
     }
 
-    /// Whether the bank is 0, for a chip that has banks; always for one that hasn't.
-    fn bank_zero(&mut self) -> Result<bool, IoError> {
-        Ok(!self.spec.bank_guard || self.bank()? == Some(0))
+    /// The bank guard, for a chip that has banks: None in bank 0; `Bank` in another; `ReadBack` when reg 0x06
+    /// didn't read back (another program's index got in between, or nothing answers at the base any more),
+    /// which isn't taken for a switched bank. None always, for a chip without banks.
+    fn bank_guard(&mut self) -> Result<Option<Why>, IoError> {
+        if !self.spec.bank_guard {
+            return Ok(None);
+        }
+        Ok(match self.bank()? {
+            Some(0) => None,
+            Some(_) => Some(Why::Bank),
+            None => Some(Why::ReadBack),
+        })
     }
 
     /// Checks that ITE's environment controller answers at the base, and which fans are on. Some(why) when
     /// it doesn't.
     fn validate(&mut self) -> Result<Option<Why>, IoError> {
-        if !self.bank_zero()? {
-            return Ok(Some(Why::Bank));
+        if let Some(why) = self.bank_guard()? {
+            return Ok(Some(why));
         }
         let vendor = self.read_reg(VENDOR)?;
         let configuration = self.read_reg(CONFIGURATION)?;
@@ -435,17 +496,14 @@ impl Chip {
                 self.fans[3 + i] = more & (1 << bit) != 0;
             }
         }
-        if !self.bank_zero()? {
-            return Ok(Some(Why::Bank));
-        }
-        Ok(None)
+        self.bank_guard()
     }
 
     /// One poll's readings: in bank 0 (checked before and after), with the vendor check first. A register
     /// whose index didn't read back is left out.
     fn sample(&mut self, hw: &HwLock) -> Result<Sample, IoError> {
-        if !self.bank_zero()? {
-            return Ok(Sample::Bank);
+        if let Some(why) = self.bank_guard()? {
+            return Ok(Sample::guarded(why));
         }
         if !self.read_reg(VENDOR)?.is_some_and(|v| VENDORS.contains(&v)) {
             return Ok(Sample::Miss);
@@ -472,8 +530,8 @@ impl Chip {
                 read.push((Channel::Fan(i), rpm));
             }
         }
-        if !self.bank_zero()? {
-            return Ok(Sample::Bank);
+        if let Some(why) = self.bank_guard()? {
+            return Ok(Sample::guarded(why));
         }
         Ok(Sample::Read(read))
     }
@@ -496,6 +554,9 @@ pub struct SuperIo {
     /// Why the module couldn't be opened: then nothing is read.
     unopened: Option<String>,
     redetections: u32,
+    /// The slots whose chip may have been left in configuration mode (`Attempt::left_keyed`): a note at
+    /// every read.
+    left_keyed: [bool; 2],
     /// Every detection attempt, for the probe.
     pub attempts: Vec<Attempt>,
 }
@@ -503,7 +564,8 @@ pub struct SuperIo {
 impl Default for SuperIo {
     fn default() -> SuperIo {
         let looking = || Slot::Looking { next: Duration::ZERO, absent: 0, retries: 0 };
-        SuperIo { slots: [looking(), looking()], names: [None; 2], unopened: None, redetections: 0, attempts: Vec::new() }
+        SuperIo { slots: [looking(), looking()], names: [None; 2], unopened: None, redetections: 0, left_keyed: [false; 2],
+                  attempts: Vec::new() }
     }
 }
 
@@ -545,6 +607,9 @@ impl SuperIo {
             if let Slot::Done { note: Some(note), .. } = slot {
                 notes.push(note.clone());
             }
+        }
+        for slot in [1, 0].into_iter().filter(|&slot| self.left_keyed[slot]) {
+            notes.push(left_keyed(PORTS[slot]));
         }
         if self.slots.iter().all(|s| matches!(s, Slot::Done { found: false, .. })) {
             notes.push(NONE_FOUND.to_string());
@@ -592,8 +657,12 @@ impl SuperIo {
                     self.slots[slot] = Slot::Done { note: Some(STOPPED_ANSWERING.to_string()), found: true };
                     return;
                 }
-                self.redetections += 1;
-                match self.attempt(slot, poll, open, isa) {
+                let outcome = self.attempt(slot, poll, open, isa);
+                // one of the few only if it ran: not when another program held the lock, or nothing could
+                if !matches!(outcome, Outcome::Retry(Why::Busy | Why::NoModule | Why::Stopping)) {
+                    self.redetections += 1;
+                }
+                match outcome {
                     Outcome::Found(chip) => self.slots[slot] = Slot::Kept(chip),
                     // still missing: read through the old handle as before, and looked for again later
                     _ => {
@@ -624,13 +693,14 @@ impl SuperIo {
             }
             Ok(h) => match isa.acquire(DETECT_MS) {
                 None => Outcome::Retry(Why::Busy),
-                Some(_shared) => {
-                    let _hw = poll.hw.hold();
-                    if poll.hw.stopping() { Outcome::Retry(Why::Stopping) } else { detect(h, slot, poll, &other, &record) }
-                }
+                Some(_shared) => match poll.hw.hold() {
+                    Some(_hw) => detect(h, slot, poll, &other, &record),
+                    None => Outcome::Retry(Why::Stopping),
+                },
             },
         };
         let mut record = record.into_inner();
+        self.left_keyed[slot] |= record.left_keyed;
         record.outcome = outcome.describe();
         self.attempts.push(record);
         outcome
@@ -661,10 +731,7 @@ fn poll_chip(chip: &mut Chip, poll: &Poll, isa: &dyn Lock, notes: &mut Vec<Strin
         return Vec::new();
     };
     chip.busy = 0;
-    let _hw = poll.hw.hold();
-    if poll.hw.stopping() {
-        return Vec::new();
-    }
+    let Some(_hw) = poll.hw.hold() else { return Vec::new() };
     match chip.sample(poll.hw) {
         Ok(Sample::Read(read)) => {
             chip.misses = 0;
@@ -1271,6 +1338,125 @@ mod tests {
         let (values, _) = rig.later(120).read();
         assert_eq!(values.len(), 15);
         assert_eq!(rig.outcomes().last().unwrap(), "found IT8696E at 0xA80");
+    }
+
+    /// A chip with banks whose registers stop answering (its ports read 0xFF, as with nothing there) goes
+    /// missing as any chip does: its bank register not reading back isn't a switched bank, so there's no
+    /// bank note or bank trip, and its registers are then tried only now and then. At detection, that's a
+    /// read-back retry.
+    #[test]
+    fn gone_is_not_a_switched_bank() {
+        let mut rig = Rig::new(FakeLpc::this_pc());
+        rig.read();
+        rig.lpc.bus().hwms.retain(|h| h.base != 0xA40);
+        let banks = |rig: &Rig| rig.lpc.writes().iter().filter(|w| **w == (0xA45, BANK)).count();
+        let mut tried = Vec::new();
+        for poll in 1..=9 {
+            let before = banks(&rig);
+            let (values, notes) = rig.later(10).read();
+            assert_eq!((values.len(), notes), (5, Vec::<String>::new()), "poll {poll}");
+            if banks(&rig) > before {
+                tried.push(poll);
+            }
+        }
+        assert_eq!(tried, [1, 2, 3, 5, 9]);
+        let chip = rig.superio.chips().find(|c| c.slot == 0).unwrap();
+        assert_eq!((chip.counts.bank_trips, chip.counts.misses, chip.counts.read_backs), (0, 5, 5));
+        assert!(chip.is_missing());
+
+        let lpc = FakeLpc::this_pc();
+        lpc.bus().hwms.retain(|h| h.base != 0xA40);
+        let mut rig = Rig::new(lpc);
+        rig.read();
+        assert_eq!(rig.outcomes(), ["found IT87952E at 0xA60", "retry: ReadBack"]);
+    }
+
+    /// A re-detection that couldn't run, as another program held the lock, isn't one of the two.
+    #[test]
+    fn busy_redetection_is_not_counted() {
+        let mut rig = Rig::new(FakeLpc::this_pc());
+        rig.read();
+        rig.lpc.bus().hwm(0xA40).regs[0x58] = 0;
+        // missing from 30 s; looked for again from 150 s, when the lock is busy
+        for _ in 0..3 {
+            rig.later(10).read();
+        }
+        rig.lock.set_busy(true);
+        rig.later(120).read();
+        rig.lock.set_busy(false);
+        assert_eq!(rig.outcomes()[2..], ["retry: Busy"]);
+        // then two that run, and find it still not answering, and then the note
+        rig.later(120).read();
+        rig.later(120).read();
+        assert_eq!(rig.outcomes()[2..], ["retry: Busy", "retry: Vendor", "retry: Vendor"]);
+        assert_eq!(rig.later(120).read().1, [STOPPED_ANSWERING]);
+        assert_eq!(rig.superio.attempts.len(), 5);
+    }
+
+    /// A slot's module calls that fail (the driver's say), from the `nth` (from 1) of `function` with `args`
+    /// after the slot is selected, for `count` calls.
+    fn failing(slot: u64, function: &'static str, args: &'static [u64], nth: usize, count: usize)
+               -> Box<dyn FnMut(&str, &[u64]) -> Option<IoError> + Send> {
+        let (mut selected, mut n) = (None, 0);
+        Box::new(move |called, given| {
+            if called == "ioctl_select_slot" {
+                selected = given.first().copied();
+            }
+            if selected != Some(slot) || called != function || given != args {
+                return None;
+            }
+            n += 1;
+            (nth..nth + count).contains(&n).then_some(IoError::Other(1117))
+        })
+    }
+
+    /// The ID after the key is read again if the driver fails it: a chip that answers the second or third
+    /// time is let go as ever. One that never does isn't sent the exit, as it may be one that mustn't be; the
+    /// attempt says it may be left in configuration mode, as a note does at every read from then on. Its
+    /// retry then finds it in configuration mode, and reads it with no key and no exit.
+    #[test]
+    fn id_after_the_key_is_read_again() {
+        for fails in [1, 2, 3] {
+            let mut rig = alone(0x2E, false);
+            rig.lpc.bus().fail = Some(failing(0, "ioctl_superio_inw", &[0x20], 2, fails));
+            let (values, notes) = rig.read();
+            let writes = rig.lpc.writes();
+            check_writes(&writes, &[0xA40], writes.len());
+            let a = rig.superio.attempts.iter().find(|a| a.port == 0x2E).unwrap().clone();
+            assert!(a.key_sent, "{fails}");
+            if fails < ID_TRIES as usize {
+                assert_eq!((values.len(), notes), (3, Vec::<String>::new()), "{fails}");
+                assert!(a.exit_sent && !a.left_keyed && a.id_after == Some(0x8696), "{fails}");
+                assert_eq!(keys_and_exits(&writes, 0x2E), (1, 1));
+                assert!(as_found(&rig, 0x2E, false));
+                continue;
+            }
+            assert_eq!((values.len(), notes), (0, vec![left_keyed(0x2E)]));
+            assert!(!a.exit_sent && a.left_keyed && a.id_after.is_none() && a.outcome == "retry: Io(Other(1117))");
+            assert_eq!(keys_and_exits(&writes, 0x2E), (1, 0));
+            assert!(rig.lpc.bus().chip(0x2E).configured);
+            let (values, notes) = rig.later(2).read();
+            assert_eq!((values.len(), notes), (3, vec![left_keyed(0x2E)]));
+            let a = rig.superio.attempts.last().unwrap();
+            assert!(a.id_before == Some(0x8696) && !a.key_sent && !a.exit_sent && a.ldn_restored && !a.left_keyed);
+            assert_eq!(keys_and_exits(&rig.lpc.writes(), 0x2E), (1, 0));
+        }
+    }
+
+    /// A key byte the driver fails may still have gone through: the ID is read anyway, and a chip that
+    /// answers it is let go, as after any key; the attempt is tried again later.
+    #[test]
+    fn a_failed_key_is_let_go() {
+        let mut rig = alone(0x2E, false);
+        // the key's last byte, 0x55 a second time
+        rig.lpc.bus().fail = Some(failing(0, "ioctl_pio_outb", &[0x2E, 0x55], 2, 1));
+        rig.read();
+        let a = rig.superio.attempts.iter().find(|a| a.port == 0x2E).unwrap();
+        assert!(!a.key_sent && a.id_after == Some(0x8696) && a.exit_sent && !a.left_keyed);
+        assert_eq!(a.outcome, "retry: Io(Other(1117))");
+        assert!(as_found(&rig, 0x2E, false));
+        assert_eq!(rig.later(2).keys().len(), 3);
+        assert_eq!(keys_and_exits(&rig.lpc.writes(), 0x2E), (2, 2));
     }
 
     /// The only module functions used, and what each writes: the configuration index and data only through
