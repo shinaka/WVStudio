@@ -863,12 +863,14 @@ mod tests {
             return;
         }
         let dir = std::env::temp_dir().join(format!("wvplay-real-{}", std::process::id()));
-        std::fs::create_dir_all(dir.join("sources")).unwrap();
-        std::fs::copy(real, dir.join("playlist.json")).unwrap();
+        std::fs::create_dir_all(dir.join(r"playlist\sources")).unwrap();
+        std::fs::copy(real, dir.join(r"playlist\playlist.json")).unwrap();
         for f in std::fs::read_dir(real.parent().unwrap().join("sources")).unwrap().flatten() {
-            std::fs::copy(f.path(), dir.join("sources").join(f.file_name())).unwrap();
+            std::fs::copy(f.path(), dir.join(r"playlist\sources").join(f.file_name())).unwrap();
         }
-        let p = read(&dir.join("playlist.json"), 30.0, Path::new("ffmpeg")).unwrap();
+        // and the widgets its copies draw, from widgets\ beside playlist\ (widget::widgets_for)
+        copy_folder(&real.parent().unwrap().parent().unwrap().join("widgets"), &dir.join("widgets"));
+        let p = read(&dir.join(r"playlist\playlist.json"), 30.0, Path::new("ffmpeg")).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
         assert!(!p.scenes.is_empty());
         let s = &p.scenes[0];
@@ -878,7 +880,24 @@ mod tests {
         // 1600x720 at 1.118: 1789x805 at -76,-72, edges stretched
         assert_eq!((art.x, art.y, art.w, art.h), (-76.0, -72.0, 1789.0, 805.0));
         assert!(matches!(&art.kind, Kind::Media(m) if m.fill == Fill::Extend && !m.smooth));
-        assert_eq!(live_texts(&p.scenes[0], &p.global).len(), 1);
+        // its live text is in copies of two widgets: the scene's temperature badge (its Value input's default),
+        // then the global layer's Claude usage
+        let live: Vec<String> = live_texts(&p.scenes[0], &p.global).into_iter().map(|t| t.text).collect();
+        assert_eq!(live, ["{pc.cpu.temp:d}°C", "Claude {claude.session:d}% · resets in {claude.session_resets_in}",
+                          "this week {claude.week:d}%"]);
+    }
+
+    /// Copies a folder and everything in it; nothing where there's no folder.
+    fn copy_folder(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).into_iter().flatten().flatten() {
+            let (path, copy) = (entry.path(), to.join(entry.file_name()));
+            if path.is_dir() {
+                copy_folder(&path, &copy);
+            } else {
+                std::fs::copy(&path, &copy).unwrap();
+            }
+        }
     }
 
     #[test]
